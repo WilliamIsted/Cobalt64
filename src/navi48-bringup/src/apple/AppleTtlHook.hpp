@@ -37,5 +37,6 @@ struct TtlHookResult {
 // Apple's accelerator start against Apple's TTL is the configuration that hangs
 // the graphics node and leaves the machine at the verbose console.
 TtlHookResult install_ttl_hook(IOService *pciNub, Navi48Ttl *ttl);
+bool uninstall_ttl_hook();
 
 } // namespace n48

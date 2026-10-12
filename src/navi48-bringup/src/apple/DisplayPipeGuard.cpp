@@ -2281,7 +2281,9 @@ static bool dpg_prop_u64(IOService *s, const char *k, uint64_t *v) {
 // pmap_map_block with flags 0 (0xffffff8000482b10 xorl %r9d,%r9d), so an IOMemoryDescriptor kernel mapping of the BAR cannot differ
 // by cache option - which is what agdc1's first fbbench measured (all five modes 44-47 MiB/s).
 extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+#if !defined(N33_NO_WCOMB)
 extern "C" vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+#endif
 static vm_offset_t gBenchUc { 0 }, gBenchWc { 0 };
 static uint64_t gBenchBase { 0 }, gBenchLen { 0 };
 
@@ -2379,7 +2381,11 @@ uint32_t navi48_fbbench(uint64_t arg, uint64_t *out, unsigned count) {
         if (!gBenchUc && !gBenchWc) {
             gBenchBase = base; gBenchLen = len;
             gBenchUc = ml_io_map((vm_offset_t)base, (vm_size_t)len);
+#if defined(N33_NO_WCOMB)
+            gBenchWc = 0;   // N33: Sequoia 24H32 does not export ml_io_map_wcomb; the loop below skips a null mapping
+#else
             gBenchWc = ml_io_map_wcomb((vm_offset_t)base, (vm_size_t)len);
+#endif
             DPGLOG("fbbench: ml_io_map %#lx, ml_io_map_wcomb %#lx over %#llx+%#llx (kept for the boot)", (unsigned long)gBenchUc,
                    (unsigned long)gBenchWc, (unsigned long long)base, (unsigned long long)len);
         }

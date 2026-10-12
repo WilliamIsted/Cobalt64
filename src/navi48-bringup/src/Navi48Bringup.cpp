@@ -7326,6 +7326,14 @@ void Navi48Bringup::publishInterruptCounters() {
 
 IOService *Navi48Bringup::probe(IOService *provider, SInt32 *score) {
 	uint32_t on = 0;
+#if defined(N33_OBSERVE)
+	// N33 stage 1: loading this build by hand is the opt-in, so 0x7480 needs no boot-arg.
+	if (auto *p = OSDynamicCast(IOPCIDevice, provider); p && p->configRead32(kIOPCIConfigVendorID) == 0x74801002) {
+		if (!super::probe(provider, score)) return nullptr;
+		N48LOG("probe: Navi 33 (0x7480) — N33 observe-only build, no bring-up");
+		return this;
+	}
+#endif
 	if (!PE_parse_boot_argn("navi48bringup", &on, sizeof(on)) || on == 0) return nullptr;
 	if (!super::probe(provider, score)) return nullptr;
 	auto *pci = OSDynamicCast(IOPCIDevice, provider);
@@ -7349,6 +7357,9 @@ bool Navi48Bringup::start(IOService *provider) {
 	pciDevice = OSDynamicCast(IOPCIDevice, provider);
 	gBringupPci = pciDevice;
 	gBringupSelf = this;
+#if defined(N33_OBSERVE)
+	if (pciDevice && pciDevice->configRead32(kIOPCIConfigVendorID) == 0x74801002) return startN33Observe();
+#endif
 	navi48_fbwc_boot();   // 0.0.286: boot-arg navi48-fbwc=1 only; otherwise returns at once
 	// 0.0.386: the host-page range guard's RAM top, derived once from the EFI memory map. HERE because it
 	// must run exactly once, single-threaded, before any hook exists and therefore long before gfxc_read can be called; it
@@ -8947,6 +8958,14 @@ IOReturn Navi48Bringup::accelExperiment(uint32_t action, uint64_t *outInstalled,
 }
 
 void Navi48Bringup::stop(IOService *provider) {
+#if defined(N33_OBSERVE)
+	if (n33Observing) {
+		n48::uninstall_ttl_hook();
+		unmapRegisters();
+		super::stop(provider);
+		return;
+	}
+#endif
 	// : never leave a patched className behind in a kext that is going away.
 	n48fbname::restore_on_unload();
 	// 0.0.603 (native S2a): the console plane back and every scanout watchdog thread finished BEFORE anything is unmapped (both need the registers).
@@ -8964,6 +8983,27 @@ void Navi48Bringup::stop(IOService *provider) {
 	unmapRegisters();
 	super::stop(provider);
 }
+
+#if defined(N33_OBSERVE)
+// N33 stage 1 (Navi 33, Sequoia 24H32): attach, read, install the TTL hook, hand nothing on.
+// The only GPU writes are MM_INDEX/MM_INDEX_HI for the discovery read (as Linux does). No
+// interrupts, no PSP/SMU/GMC/display, no LoadAccelerator.
+bool Navi48Bringup::startN33Observe() {
+	n33Observing = true;
+	N48LOG("n33: observe-only start (stage 1)");
+	setProperty("N33,Mode", "observe-only (stage 1)");
+	if (!mapRegisters()) { N48LOG("n33: BAR5 unavailable"); return false; }
+	if (!probeMemSize()) { unmapRegisters(); return false; }
+	if (loadOnDieDiscovery()) surveyIPs();
+	gNavi48Ttl.bind(this);
+	n48::TtlHookResult hook = n48::install_ttl_hook(pciDevice, &gNavi48Ttl);
+	N48LOG("n33: TTL hook %s (%s)", hook.installed ? "installed" : "NOT installed", hook.why);
+	setProperty("N33,TtlHook", hook.why);
+	setProperty("N33,TtlHookInstalled", hook.installed);
+	registerService();
+	return true;
+}
+#endif
 
 void Navi48Bringup::free() {
 	if (onDieDisc) { IOFree(onDieDisc, n48::kDiscTmrSize); onDieDisc = nullptr; }

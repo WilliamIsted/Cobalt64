@@ -66,7 +66,7 @@
 			<key>IOMatchCategory</key>
 			<string>AMDRadeonX6000HWServices</string>
 			<key>IOPCIPrimaryMatch</key>
-			<string>0x75501002 0x75511002</string>
+			<string>0x75501002 0x75511002 0x74801002</string>
 			<key>IOPersonalityPublisher</key>
 			<string>com.navi48.bringup</string>
 			<key>IOProbeScore</key>
@@ -83,7 +83,7 @@
 			<key>IOMatchCategory</key>
 			<string>Navi48Bringup</string>
 			<key>IOPCIPrimaryMatch</key>
-			<string>0x75501002 0x75511002</string>
+			<string>0x75501002 0x75511002 0x74801002</string>
 			<key>IOProbeScore</key>
 			<integer>10000</integer>
 			<key>IOProviderClass</key>

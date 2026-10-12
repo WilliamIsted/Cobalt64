@@ -107,6 +107,10 @@ private:
 	void dropBar0();                    // 0.0.664 (F4): unmap BAR0 and clear every BAR0 field: exactly the 'no BAR0' state
 	bool apertureCheckWindow();         // 0.0.663 (ReBAR item 4): apertureCheck at vramBase, the middle and vramLimit - 64 KiB, before the allocator exists
 
+#if defined(N33_OBSERVE)
+	bool startN33Observe();
+	bool n33Observing { false };
+#endif
 	// --- stages ---
 	bool probeMemSize();
 	bool loadOnDieDiscovery();

@@ -104,6 +104,11 @@ COMMON := -arch $(ARCH) -target $(ARCH)-apple-macos$(DEPLOY) -isysroot $(SDK) \
   -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
   -D_FORTIFY_SOURCE=0 -nostdinc -fno-builtin -fno-common -fno-stack-protector \
   -mkernel -fapple-kext -Wall -Os -g
+# N33=1: Navi 33 (RX 7600 XT) stage-1 build for Sequoia 24H32: observe-only path for 0x7480 and no
+# ml_io_map_wcomb import (24H32 does not export it). See tools/n33 notes in the fork's N33.md.
+ifeq ($(N33),1)
+COMMON += -DN33_OBSERVE=1 -DN33_NO_WCOMB=1
+endif
 CXXFLAGS := $(COMMON) -std=c++17 -fno-exceptions -fno-rtti -fcheck-new -fno-c++-static-destructors
 CFLAGS   := $(COMMON)
 LDFLAGS  := -arch $(ARCH) -target $(ARCH)-apple-macos$(DEPLOY) -isysroot $(SDK) \
