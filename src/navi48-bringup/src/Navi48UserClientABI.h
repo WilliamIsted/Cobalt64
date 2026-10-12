@@ -18,6 +18,8 @@
 #define NAVI48_UC_ABI_VERSION  6u
 
 enum Navi48Selector {
+    // N33 stage 2a (Navi 33 observe build only): scalarInput[0] = action, rest = arguments. See N33.md.
+    kNavi48SelN33         = 0x4e33,
     kNavi48SelGetInfo     = 0,   // out struct Navi48Info
     kNavi48SelAllocVRAM   = 1,   // in: size, align[, flags]  out: gpu_va, handle
     kNavi48SelFreeVRAM    = 2,   // in: handle

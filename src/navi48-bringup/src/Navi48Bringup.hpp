@@ -54,6 +54,11 @@ public:
 	                       OSDictionary *properties, IOUserClient **handler) override;
 	amdgpu::BringupContext *bringupContext();
 	amdgpu::DeviceContext  *deviceContext() { return &dev; }
+#if defined(N33_OBSERVE)
+	// N33 stage 2a: guarded runtime access for the display flip experiments (n33ctl).
+	bool n33IsObserving() const { return n33Observing; }
+	IOReturn n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount);
+#endif
 	// Navi48Ttl answers Apple's queryHwBlockRegisterBase straight out of this.
 	const IpDiscovery      &ipDisc() const { return ipDiscovery; }
 	bool interruptsArmed() const { return intArmed; }
@@ -109,7 +114,17 @@ private:
 
 #if defined(N33_OBSERVE)
 	bool startN33Observe();
+	bool n33MapBar0();
+	void n33SnapshotScanout();
+	bool n33WriteAllowed(uint64_t off, uint64_t len, uint64_t *why) const;
 	bool n33Observing { false };
+	IOMemoryMap      *n33Bar0Map { nullptr };
+	volatile uint8_t *n33Bar0    { nullptr };
+	uint64_t          n33Bar0Size { 0 };
+	uint64_t          n33FbBase   { 0 };   // DCN_VM_FB_LOCATION_BASE << 24 (GPU address of VRAM offset 0)
+	uint64_t          n33FbOffset { 0 };   // DCN_VM_FB_OFFSET << 24 (DMCUB window offsets are relative to this)
+	uint64_t          n33GopOff   { 0 };   // the GOP's scanout surface at start, as a VRAM offset
+	uint64_t          n33GopLen   { 0 };
 #endif
 	// --- stages ---
 	bool probeMemSize();

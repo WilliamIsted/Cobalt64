@@ -619,6 +619,23 @@ IOReturn Navi48UserClient::externalMethod(uint32_t selector,
                                           IOExternalMethodDispatch *dispatch,
                                           OSObject *target, void *reference) {
 	if (!owner || !args) return kIOReturnNotReady;
+#if defined(N33_OBSERVE)
+	// The observe build exposes reads, the log and the guarded N33 call; nothing that drives the GPU.
+	if (owner->n33IsObserving()) {
+		switch (selector) {
+		case kNavi48SelRegRead:    return doRegRead(args);
+		case kNavi48SelReadLog:    return doReadLog(args);
+		case kNavi48SelLogReset:   return doLogReset(args);
+		case kNavi48SelLogConsume: return doLogConsume(args);
+		case kNavi48SelN33:
+			if (args->scalarInputCount < 1) return kIOReturnBadArgument;
+			return owner->n33Call((uint32_t)args->scalarInput[0], args->scalarInput + 1, args->scalarInputCount - 1,
+			                      args->scalarOutput, args->scalarOutputCount);
+		default:
+			return kIOReturnNotPermitted;
+		}
+	}
+#endif
 	switch (selector) {
 	case kNavi48SelGetInfo:     return doGetInfo(args);
 	case kNavi48SelAllocVRAM:   return doAllocVRAM(args);

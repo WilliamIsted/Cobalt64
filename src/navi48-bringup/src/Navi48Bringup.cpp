@@ -7136,6 +7136,9 @@ void Navi48Bringup::fillCounters(Navi48Counters *out) {
 IOReturn Navi48Bringup::newUserClient(task_t owningTask, void *securityID, UInt32 type,
                                       OSDictionary *properties, IOUserClient **handler) {
 	if (!handler) return kIOReturnBadArgument;
+#if defined(N33_OBSERVE)
+	if (n33Observing && type == N48N_UC_TYPE) return kIOReturnNotPermitted;   // observe build: legacy (admin-only) client only
+#endif
 	// NATIVE S1c (0.0.601): type 'N48N' is the native user client; every other type is the legacy Navi48UserClient, exactly as before.
 	if (type == N48N_UC_TYPE) return IOAccelNavi48NativeClient::create(this, this, n48native::policy::kRouteBringup, owningTask, securityID, type, properties, handler);   // 0.0.656 (G6): the Navi48Bringup route (WindowServer, root tools); the accelerator route is Navi48MetalNub's native_open
 	auto *uc = OSTypeAlloc(Navi48UserClient);
@@ -8961,6 +8964,8 @@ void Navi48Bringup::stop(IOService *provider) {
 #if defined(N33_OBSERVE)
 	if (n33Observing) {
 		n48::uninstall_ttl_hook();
+		if (n33Bar0Map) { n33Bar0Map->release(); n33Bar0Map = nullptr; n33Bar0 = nullptr; }
+		dev.rmmio = nullptr; dev.rmmioSize = 0;
 		unmapRegisters();
 		super::stop(provider);
 		return;
@@ -8995,6 +9000,9 @@ bool Navi48Bringup::startN33Observe() {
 	if (!mapRegisters()) { N48LOG("n33: BAR5 unavailable"); return false; }
 	if (!probeMemSize()) { unmapRegisters(); return false; }
 	if (loadOnDieDiscovery()) surveyIPs();
+	dev.rmmio = rmmio; dev.rmmioSize = rmmioSize;   // stage 2a: RegRead works through the device context
+	n33SnapshotScanout();
+	if (!n33MapBar0()) N48LOG("n33: BAR0 not mapped; BAR0 actions will refuse");
 	gNavi48Ttl.bind(this);
 	n48::TtlHookResult hook = n48::install_ttl_hook(pciDevice, &gNavi48Ttl);
 	N48LOG("n33: TTL hook %s (%s)", hook.installed ? "installed" : "NOT installed", hook.why);
@@ -9002,6 +9010,173 @@ bool Navi48Bringup::startN33Observe() {
 	setProperty("N33,TtlHookInstalled", hook.installed);
 	registerService();
 	return true;
+}
+
+// ---- N33 stage 2a: guarded access for the flip experiments ------------------------------------
+// Navi 33 absolute dword addresses (DCN 3.2.1 segment 2 = 0x34C0, measured on the card).
+namespace {
+constexpr uint32_t kN33FbLocationBase = 0x3935, kN33FbOffset = 0x3937;
+constexpr uint32_t kN33Hubp0Viewport  = 0x3AAA;   // HUBP0_DCSURF_PRI_VIEWPORT_DIMENSION
+constexpr uint32_t kN33Hubp0Pitch     = 0x3AC7;   // HUBPREQ0_DCSURF_SURFACE_PITCH (pixels - 1)
+constexpr uint32_t kN33Hubp0Addr      = 0x3ACA;   // HUBPREQ0_DCSURF_PRIMARY_SURFACE_ADDRESS (writing it latches)
+constexpr uint32_t kN33Hubp0AddrHigh  = 0x3ACB;
+constexpr uint32_t kN33Hubp0FlipCtl   = 0x3ADB;   // HUBPREQ0_DCSURF_FLIP_CONTROL
+constexpr uint32_t kN33CwBase = 0x3665, kN33CwTop = 0x366D, kN33CwOffset = 0x3675;   // REGION3_CW0..7
+constexpr uint32_t kN33RegionOffset = 0x3656, kN33RegionTop = 0x3661;                 // REGION4..6
+constexpr uint64_t kN33WriteFloor = 16ull << 20;    // nothing below 16 MiB is ever written
+constexpr uint64_t kN33Margin     = 64ull << 10;
+constexpr uint64_t kN33MaxXfer    = 64ull << 20;
+enum : uint32_t { kN33Status = 0, kN33RegWrite = 1, kN33Bar0Read = 2, kN33Bar0Write = 3,
+                  kN33Bar0Copy = 4, kN33Bar0Fill = 5, kN33Protected = 6 };
+struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6
+}
+
+void Navi48Bringup::n33SnapshotScanout() {
+	n33FbBase   = (uint64_t)(rmmio[kN33FbLocationBase] & 0x00FFFFFF) << 24;
+	n33FbOffset = (uint64_t)(rmmio[kN33FbOffset] & 0x00FFFFFF) << 24;
+	const uint64_t addr = ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr];
+	const uint64_t pitchPx = (rmmio[kN33Hubp0Pitch] & 0x3FFF) + 1;
+	const uint64_t height = rmmio[kN33Hubp0Viewport] >> 16;
+	n33GopOff = addr - n33FbBase;
+	n33GopLen = (pitchPx * 4 * height + 0xFFF) & ~0xFFFull;
+	N48LOG("n33: FB base %#llx, FB offset %#llx, GOP scanout at VRAM %#llx len %#llx (pitch %llu px, %llu lines)",
+	       n33FbBase, n33FbOffset, n33GopOff, n33GopLen, pitchPx, height);
+}
+
+bool Navi48Bringup::n33MapBar0() {
+	IODeviceMemory *bar = pciDevice->getDeviceMemoryWithRegister(kIOPCIConfigBaseAddress0);
+	if (!bar) return false;
+	n33Bar0Map = bar->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapInhibitCache);
+	if (!n33Bar0Map) return false;
+	n33Bar0 = reinterpret_cast<volatile uint8_t *>(n33Bar0Map->getVirtualAddress());
+	n33Bar0Size = n33Bar0Map->getLength();
+	N48LOG("n33: BAR0 mapped uncached, %llu MiB", n33Bar0Size >> 20);
+	return n33Bar0 != nullptr;
+}
+
+// Every VRAM range that must never be written: the GOP's scanout as found at start and each
+// enabled DMCUB window, read live so a window DMCUB moves is still covered.
+static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uint64_t gopOff, uint64_t gopLen,
+                              N33Range *out, unsigned max) {
+	unsigned n = 0;
+	auto add = [&](uint64_t gpu, uint64_t len, uint32_t kind) {
+		if (n >= max || gpu < fbOffset || len == 0) return;   // below fbOffset: not VRAM
+		uint64_t off = gpu - fbOffset;
+		uint64_t lo = off > kN33Margin ? off - kN33Margin : 0;
+		out[n++] = { lo & ~0xFFFull, ((off + len + kN33Margin) - (lo & ~0xFFFull) + 0xFFF) & ~0xFFFull, kind };
+	};
+	if (n < max) out[n++] = { gopOff, gopLen, 0 };
+	for (uint32_t i = 0; i < 8; i++) {
+		const uint32_t top = r[kN33CwTop + i];
+		if (!(top & 0x80000000u)) continue;
+		const uint32_t base = r[kN33CwBase + i], t = top & 0x1FFFFFFF;
+		const uint64_t gpu = ((uint64_t)r[kN33CwOffset + 2 * i + 1] << 32) | r[kN33CwOffset + 2 * i];
+		add(gpu, t >= base ? (uint64_t)(t - base) + 1 : 0, 1 + i);
+	}
+	for (uint32_t i = 0; i < 3; i++) {
+		const uint32_t top = r[kN33RegionTop + i];
+		if (!(top & 0x80000000u)) continue;
+		const uint64_t gpu = ((uint64_t)r[kN33RegionOffset + 2 * i + 1] << 32) | r[kN33RegionOffset + 2 * i];
+		add(gpu, (uint64_t)(top & 0x1FFFFFFF) + 1, 9 + i);
+	}
+	return n;
+}
+
+bool Navi48Bringup::n33WriteAllowed(uint64_t off, uint64_t len, uint64_t *why) const {
+	*why = 0;
+	if (!n33Bar0 || len == 0 || (off & 3) || (len & 3) || len > kN33MaxXfer) { *why = 1; return false; }
+	if (off < kN33WriteFloor || off > n33Bar0Size || len > n33Bar0Size - off) { *why = 2; return false; }
+	N33Range rs[16];
+	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16);
+	for (unsigned i = 0; i < n; i++)
+		if (off < rs[i].off + rs[i].len && rs[i].off < off + len) { *why = 100 + rs[i].kind; return false; }   // off + len <= n33Bar0Size here
+	return true;
+}
+
+IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	auto need = [&](uint32_t k) { return inCount >= k; };
+	uint64_t why = 0;
+	switch (action) {
+	case kN33Status: {
+		N33Range rs[16];
+		put(0, n33Bar0Size); put(1, n33FbBase); put(2, n33FbOffset); put(3, n33GopOff); put(4, n33GopLen);
+		put(5, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
+		put(6, rmmio[kN33Hubp0Pitch]); put(7, rmmio[kN33Hubp0FlipCtl]);
+		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16));
+		return kIOReturnSuccess;
+	}
+	case kN33Protected: {
+		if (!need(1)) return kIOReturnBadArgument;
+		N33Range rs[16];
+		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16);
+		if (in[0] >= n) return kIOReturnNotFound;
+		put(0, rs[in[0]].off); put(1, rs[in[0]].len); put(2, rs[in[0]].kind);
+		return kIOReturnSuccess;
+	}
+	case kN33RegWrite: {
+		if (!need(2)) return kIOReturnBadArgument;
+		const uint32_t reg = (uint32_t)in[0], val = (uint32_t)in[1];
+		if (reg == kN33Hubp0Addr) {
+			// The low write latches the flip: only to the GOP surface or a range we may write.
+			const uint64_t off = ((((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | val) - n33FbBase);
+			if (off != n33GopOff && !n33WriteAllowed(off, n33GopLen, &why)) {
+				N48LOG("n33: refused HUBP0 address -> VRAM %#llx (why %llu)", off, why);
+				put(0, why); return kIOReturnNotPermitted;
+			}
+		} else if (reg == kN33Hubp0AddrHigh) {
+			if (val != rmmio[kN33Hubp0AddrHigh]) { put(0, 3); return kIOReturnNotPermitted; }   // stay in this 4 GiB
+		} else if (reg == kN33Hubp0FlipCtl) {
+			if (val & ~0x3u) { put(0, 4); return kIOReturnNotPermitted; }   // UPDATE_LOCK and FLIP_TYPE only
+		} else if (reg == kN33Hubp0Pitch) {
+			if ((val & 0x3FFF) != (rmmio[kN33Hubp0Pitch] & 0x3FFF)) { put(0, 5); return kIOReturnNotPermitted; }
+		} else {
+			N48LOG("n33: refused write to dword %#x (not on the allowlist)", reg);
+			put(0, 6); return kIOReturnNotPermitted;
+		}
+		const uint32_t before = rmmio[reg];
+		rmmio[reg] = val;
+		N48LOG("n33: wrote dword %#x: %#x -> %#x (reads back %#x)", reg, before, val, rmmio[reg]);
+		put(0, 0); put(1, before); put(2, rmmio[reg]);
+		return kIOReturnSuccess;
+	}
+	case kN33Bar0Read: {
+		if (!need(1) || !n33Bar0 || (in[0] & 3) || in[0] > n33Bar0Size || n33Bar0Size - in[0] < 4) return kIOReturnBadArgument;
+		put(0, *reinterpret_cast<volatile uint32_t *>(n33Bar0 + in[0]));
+		return kIOReturnSuccess;
+	}
+	case kN33Bar0Write: {
+		if (!need(2)) return kIOReturnBadArgument;
+		if (!n33WriteAllowed(in[0], 4, &why)) { put(0, why); return kIOReturnNotPermitted; }
+		*reinterpret_cast<volatile uint32_t *>(n33Bar0 + in[0]) = (uint32_t)in[1];
+		put(0, 0);
+		return kIOReturnSuccess;
+	}
+	case kN33Bar0Copy: {   // in: src, dst, len
+		if (!need(3)) return kIOReturnBadArgument;
+		const uint64_t src = in[0], dst = in[1], len = in[2];
+		if ((src & 3) || src > n33Bar0Size || len > n33Bar0Size - src) { put(0, 7); return kIOReturnNotPermitted; }
+		if (!n33WriteAllowed(dst, len, &why)) { put(0, why); return kIOReturnNotPermitted; }
+		if (src < dst + len && dst < src + len) { put(0, 8); return kIOReturnNotPermitted; }
+		auto *s = reinterpret_cast<volatile uint32_t *>(n33Bar0 + src);
+		auto *d = reinterpret_cast<volatile uint32_t *>(n33Bar0 + dst);
+		for (uint64_t i = 0; i < len / 4; i++) d[i] = s[i];
+		N48LOG("n33: copied VRAM %#llx -> %#llx, %llu bytes", src, dst, len);
+		put(0, 0);
+		return kIOReturnSuccess;
+	}
+	case kN33Bar0Fill: {   // in: dst, len, value
+		if (!need(3)) return kIOReturnBadArgument;
+		if (!n33WriteAllowed(in[0], in[1], &why)) { put(0, why); return kIOReturnNotPermitted; }
+		auto *d = reinterpret_cast<volatile uint32_t *>(n33Bar0 + in[0]);
+		for (uint64_t i = 0; i < in[1] / 4; i++) d[i] = (uint32_t)in[2];
+		N48LOG("n33: filled VRAM %#llx, %llu bytes with %#x", in[0], in[1], (uint32_t)in[2]);
+		put(0, 0);
+		return kIOReturnSuccess;
+	}
+	default:
+		return kIOReturnUnsupported;
+	}
 }
 #endif
 
