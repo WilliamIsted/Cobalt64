@@ -63,7 +63,9 @@ static int call(uint64_t action, const uint64_t *args, uint32_t n, uint64_t *out
 	uint32_t got = outn;
 	kern_return_t kr = n33(action, args, n, out, &got);
 	if (kr == kIOReturnNotPermitted) {
-		fprintf(stderr, "refused: %s (why %llu)\n", whyName(out[0]), (unsigned long long)out[0]);
+		// IOKit copies no scalar output back on an error return, so out[0] is not the kext's reason.
+		fprintf(stderr, "refused; the kext logs the reason: "
+		        "log show --last 2m --predicate 'process == \"kernel\"' | grep 'n33: refused', then n33ctl why <code>\n");
 		return 1;
 	}
 	if (kr != kIOReturnSuccess) { fprintf(stderr, "call failed: 0x%x\n", kr); return 1; }
@@ -104,6 +106,7 @@ static void usage(void) {
 	    "  fill <dst> <len> <val>       fill BAR0 with a dword (guarded)\n"
 	    "  flip <bar0off>               point HUBP0 scanout at a VRAM offset (latches)\n"
 	    "  psp check|load <sos.bin> [off]  PSP 13.0.7 bootloader chain (check is read-only)\n"
+	    "  why <code>                   explain a refusal code from the kernel log (no kext needed)\n"
 	    "all offsets/dwords accept 0x.. ; writes are re-checked in the kext\n");
 }
 
@@ -269,6 +272,7 @@ static int doPsp(int argc, char **argv) {
 
 int main(int argc, char **argv) {
 	if (argc < 2) { usage(); return 2; }
+	if (!strcmp(argv[1], "why") && argc == 3) { printf("%s\n", whyName(num(argv[2]))); return 0; }
 
 	io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceNameMatching("Navi48Bringup"));
 	if (!svc) { fprintf(stderr, "Navi48Bringup not found (is the N33 observe kext loaded?)\n"); return 1; }

@@ -1,6 +1,7 @@
 //
 //  N33Framebuffer.hpp - the N33 (RX 7600 XT) framebuffer of stage 2 step 3. Answers IOFramebuffer's
-//  questions from an immutable snapshot and writes no register; the flip is the user's n33ctl flip.
+//  questions from an immutable snapshot. It writes no register itself: it asks the bringup kext
+//  (n33_fb_scanout) to point HUBP0 at its surface or back at the GOP's (n33fb::scanout_ours).
 //  Design: stage2-framebuffer-design.md. Pure decisions: amd/n33_fb_pure.h.
 //
 #ifndef N33Framebuffer_hpp
@@ -29,7 +30,10 @@ public:
 	uint32_t powerState;
 	uint32_t connPower;
 	bool pmRegistered;
+	bool enabled;          // enableController has run
+	bool onOurs;           // what the last successful n33_fb_scanout asked for
 	void initForPM();
+	void syncScanout(const char *why);
 
 	bool start(IOService *provider) override;
 	IODeviceMemory *getApertureRange(IOPixelAperture aperture) override;
@@ -56,6 +60,10 @@ public:
 // The layout gate. Returns an n33fb::GateVerdict (0 = pass); *slot gets the failing slot.
 // Run it before the nub is registered: once the personality matches, IOKit instantiates the class.
 uint32_t n33_fb_gate(uint32_t *slot);
+
+// Points HUBP0 at the framebuffer surface (ours) or the GOP scanout, through the bringup kext's guard.
+// 0 = done (or already there); else a refusal (1 bringup not observing or stopped, 2 surface not writable).
+uint32_t n33_fb_scanout(bool ours);
 
 #endif /* N33_OBSERVE */
 #endif /* N33Framebuffer_hpp */

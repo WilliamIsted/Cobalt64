@@ -89,6 +89,13 @@ inline Attr conn_attr(uint32_t a) {
 	return Attr{ kRcSuper, 0 };
 }
 
+// ---- the self-flip ----------------------------------------------------------------------------------
+// The framebuffer flips HUBP0 itself (William, 2026-10-12): our surface while it is enabled and both
+// power attributes are on, the GOP scanout otherwise. OTG, DIG and the link stay the GOP's either way.
+inline bool scanout_ours(bool enabled, uint32_t fbPower, uint32_t connPower) {
+	return enabled && fbPower != 0 && connPower != 0;
+}
+
 // ---- the layout gate ---------------------------------------------------------------------------------
 // Compares the vtable the linker built for our class with the family's real one, so a layout the SDK
 // header does not describe is refused instead of dispatched through. The eight pure slots cannot be

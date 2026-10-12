@@ -84,7 +84,7 @@ bool N33Framebuffer::start(IOService *provider) {
 	uint32_t slot = 0;
 	if (n33_fb_gate(&slot) != n33fb::kGateOk) return false;           // belt and braces: publish ran it already
 	if (n33fb::snap_valid(nub->snap) != n33fb::kSnapOk) return false;
-	snap = nub->snap; powerState = 2u; connPower = 1u; pmRegistered = false;
+	snap = nub->snap; powerState = 2u; connPower = 1u; pmRegistered = false; enabled = false; onOurs = false;
 	return IOFramebuffer::start(provider);
 }
 
@@ -106,9 +106,21 @@ void N33Framebuffer::initForPM() {
 	if (p) p->setProperty("IOPMIsPowerManaged", true);
 }
 
+// HUBP0 follows n33fb::scanout_ours. A refusal leaves it where it was and is logged; the display keeps working on
+// whichever surface HUBP0 shows, so no caller fails over it.
+void N33Framebuffer::syncScanout(const char *why) {
+	const bool want = n33fb::scanout_ours(enabled, powerState, connPower);
+	if (want == onOurs) return;
+	const uint32_t r = n33_fb_scanout(want);
+	N48LOG("n33 fb: %s: HUBP0 -> %s: %s (%u)", why, want ? "our surface" : "the GOP scanout", r ? "refused" : "done", r);
+	if (r == 0) onOurs = want;
+}
+
 IOReturn N33Framebuffer::enableController() {
 	initForPM();
-	return kIOReturnSuccess;                                           // no hardware write, by design
+	enabled = true;
+	syncScanout("enableController");
+	return kIOReturnSuccess;
 }
 
 IODeviceMemory *N33Framebuffer::getApertureRange(IOPixelAperture aperture) {
@@ -175,7 +187,8 @@ IOReturn N33Framebuffer::getAttribute(IOSelect attribute, uintptr_t *value) {
 }
 IOReturn N33Framebuffer::setAttribute(IOSelect attribute, uintptr_t value) {
 	if ((uint32_t)attribute != n33fb::kAttrPower) return IOFramebuffer::setAttribute(attribute, value);
-	powerState = (uint32_t)value;                                      // recorded only
+	powerState = (uint32_t)value;
+	syncScanout("power");
 	return kIOReturnSuccess;
 }
 IOItemCount N33Framebuffer::getConnectionCount() { return 1; }
@@ -188,7 +201,8 @@ IOReturn N33Framebuffer::getAttributeForConnection(IOIndex connectIndex, IOSelec
 }
 IOReturn N33Framebuffer::setAttributeForConnection(IOIndex connectIndex, IOSelect attribute, uintptr_t value) {
 	if ((uint32_t)attribute != n33fb::kAttrPower) return IOFramebuffer::setAttributeForConnection(connectIndex, attribute, value);
-	connPower = (uint32_t)value;                                       // recorded only
+	connPower = (uint32_t)value;
+	syncScanout("connection power");
 	return kIOReturnSuccess;
 }
 bool N33Framebuffer::hasDDCConnect(IOIndex) { return false; }

@@ -8966,6 +8966,7 @@ void Navi48Bringup::stop(IOService *provider) {
 #if defined(N33_OBSERVE)
 	if (n33Observing) {
 		n48::uninstall_ttl_hook();
+		n33FbDetach();             // the framebuffer can no longer flip HUBP0
 		n33RestoreScanout();       // HUBP0 back on the GOP surface before BAR0 and the registers go away
 		if (n33Bar0Map) { n33Bar0Map->release(); n33Bar0Map = nullptr; n33Bar0 = nullptr; }
 		dev.rmmio = nullptr; dev.rmmioSize = 0;
@@ -9006,6 +9007,7 @@ bool Navi48Bringup::startN33Observe() {
 	dev.rmmio = rmmio; dev.rmmioSize = rmmioSize;   // stage 2a: RegRead works through the device context
 	n33SnapshotScanout();
 	if (!n33MapBar0()) N48LOG("n33: BAR0 not mapped; BAR0 actions will refuse");
+	n33FbAttach();
 	gNavi48Ttl.bind(this);
 	n48::TtlHookResult hook = n48::install_ttl_hook(pciDevice, &gNavi48Ttl);
 	N48LOG("n33: TTL hook %s (%s)", hook.installed ? "installed" : "NOT installed", hook.why);
@@ -9059,6 +9061,48 @@ void Navi48Bringup::n33RestoreScanout() {
 	rmmio[kN33Hubp0AddrHigh] = (uint32_t)(gpu >> 32);
 	rmmio[kN33Hubp0Addr] = (uint32_t)gpu;
 	N48LOG("n33: stop: HUBP0 returned to the GOP scanout (VRAM %#llx)", n33GopOff);
+}
+
+// The self-flip (stage 2 step 3, William 2026-10-12). N33Framebuffer calls n33_fb_scanout from the
+// IOGraphics work loop; stop() may run on another thread, so the owner is cleared under the lock before
+// the registers go away. ponytail: the lock is allocated once and never freed (one IOLock per kext load);
+// free it in the kext's module stop if load/unload cycles ever matter.
+static IOLock        *gN33FbLock  { nullptr };
+static Navi48Bringup *gN33FbOwner { nullptr };
+
+void Navi48Bringup::n33FbAttach() {
+	if (!gN33FbLock) gN33FbLock = IOLockAlloc();
+	if (!gN33FbLock || !n33Bar0) return;
+	IOLockLock(gN33FbLock); gN33FbOwner = this; IOLockUnlock(gN33FbLock);
+}
+
+void Navi48Bringup::n33FbDetach() {
+	if (!gN33FbLock) return;
+	IOLockLock(gN33FbLock); if (gN33FbOwner == this) gN33FbOwner = nullptr; IOLockUnlock(gN33FbLock);
+}
+
+// HUBP0 to our surface (re-checked against the live protected ranges) or to the GOP scanout. Same two
+// registers, same order as n33RestoreScanout and `n33ctl flip`: HIGH, then LOW (which latches).
+uint32_t Navi48Bringup::n33ScanoutTo(bool ours) {
+	uint64_t why = 0;
+	if (ours && !n33WriteAllowed(n33fb::kSurfOff, n33fb::kBytes, &why)) {
+		N48LOG("n33: refused HUBP0 -> our surface (why %llu)", why);
+		return 2;
+	}
+	const uint64_t gpu = n33FbBase + (ours ? n33fb::kSurfOff : n33GopOff);
+	const uint64_t cur = ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr];
+	if (cur == gpu) return 0;
+	rmmio[kN33Hubp0AddrHigh] = (uint32_t)(gpu >> 32);
+	rmmio[kN33Hubp0Addr] = (uint32_t)gpu;
+	return 0;
+}
+
+uint32_t n33_fb_scanout(bool ours) {
+	if (!gN33FbLock) return 1;
+	IOLockLock(gN33FbLock);
+	const uint32_t r = gN33FbOwner ? gN33FbOwner->n33ScanoutTo(ours) : 1u;
+	IOLockUnlock(gN33FbLock);
+	return r;
 }
 
 bool Navi48Bringup::n33MapBar0() {

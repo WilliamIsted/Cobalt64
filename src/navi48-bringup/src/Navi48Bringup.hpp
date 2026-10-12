@@ -57,6 +57,7 @@ public:
 #if defined(N33_OBSERVE)
 	// N33 stage 2a: guarded runtime access for the display flip experiments (n33ctl).
 	bool n33IsObserving() const { return n33Observing; }
+	uint32_t n33ScanoutTo(bool ours);   // the self-flip; called only by n33_fb_scanout, under its lock
 	IOReturn n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount);
 #endif
 	// Navi48Ttl answers Apple's queryHwBlockRegisterBase straight out of this.
@@ -130,6 +131,8 @@ private:
 	uint32_t          n33SurfCfg  { 0 };   // HUBP0 SURFACE_CONFIG at start: logged, never judged
 	IOReturn n33FbPublish(uint64_t *out, uint32_t outCount);
 	void n33RestoreScanout();
+	void n33FbAttach();
+	void n33FbDetach();
 #endif
 	// --- stages ---
 	bool probeMemSize();

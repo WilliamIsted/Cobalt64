@@ -1,5 +1,4 @@
-// n33_fb_test.cpp: host test of amd/n33_fb_pure.h and source pins on N33Framebuffer.cpp.
-//   clang++ -std=c++17 -Wall -Wextra -Werror -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
+// n33_fb_test.cpp: host test of amd/n33_fb_pure.h and source pins on N33Framebuffer.cpp.//   clang++ -std=c++17 -Wall -Wextra -Werror -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
 //       -I src/navi48-bringup/src/amd src/navi48-bringup/tests/n33_fb_test.cpp -o $SCRATCH/n33_fb_test && $SCRATCH/n33_fb_test <FORK>
 #include <cstdio>
 #include <cstring>
@@ -56,6 +55,15 @@ static void answer_cases() {
 	CHECK(conn_attr(0x12345678).rc == kRcSuper);
 }
 
+static void scanout_cases() {
+	using namespace n33fb;
+	CHECK(scanout_ours(true, 2, 1));                // enabled and on: our surface
+	CHECK(scanout_ours(true, 1, 1));                // any non-zero power state counts as on
+	CHECK(!scanout_ours(false, 2, 1));              // not enabled yet: the GOP's
+	CHECK(!scanout_ours(true, 0, 1));               // framebuffer powered off
+	CHECK(!scanout_ours(true, 2, 0));               // connection powered off
+}
+
 struct GateRig {
 	std::vector<uintptr_t> fam, ours;
 	std::vector<uint16_t> ovr = { 0, 1, 7, 184, 309 };
@@ -95,15 +103,19 @@ static void source_pins(const std::string &fork) {
 	CHECK(f.good());
 	std::stringstream ss; ss << f.rdbuf();
 	const std::string src = ss.str();
-	// the framebuffer never touches a register: no mapped-register access, no HUBP0 names, no n33Call
+	// the framebuffer touches no register itself: no mapped-register access, no HUBP0 names, no n33Call;
+	// the self-flip goes through n33_fb_scanout (the bringup kext's guard) and nothing else
 	CHECK(src.find("rmmio") == std::string::npos);
 	CHECK(src.find("kN33Hubp0") == std::string::npos);
 	CHECK(src.find("n33Call") == std::string::npos);
+	CHECK(src.find("n33ScanoutTo") == std::string::npos);
 	CHECK(src.find("n33_fb_gate") != std::string::npos);
+	CHECK(src.find("n33_fb_scanout(want)") != std::string::npos);
+	CHECK(src.find("n33fb::scanout_ours(") != std::string::npos);
 }
 
 int main(int argc, char **argv) {
-	snapshot_cases(); answer_cases(); gate_cases();
+	snapshot_cases(); answer_cases(); scanout_cases(); gate_cases();
 	if (argc > 1) source_pins(argv[1]); else { printf("FAIL: pass FORK as argv[1]\n"); fails++; }
 	if (fails) { printf("%d FAILED\n", fails); return 1; }
 	printf("n33_fb_test: all passed\n");
