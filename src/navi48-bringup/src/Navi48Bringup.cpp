@@ -9,6 +9,7 @@
 #include "apple/pairing_policy.h"
 #include "regs.hpp"
 #include "amd/amdgpu_discovery.h"
+#include "amd/n33_psp_pure.h"
 #include "amd/amdgpu_init.h"
 #include "amd/amdgpu_regs.h"
 #include "amd/amdgpu_sdma.h"
@@ -9152,6 +9153,30 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 			if (val & ~0x3u) { put(0, 4); return kIOReturnNotPermitted; }   // UPDATE_LOCK and FLIP_TYPE only
 		} else if (reg == kN33Hubp0Pitch) {
 			if ((val & 0x3FFF) != (rmmio[kN33Hubp0Pitch] & 0x3FFF)) { put(0, 5); return kIOReturnNotPermitted; }
+		} else if (reg == n33psp::kC2pmsg36) {
+			// PSP bootloader window (stage 3 step 1): a whole 1 MiB inside BAR0 that the existing guard
+			// lets us write (GOP scanout, DMCUB windows, the 16 MiB floor), and not our framebuffer surface,
+			// which n33WriteAllowed does not protect because the display path writes it.
+			uint64_t woff = 0;
+			if (!n33psp::window_from_reg(val, n33FbBase, n33Bar0Size, &woff) || !n33WriteAllowed(woff, n33psp::kWinBytes, &why)) {
+				const uint64_t r = why ? why : (uint64_t)n33psp::kWhyWindow;
+				N48LOG("n33: refused PSP window C2PMSG_36 = %#x (why %llu)", val, r);
+				put(0, r); return kIOReturnNotPermitted;
+			}
+			if (n33psp::overlaps(woff, n33psp::kWinBytes, n33fb::kSurfOff, n33fb::kBytes)) {
+				N48LOG("n33: refused PSP window C2PMSG_36 = %#x: overlaps the framebuffer surface", val);
+				put(0, n33psp::kWhySurface); return kIOReturnNotPermitted;
+			}
+			n33PspWinReg = val;
+		} else if (reg == n33psp::kC2pmsg35) {
+			// PSP bootloader command: one of four, sOS down, bootloader idle, and the live C2PMSG_36 is
+			// still the window validated above.
+			const uint32_t w = n33psp::cmd_write_check(val, rmmio[reg], rmmio[n33psp::kC2pmsg81],
+			                                           rmmio[n33psp::kC2pmsg36], n33PspWinReg);
+			if (w != n33psp::kWhyOk) {
+				N48LOG("n33: refused PSP command C2PMSG_35 = %#x (why %u)", val, w);
+				put(0, w); return kIOReturnNotPermitted;
+			}
 		} else {
 			N48LOG("n33: refused write to dword %#x (not on the allowlist)", reg);
 			put(0, 6); return kIOReturnNotPermitted;

@@ -125,6 +125,7 @@ private:
 	uint64_t          n33FbOffset { 0 };   // DCN_VM_FB_OFFSET << 24 (DMCUB window offsets are relative to this)
 	uint64_t          n33GopOff   { 0 };   // the GOP's scanout surface at start, as a VRAM offset
 	uint64_t          n33GopLen   { 0 };
+	uint32_t          n33PspWinReg { 0 };      // C2PMSG_36 value of the validated PSP fw_pri window; 0 = none set
 	uint64_t          n33Bar0Phys { 0 };   // config-space BAR0 physical address (stage 2 step 3)
 	uint32_t          n33SurfCfg  { 0 };   // HUBP0 SURFACE_CONFIG at start: logged, never judged
 	IOReturn n33FbPublish(uint64_t *out, uint32_t outCount);
