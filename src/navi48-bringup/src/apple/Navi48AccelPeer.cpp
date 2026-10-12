@@ -13,6 +13,15 @@
 #include "gfx_subst_caps.h"   // build 0.0.484 (GLASS.md Q2 K1): kScMaxSubstBytes, with the recognition side's K2
 #include "gfx_rv92.h"         // build 0.0.536 (switch 92): which RectPosTexFast_VS image the residency copy writes
 #include "pairing_policy.h"
+
+// strnstr is exported only by com.apple.kpi.private on Sequoia 24H32, which third-party kexts
+// cannot link; this bounded search does the same job for the class-name check below.
+static bool n48_contains_n(const char *s, const char *needle, size_t n) {
+    const size_t m = strlen(needle);
+    for (size_t i = 0; i + m <= n && s[i]; i++)
+        if (strncmp(s + i, needle, m) == 0) return true;
+    return false;
+}
 #include "sc_census.h"
 #include <sys/proc.h>
 #include <IOKit/IOKitKeys.h>
@@ -3010,7 +3019,7 @@ bool Navi48AccelPeer::tryPatchAcceleratorStop() {
             }
             // Keep a few nearby names so a miss is diagnosable from one run.
             const char *cls = e->getMetaClass()->getClassName();
-            if (cls && strnstr((char *)cls, "Accel", 64) && strlen(seen) + strlen(cls) + 2 < sizeof(seen)) {
+            if (cls && n48_contains_n(cls, "Accel", 64) && strlen(seen) + strlen(cls) + 2 < sizeof(seen)) {
                 strlcat(seen, cls, sizeof(seen));
                 strlcat(seen, " ", sizeof(seen));
             }
