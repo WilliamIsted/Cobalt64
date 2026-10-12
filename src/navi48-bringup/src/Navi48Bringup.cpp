@@ -14,6 +14,7 @@
 #include "amd/amdgpu_sdma.h"
 #include "Navi48MetalNub.hpp"   // 0.0.610: terminate a published Metal nub at stop
 #include "Navi48DisplayNub.hpp"       // 0.0.652 (M5): fbpublish 2
+#include "N33Framebuffer.hpp"         // N33 stage 2 step 3: the N33 framebuffer nub and layout gate
 #include <libkern/c++/OSData.h>
 #include "amd/native_s1b.h"   // 0.0.600 (native S1b): navi48-native=1, default OFF
 #include "amd/native_s1c.h"   // 0.0.612: n1c_latch_pci_bars
@@ -8964,6 +8965,7 @@ void Navi48Bringup::stop(IOService *provider) {
 #if defined(N33_OBSERVE)
 	if (n33Observing) {
 		n48::uninstall_ttl_hook();
+		n33RestoreScanout();       // HUBP0 back on the GOP surface before BAR0 and the registers go away
 		if (n33Bar0Map) { n33Bar0Map->release(); n33Bar0Map = nullptr; n33Bar0 = nullptr; }
 		dev.rmmio = nullptr; dev.rmmioSize = 0;
 		unmapRegisters();
@@ -9026,8 +9028,9 @@ constexpr uint32_t kN33RegionOffset = 0x3656, kN33RegionTop = 0x3661;           
 constexpr uint64_t kN33WriteFloor = 16ull << 20;    // nothing below 16 MiB is ever written
 constexpr uint64_t kN33Margin     = 64ull << 10;
 constexpr uint64_t kN33MaxXfer    = 64ull << 20;
+constexpr uint32_t kN33Hubp0SurfCfg   = 0x3AA5;   // HUBP0_DCSURF_SURFACE_CONFIG (reglist.tsv)
 enum : uint32_t { kN33Status = 0, kN33RegWrite = 1, kN33Bar0Read = 2, kN33Bar0Write = 3,
-                  kN33Bar0Copy = 4, kN33Bar0Fill = 5, kN33Protected = 6 };
+                  kN33Bar0Copy = 4, kN33Bar0Fill = 5, kN33Protected = 6, kN33FbPublish = 7 };
 struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6
 }
 
@@ -9041,6 +9044,20 @@ void Navi48Bringup::n33SnapshotScanout() {
 	n33GopLen = (pitchPx * 4 * height + 0xFFF) & ~0xFFFull;
 	N48LOG("n33: FB base %#llx, FB offset %#llx, GOP scanout at VRAM %#llx len %#llx (pitch %llu px, %llu lines)",
 	       n33FbBase, n33FbOffset, n33GopOff, n33GopLen, pitchPx, height);
+	n33SurfCfg = rmmio[kN33Hubp0SurfCfg];
+	N48LOG("n33: HUBP0 SURFACE_CONFIG = %#x", n33SurfCfg);
+}
+
+// stop(): if HUBP0 is not on the GOP scanout, put it back. Same two registers, same order and same
+// values as an allowlisted `n33ctl flip <gop offset>`.
+void Navi48Bringup::n33RestoreScanout() {
+	if (!rmmio || !n33Bar0Map) return;
+	const uint64_t gpu = n33FbBase + n33GopOff;
+	const uint64_t cur = ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr];
+	if (cur == gpu) return;
+	rmmio[kN33Hubp0AddrHigh] = (uint32_t)(gpu >> 32);
+	rmmio[kN33Hubp0Addr] = (uint32_t)gpu;
+	N48LOG("n33: stop: HUBP0 returned to the GOP scanout (VRAM %#llx)", n33GopOff);
 }
 
 bool Navi48Bringup::n33MapBar0() {
@@ -9050,6 +9067,8 @@ bool Navi48Bringup::n33MapBar0() {
 	if (!n33Bar0Map) return false;
 	n33Bar0 = reinterpret_cast<volatile uint8_t *>(n33Bar0Map->getVirtualAddress());
 	n33Bar0Size = n33Bar0Map->getLength();
+	n33Bar0Phys = bar->getPhysicalAddress();
+	N48LOG("n33: BAR0 physical %#llx", n33Bar0Phys);
 	N48LOG("n33: BAR0 mapped uncached, %llu MiB", n33Bar0Size >> 20);
 	return n33Bar0 != nullptr;
 }
@@ -9104,8 +9123,11 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 		put(5, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
 		put(6, rmmio[kN33Hubp0Pitch]); put(7, rmmio[kN33Hubp0FlipCtl]);
 		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16));
+		put(9, n33SurfCfg); put(10, n33Bar0Phys);
 		return kIOReturnSuccess;
 	}
+	case kN33FbPublish:
+		return n33FbPublish(out, outCount);
 	case kN33Protected: {
 		if (!need(1)) return kIOReturnBadArgument;
 		N33Range rs[16];
@@ -9177,6 +9199,36 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 	default:
 		return kIOReturnUnsupported;
 	}
+}
+
+// Stage 2 step 3: run the layout gate, judge the live GOP state, and publish the framebuffer nub.
+// Writes no register. out[0] status: 0 ok, 1 not ready, 2 already published, 3 HUBP0 not on the GOP
+// scanout, 4 layout gate (out[1] verdict, out[2] slot), 5 snapshot (out[1] verdict), 6 protected
+// range (out[1] why), 7 publish failed.
+IOReturn Navi48Bringup::n33FbPublish(uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	if (!n33Observing || !n33Bar0 || n33Bar0Phys == 0) { put(0, 1); return kIOReturnNotReady; }
+	if (N33DisplayNub::published()) { put(0, 2); return kIOReturnBusy; }
+	const uint64_t cur = (((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]) - n33FbBase;
+	if (cur != n33GopOff) { put(0, 3); return kIOReturnNotPermitted; }          // HUBP0 must be on the GOP scanout
+	uint32_t slot = 0;
+	const uint32_t gv = n33_fb_gate(&slot);
+	if (gv != n33fb::kGateOk) { put(0, 4); put(1, gv); put(2, slot); return kIOReturnNotPermitted; }
+	n33fb::Snap s = {};
+	s.bar0Phys = n33Bar0Phys; s.bar0Size = n33Bar0Size; s.surfOff = n33fb::kSurfOff;
+	s.gopOff = n33GopOff; s.gopLen = n33GopLen;
+	s.w = (rmmio[kN33Hubp0Pitch] & 0x3FFF) + 1;                                  // pixels, as n33SnapshotScanout reads it
+	s.h = rmmio[kN33Hubp0Viewport] >> 16;
+	s.pitchBytes = s.w * 4;
+	s.surfCfg = n33SurfCfg;
+	const uint32_t sv = n33fb::snap_valid(s);
+	if (sv != n33fb::kSnapOk) { put(0, 5); put(1, sv); return kIOReturnNotPermitted; }
+	uint64_t why = 0;
+	if (!n33WriteAllowed(s.surfOff, n33fb::kBytes, &why)) { put(0, 6); put(1, why); return kIOReturnNotPermitted; }
+	if (!N33DisplayNub::publish(pciDevice, s)) { put(0, 7); return kIOReturnError; }
+	N48LOG("n33: framebuffer nub published (surface VRAM %#llx, BAR0 phys %#llx)", s.surfOff, s.bar0Phys);
+	put(0, 0);
+	return kIOReturnSuccess;
 }
 #endif
 

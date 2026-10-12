@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 enum { kSelRegRead = 7, kSelN33 = 0x4e33 };
-enum { aStatus = 0, aRegWrite = 1, aBar0Read = 2, aBar0Write = 3, aCopy = 4, aFill = 5, aProtected = 6 };
+enum { aStatus = 0, aRegWrite = 1, aBar0Read = 2, aBar0Write = 3, aCopy = 4, aFill = 5, aProtected = 6, aFbPublish = 7 };
 enum { kHubp0Pitch = 0x3AC7, kHubp0Addr = 0x3ACA, kHubp0AddrHigh = 0x3ACB, kHubp0FlipCtl = 0x3ADB };
 
 static io_connect_t conn;
@@ -64,8 +64,8 @@ static int call(uint64_t action, const uint64_t *args, uint32_t n, uint64_t *out
 }
 
 static int doStatus(void) {
-	uint64_t o[9] = {0};
-	if (call(aStatus, NULL, 0, o, 9)) return 1;
+	uint64_t o[11] = {0};
+	if (call(aStatus, NULL, 0, o, 11)) return 1;
 	printf("BAR0 size        %llu MiB (%#llx)\n", o[0] >> 20, o[0]);
 	printf("FB base (GPU)    %#llx\n", o[1]);
 	printf("FB offset        %#llx\n", o[2]);
@@ -73,6 +73,8 @@ static int doStatus(void) {
 	printf("HUBP0 surface    GPU %#llx (VRAM %#llx)\n", o[5], o[5] - o[1]);
 	printf("HUBP0 pitch reg  %#llx (%llu px)\n", o[6], (o[6] & 0x3FFF) + 1);
 	printf("HUBP0 flip ctl   %#llx\n", o[7]);
+	printf("HUBP0 surf cfg   %#llx\n", o[9]);
+	printf("BAR0 physical    %#llx\n", o[10]);
 	printf("protected ranges %llu\n", o[8]);
 	for (uint64_t i = 0; i < o[8]; i++) {
 		uint64_t a = i, p[3] = {0};
@@ -158,6 +160,18 @@ int main(int argc, char **argv) {
 			if (!rc) rc = call(aRegWrite, lo, 2, o, 3);
 			if (!rc) printf("HUBP0 scanout -> GPU %#llx (VRAM %#llx)\n", gpu, num(argv[2]));
 		}
+	} else if (!strcmp(cmd, "fbpublish") && argc == 2) {
+		static const char *why[] = { "published", "not ready (no BAR0 or not observing)", "already published",
+		                             "HUBP0 is not on the GOP scanout", "layout gate refused", "snapshot refused",
+		                             "surface range is protected", "publish failed" };
+		uint32_t got = 3;
+		kr = n33(aFbPublish, NULL, 0, o, &got);
+		uint64_t st = o[0];
+		printf("fbpublish: %s (status %llu)\n", st < 8 ? why[st] : "?", (unsigned long long)st);
+		if (st == 4) printf("  gate verdict %llu at slot %llu (1 fam size, 2 our size, 3 inherited slot, 4 override, 5 terminator, 6 pin)\n", (unsigned long long)o[1], (unsigned long long)o[2]);
+		if (st == 5) printf("  snapshot verdict %llu (1 bar0, 2 align, 3 range, 4 geom, 5 overlap)\n", (unsigned long long)o[1]);
+		if (st == 6) printf("  refusal reason %llu\n", (unsigned long long)o[1]);
+		rc = (kr == kIOReturnSuccess && st == 0) ? 0 : 1;
 	} else {
 		usage(); rc = 2;
 	}
