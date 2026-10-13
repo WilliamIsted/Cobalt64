@@ -117,6 +117,7 @@ static void usage(void) {
 	    "  flip <bar0off>               point HUBP0 scanout at a VRAM offset (latches)\n"
 	    "  psp check|load <sos.bin> [off]  PSP 13.0.7 bootloader chain (check is read-only)\n"
 	    "  psp2 check <fwdir> <smu.bin> | 2a <fwdir> <smu.bin> | 2b <smu.bin> --power-cycled [--size-ok] | 2c <fwdir> | state | destroy\n"
+	    "                               psp2 send <cmd> <type> <off> <size> | ring: raw, for psp2-negative.sh only\n"
 	    "                               PSP milestone 2: KM ring, TOC, TMR, GC firmware, RLC autoload\n"
 	    "  why <code>                   explain a refusal code from the kernel log (no kext needed)\n"
 	    "all offsets/dwords accept 0x.. ; writes are re-checked in the kext\n");
@@ -441,6 +442,19 @@ static int doPsp2(int argc, char **argv) {
 	const uint64_t fbBase = s[1];
 
 	if (!strcmp(sub, "state")) { p2printState(st); return 0; }
+	// Raw access for the negative tests (tools/n33/psp2-negative.sh). The kext checks every call; a command
+	// it accepts is really sent, so use these only for commands that must be refused.
+	if (!strcmp(sub, "send") && argc == 7) {
+		const char *names[] = { "?", "LOAD_TOC", "LOAD_IP_FW", "SETUP_TMR", "AUTOLOAD_RLC" };
+		const uint64_t c = num(argv[3]);
+		return p2cmd((uint32_t)c, (uint32_t)num(argv[4]), num(argv[5]), num(argv[6]), c <= 4 ? names[c] : "?", o);
+	}
+	if (!strcmp(sub, "ring")) {
+		uint64_t r[3] = {0};
+		if (call(aPspRing, NULL, 0, r, 3)) return 1;
+		printf("ring create: %s, C2PMSG_64 %#llx\n", r[2] ? "ok" : "NO ANSWER", r[1]);
+		return r[2] ? 0 : 1;
+	}
 	if (!strcmp(sub, "destroy")) {
 		uint64_t d[3] = {0};
 		if (call(aPspDestroy, NULL, 0, d, 3)) return 1;
@@ -537,7 +551,7 @@ static int doPsp2(int argc, char **argv) {
 		if (rc) return 1;
 		if (p2cmd(cAutoload, 0, 0, 0, "AUTOLOAD_RLC", o)) return 1;
 		uint32_t boot = 0, cp = 0, imu = 0;
-		for (int t = 0; t < 100; t++) {                       // Linux: usec_timeout, about 100 ms
+		for (int t = 0; t < 2000; t++) {                      // 2 s: Linux polls 100 ms, but only after at least 79 ms more of SMU init on this card (stage3-smu-handshake-design.md D1)
 			if (pspRd(kRlcBootload, &boot) || pspRd(kCpStat, &cp)) return 1;
 			if ((boot & 0x80000000u) && cp == 0) break;
 			usleep(1000);
@@ -624,12 +638,13 @@ int main(int argc, char **argv) {
 		                             "surface range is protected", "publish failed" };
 		uint32_t got = 3;
 		kr = n33(aFbPublish, NULL, 0, o, &got);
+		if (kr != kIOReturnSuccess) { fprintf(stderr, "fbpublish: call failed 0x%x\n", kr); IOServiceClose(conn); return 1; }
 		uint64_t st = o[0];
 		printf("fbpublish: %s (status %llu)\n", st < 8 ? why[st] : "?", (unsigned long long)st);
 		if (st == 4) printf("  gate verdict %llu at slot %llu (1 fam size, 2 our size, 3 inherited slot, 4 override, 5 terminator, 6 pin)\n", (unsigned long long)o[1], (unsigned long long)o[2]);
 		if (st == 5) printf("  snapshot verdict %llu (1 bar0, 2 align, 3 range, 4 geom, 5 overlap)\n", (unsigned long long)o[1]);
 		if (st == 6) printf("  refusal reason %llu\n", (unsigned long long)o[1]);
-		rc = (kr == kIOReturnSuccess && st == 0) ? 0 : 1;
+		rc = st == 0 ? 0 : 1;
 	} else {
 		usage(); rc = 2;
 	}

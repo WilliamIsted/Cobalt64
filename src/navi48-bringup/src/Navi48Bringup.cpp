@@ -9440,18 +9440,19 @@ uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off
 }
 
 // Stage 2 step 3: run the layout gate, judge the live GOP state, and publish the framebuffer nub.
-// Writes no register. out[0] status: 0 ok, 1 not ready, 2 already published, 3 HUBP0 not on the GOP
+// Writes no register. Always returns success with the outcome in out[0], because IOKit copies no
+// scalar output back on an error return. out[0] status: 0 ok, 1 not ready, 2 already published, 3 HUBP0 not on the GOP
 // scanout, 4 layout gate (out[1] verdict, out[2] slot), 5 snapshot (out[1] verdict), 6 protected
 // range (out[1] why), 7 publish failed.
 IOReturn Navi48Bringup::n33FbPublish(uint64_t *out, uint32_t outCount) {
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
-	if (!n33Observing || !n33Bar0 || n33Bar0Phys == 0) { put(0, 1); return kIOReturnNotReady; }
-	if (N33DisplayNub::published()) { put(0, 2); return kIOReturnBusy; }
+	if (!n33Observing || !n33Bar0 || n33Bar0Phys == 0) { put(0, 1); return kIOReturnSuccess; }
+	if (N33DisplayNub::published()) { put(0, 2); return kIOReturnSuccess; }
 	const uint64_t cur = (((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]) - n33FbBase;
-	if (cur != n33GopOff) { put(0, 3); return kIOReturnNotPermitted; }          // HUBP0 must be on the GOP scanout
+	if (cur != n33GopOff) { put(0, 3); return kIOReturnSuccess; }          // HUBP0 must be on the GOP scanout
 	uint32_t slot = 0;
 	const uint32_t gv = n33_fb_gate(&slot);
-	if (gv != n33fb::kGateOk) { put(0, 4); put(1, gv); put(2, slot); return kIOReturnNotPermitted; }
+	if (gv != n33fb::kGateOk) { put(0, 4); put(1, gv); put(2, slot); return kIOReturnSuccess; }
 	n33fb::Snap s = {};
 	s.bar0Phys = n33Bar0Phys; s.bar0Size = n33Bar0Size; s.surfOff = n33fb::kSurfOff;
 	s.gopOff = n33GopOff; s.gopLen = n33GopLen;
@@ -9460,10 +9461,10 @@ IOReturn Navi48Bringup::n33FbPublish(uint64_t *out, uint32_t outCount) {
 	s.pitchBytes = s.w * 4;
 	s.surfCfg = n33SurfCfg;
 	const uint32_t sv = n33fb::snap_valid(s);
-	if (sv != n33fb::kSnapOk) { put(0, 5); put(1, sv); return kIOReturnNotPermitted; }
+	if (sv != n33fb::kSnapOk) { put(0, 5); put(1, sv); return kIOReturnSuccess; }
 	uint64_t why = 0;
-	if (!n33WriteAllowed(s.surfOff, n33fb::kBytes, &why)) { put(0, 6); put(1, why); return kIOReturnNotPermitted; }
-	if (!N33DisplayNub::publish(pciDevice, s)) { put(0, 7); return kIOReturnError; }
+	if (!n33WriteAllowed(s.surfOff, n33fb::kBytes, &why)) { put(0, 6); put(1, why); return kIOReturnSuccess; }
+	if (!N33DisplayNub::publish(pciDevice, s)) { put(0, 7); return kIOReturnSuccess; }
 	N48LOG("n33: framebuffer nub published (surface VRAM %#llx, BAR0 phys %#llx)", s.surfOff, s.bar0Phys);
 	put(0, 0);
 	return kIOReturnSuccess;
