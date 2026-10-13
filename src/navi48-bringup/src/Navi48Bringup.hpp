@@ -34,10 +34,12 @@
 #include "amd/amdgpu_regs.h"
 #include "amd/n33_psp2_pure.h"      // N33 milestone 2: n33psp2::State (pure, no kernel types)
 #include "amd/n33_smu_pure.h"       // N33 SMU mailbox: n33smu::State (pure, no kernel types)
+#include "amd/n33_gmc_pure.h"       // N33 GMC 11 / GART: n33gmc::State, Snap, Inputs, Rec (pure, no kernel types)
 #include "amd/n48log.h"
 #include "amd/rebar_pure.h"   // 0.0.663: Resizable BAR planning (pure)
 #include "amd/amdgpu_init.h"
 struct Navi48Counters;
+class IOBufferMemoryDescriptor;
 
 #define N48LOG(fmt, ...) ::amdgpu::n48_logf("Navi48Bringup: " fmt "\n", ##__VA_ARGS__)
 
@@ -149,6 +151,29 @@ private:
 	n33smu::State n33Smu {};
 	uint32_t n33SmuSend(uint32_t msg, uint32_t arg, uint64_t *out, uint32_t outCount);
 	uint32_t n33SmuArm(uint32_t level);
+	// N33 GMC 11 / MMHUB 3.0.2 / GFXHUB 3.0 and the GART, G0 to G6 (n33gmc::, Navi48Bringup.cpp).
+	n33gmc::State  n33Gmc {};
+	n33gmc::Snap   n33GmcSnap {};                       // taken at G0
+	n33gmc::Inputs n33GmcIn {};                         // MMHUB FB location, MEMSIZE and system aperture at G0
+	n33gmc::Rec    n33GmcJournal[n33gmc::kJournalMax] {};   // every register a step wrote, before and after
+	uint32_t       n33GmcJournalN { 0 };
+	n33gmc::Entry  n33GmcPlanBuf[n33gmc::kPlanMax] {};    // plan() output, off the kernel stack (calls are serialized)
+	uint32_t       n33GmcLastFlush { 0 };                // n33gmc::FlushBits of the last MMHUB flush
+	IOBufferMemoryDescriptor *n33GmcDummy { nullptr };   // D6: leaked at unload, never freed
+	uint64_t       n33GmcDummyPa { 0 };
+	IOBufferMemoryDescriptor *n33GmcHost[n33gmc::kHostPages] {};   // G5's pages
+	uint64_t       n33GmcHostPa[n33gmc::kHostPages] {};
+	void     n33GmcTakeSnap(n33gmc::Snap *s) const;
+	bool     n33GmcGcUp() const;
+	void     n33GmcHdpFlush();
+	uint32_t n33GmcFlush(bool gc);
+	IOBufferMemoryDescriptor *n33GmcAllocPage(uint64_t *pa, uint32_t pattern);
+	void     n33GmcPte(uint32_t slot, uint64_t pte);
+	uint32_t n33GmcStep(uint32_t step, uint64_t *out, uint32_t outCount);
+	uint32_t n33GmcMap(uint32_t slot, uint32_t count, uint32_t kind, uint64_t arg, uint64_t *out, uint32_t outCount);
+	uint32_t n33GmcUnmap(uint32_t slot, uint32_t count, uint64_t *out, uint32_t outCount);
+	uint32_t n33GmcRestore(uint64_t *out, uint32_t outCount);
+	void     n33GmcStop();
 #endif
 	// --- stages ---
 	bool probeMemSize();

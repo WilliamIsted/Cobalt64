@@ -37,6 +37,7 @@ static IOLock *gN33PspLock { nullptr };
 #include "amd/native_g4_pure.h"        // 0.0.640 (GPU-apps G4): appallow (verb 104, boot-args navi48-apps=1 + navi48-multisession=1)
 #include "dcn/navi48_fbname.hpp"
 #include <IOKit/IOLib.h>
+#include <IOKit/IOBufferMemoryDescriptor.h>   // N33 GMC: the dummy page and G5's host pages
 #include <kern/thread.h>            // current_thread() - the MM-window priority owner identity (0.0.433)
 #include <sys/proc.h>               // build 0.0.512 Part B: proc_selfpid/proc_name on the clock88w watch lines
 #include "apple/gfx_clock88.h"      // build 0.0.512 Part B: the clock88 watch (pure)
@@ -8974,6 +8975,7 @@ void Navi48Bringup::stop(IOService *provider) {
 		n33FbDetach();             // the framebuffer can no longer flip HUBP0
 		if (gN33PspLock) IOLockLock(gN33PspLock);   // no n33Call runs from here on against unmapped BARs
 		n33PspStop();              // DESTROY_RINGS if this load created the KM ring (milestone 2, D13)
+		n33GmcStop();              // GMC D6: PTEs to the dummy page and flush; the hubs keep their state
 		n33RestoreScanout();       // HUBP0 back on the GOP surface before BAR0 and the registers go away
 		if (n33Bar0Map) { n33Bar0Map->release(); n33Bar0Map = nullptr; n33Bar0 = nullptr; }
 		dev.rmmio = nullptr; dev.rmmioSize = 0;
@@ -9044,8 +9046,10 @@ constexpr uint32_t kN33Hubp0SurfCfg   = 0x3AA5;   // HUBP0_DCSURF_SURFACE_CONFIG
 enum : uint32_t { kN33Status = 0, kN33RegWrite = 1, kN33Bar0Read = 2, kN33Bar0Write = 3,
                   kN33Bar0Copy = 4, kN33Bar0Fill = 5, kN33Protected = 6, kN33FbPublish = 7,
                   kN33PspRing = 8, kN33PspCmd = 9, kN33PspDestroy = 10, kN33PspState = 11,
-                  kN33SmuSend = 12, kN33SmuArm = 13, kN33SmuState = 14 };
-struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table
+                  kN33SmuSend = 12, kN33SmuArm = 13, kN33SmuState = 14,
+                  kN33GmcState = 15, kN33GmcStep = 16, kN33GartMap = 17, kN33GartUnmap = 18, kN33GartFlush = 19,
+                  kN33GmcRestore = 20, kN33GmcPlan = 21, kN33GmcRecord = 22 };
+struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch
 }
 
 void Navi48Bringup::n33SnapshotScanout() {
@@ -9132,7 +9136,7 @@ bool Navi48Bringup::n33MapBar0() {
 // Every VRAM range that must never be written: the GOP's scanout as found at start and each
 // enabled DMCUB window, read live so a window DMCUB moves is still covered.
 static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uint64_t gopOff, uint64_t gopLen,
-                              N33Range *out, unsigned max, bool pspPages, bool smuPage) {
+                              N33Range *out, unsigned max, bool pspPages, bool smuPage, bool gmcPages) {
 	unsigned n = 0;
 	auto add = [&](uint64_t gpu, uint64_t len, uint32_t kind) {
 		if (n >= max || gpu < fbOffset || len == 0) return;   // below fbOffset: not VRAM
@@ -9156,6 +9160,7 @@ static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uin
 	}
 	if (pspPages && n < max) out[n++] = { n33psp2::kRing, n33psp2::kPspPages, 12 };   // milestone 2: the PSP's ring pages
 	if (smuPage && n < max) out[n++] = { n33smu::kTableOff, n33smu::kTableLen, 13 };    // SMU D6: PMFW writes it
+	if (gmcPages && n < max) out[n++] = { n33gmc::kOwnedOff, n33gmc::kOwnedLen, 14 };   // GMC D3: the hubs walk it
 	return n;
 }
 
@@ -9164,7 +9169,7 @@ bool Navi48Bringup::n33WriteAllowed(uint64_t off, uint64_t len, uint64_t *why) c
 	if (!n33Bar0 || len == 0 || (off & 3) || (len & 3) || len > kN33MaxXfer) { *why = 1; return false; }
 	if (off < kN33WriteFloor || off > n33Bar0Size || len > n33Bar0Size - off) { *why = 2; return false; }
 	N33Range rs[16];
-	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, n33PspPagesOwned(), n33Smu.pageOwned);
+	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned);
 	for (unsigned i = 0; i < n; i++)
 		if (off < rs[i].off + rs[i].len && rs[i].off < off + len) { *why = 100 + rs[i].kind; return false; }   // off + len <= n33Bar0Size here
 	return true;
@@ -9189,7 +9194,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		put(0, n33Bar0Size); put(1, n33FbBase); put(2, n33FbOffset); put(3, n33GopOff); put(4, n33GopLen);
 		put(5, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
 		put(6, rmmio[kN33Hubp0Pitch]); put(7, rmmio[kN33Hubp0FlipCtl]);
-		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, n33PspPagesOwned(), n33Smu.pageOwned));
+		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned));
 		put(9, n33SurfCfg); put(10, n33Bar0Phys);
 		return kIOReturnSuccess;
 	}
@@ -9198,7 +9203,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	case kN33Protected: {
 		if (!need(1)) return kIOReturnBadArgument;
 		N33Range rs[16];
-		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, n33PspPagesOwned(), n33Smu.pageOwned);
+		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned);
 		if (in[0] >= n) return kIOReturnNotFound;
 		put(0, rs[in[0]].off); put(1, rs[in[0]].len); put(2, rs[in[0]].kind);
 		return kIOReturnSuccess;
@@ -9341,6 +9346,104 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		put(3, rmmio[n33smu::kResp]); put(4, rmmio[n33smu::kMsg]); put(5, rmmio[n33smu::kArg]);
 		return kIOReturnSuccess;
 	}
+	case kN33GmcState: {          // in: 0 (kext state only, no register read) or 1 (take / show the G0 snapshot)
+		// out: flags, FB_LOCATION_BASE, TOP, FB_OFFSET, MEMSIZE, system aperture LOW, HIGH (all as at G0), dummy
+		// page, journal entries, MMHUB fault status (1 only), last MMHUB flush bits, GC up
+		using namespace n33gmc;
+		const bool take = need(1) && in[0] == 1;
+		if (take) {
+			if (snapshot_fresh(n33Gmc)) {
+				n33GmcTakeSnap(&n33GmcSnap);
+				n33GmcIn = {};
+				n33GmcIn.fbBase = n33GmcSnap.fbBase; n33GmcIn.fbTop = n33GmcSnap.fbTop; n33GmcIn.fbOffset = n33GmcSnap.fbOffset;
+				n33GmcIn.memsize = rmmio[kMemsize];
+				n33GmcIn.sysLow = rmmio[kMm.sysLow]; n33GmcIn.sysHigh = rmmio[kMm.sysHigh];
+				n33Gmc.g0 = true;
+				N48LOG("n33 gmc: G0 snapshot: FB_LOCATION_BASE %#x TOP %#x FB_OFFSET %#x MEMSIZE %#x, system aperture %#x..%#x; "
+				       "DCN FB base %#x, HUBP0 %#x:%#x pitch %#x", n33GmcIn.fbBase, n33GmcIn.fbTop, n33GmcIn.fbOffset,
+				       n33GmcIn.memsize, n33GmcIn.sysLow, n33GmcIn.sysHigh, n33GmcSnap.dcn[0], n33GmcSnap.hubpHi,
+				       n33GmcSnap.hubpLo, n33GmcSnap.pitch);
+			} else {
+				N48LOG("n33 gmc: G0 snapshot kept (a step has written since it was taken)");
+			}
+		}
+		const auto &s = n33Gmc;
+		put(0, (uint64_t)s.g0 | (uint64_t)s.done << 1 | (uint64_t)s.tableOwned << 8 | (uint64_t)s.stopped << 9 |
+		       (uint64_t)s.restored << 10 | (uint64_t)s.engineHolds << 11 | (uint64_t)(n33GmcDummy != nullptr) << 12 |
+		       (uint64_t)(n33GmcHost[0] != nullptr) << 13 | (uint64_t)s.attempted << 16);
+		put(1, n33GmcIn.fbBase); put(2, n33GmcIn.fbTop); put(3, n33GmcIn.fbOffset); put(4, n33GmcIn.memsize);
+		put(5, n33GmcIn.sysLow); put(6, n33GmcIn.sysHigh); put(7, n33GmcDummyPa); put(8, n33GmcJournalN);
+		put(9, take ? rmmio[kMm.faultStatus] : 0); put(10, n33GmcLastFlush); put(11, n33GmcGcUp() ? 1 : 0);
+		return kIOReturnSuccess;
+	}
+	case kN33GmcStep: {           // in: step (1, 2, 3, 4 or 6). out: 0, ok, journal first, journal count, mismatches,
+		                          // MMHUB fault status, GC fault status, flush bits, PTE spot check (G2)
+		if (!need(1)) return kIOReturnBadArgument;
+		const uint32_t w = n33GmcStep(in[0] > 0xFFu ? 0xFFu : (uint32_t)in[0], out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33GartMap: {           // in: slot, count, kind (0 kext host page index, 1 VRAM offset), index or offset
+		if (!need(4)) return kIOReturnBadArgument;
+		const uint32_t slot = in[0] > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)in[0];
+		const uint32_t count = in[1] > 0xFFFFu ? 0xFFFFu : (uint32_t)in[1];
+		const uint32_t w = n33GmcMap(slot, count, in[2] > 0xFFu ? 0xFFu : (uint32_t)in[2], in[3], out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33GartUnmap: {         // in: slot, count
+		if (!need(2)) return kIOReturnBadArgument;
+		const uint32_t slot = in[0] > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)in[0];
+		const uint32_t w = n33GmcUnmap(slot, in[1] > 0xFFFFu ? 0xFFFFu : (uint32_t)in[1], out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33GartFlush: {         // out: 0, MMHUB flush bits, GFXHUB flush bits (0 when not live), MMHUB fault status
+		using namespace n33gmc;
+		uint32_t w = may_flush(n33Gmc);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		const uint32_t mm = n33GmcFlush(false);
+		const bool gcLive = (n33Gmc.done >> 6 & 1u) && n33GmcGcUp();
+		const uint32_t gc = gcLive ? n33GmcFlush(true) : 0;
+		const bool ok = flush_ok(false, mm) && (!gcLive || flush_ok(true, gc));
+		if (!ok) n33Gmc.stopped = true;
+		N48LOG("n33 gmc: gart flush: MMHUB bits %#x, GFXHUB bits %#x%s", mm, gc, ok ? "" : " (FAILED: nothing more this load)");
+		put(0, 0); put(1, mm); put(2, gc); put(3, rmmio[kMm.faultStatus]);
+		return kIOReturnSuccess;
+	}
+	case kN33GmcRestore: {        // out: 0, entries written back, read-back mismatches
+		const uint32_t w = n33GmcRestore(out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33GmcPlan: {           // in: step, index. out: op, reg, mask, value, cmp, current, target, count. Writes nothing.
+		using namespace n33gmc;
+		if (!need(2)) return kIOReturnBadArgument;
+		const uint32_t step = in[0] > 0xFFu ? 0xFFu : (uint32_t)in[0];
+		if (!valid_step(step)) { put(0, kWhyArg); return kIOReturnNotPermitted; }
+		if (!n33Gmc.g0) { put(0, kWhyOrder); return kIOReturnNotPermitted; }
+		if (step == 6 && !n33GmcGcUp()) { put(0, kWhyGcDown); return kIOReturnNotPermitted; }   // no GC read before autoload
+		Inputs pin = n33GmcIn;
+		pin.dummyPa = n33GmcDummyPa;                       // 0 until G2 allocates it
+		if (step == 6) { pin.sysLow = rmmio[kGc.sysLow]; pin.sysHigh = rmmio[kGc.sysHigh]; }
+		Entry *e = n33GmcPlanBuf;
+		uint32_t n = 0;
+		const uint32_t w = plan(step, pin, e, kPlanMax, &n);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		if (in[1] >= n) return kIOReturnNotFound;
+		const Entry &x = e[in[1]];
+		const uint32_t cur = x.op == kWrite ? rmmio[x.reg] : 0;
+		put(0, x.op); put(1, x.reg); put(2, x.mask); put(3, x.value); put(4, x.cmp); put(5, cur);
+		put(6, x.op == kWrite ? target(x, cur) : 0); put(7, n);
+		return kIOReturnSuccess;
+	}
+	case kN33GmcRecord: {         // in: journal index. out: step, reg, before, after, target, cmp
+		if (!need(1)) return kIOReturnBadArgument;
+		if (in[0] >= n33GmcJournalN) return kIOReturnNotFound;
+		const n33gmc::Rec &r = n33GmcJournal[in[0]];
+		put(0, r.step); put(1, r.reg); put(2, r.before); put(3, r.after); put(4, r.target); put(5, r.cmp);
+		return kIOReturnSuccess;
+	}
 	default:
 		return kIOReturnUnsupported;
 	}
@@ -9426,7 +9529,7 @@ uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off
 		if (mc + sz > fbEnd) { N48LOG("n33 psp2: refused SETUP_TMR: MC %#llx +%#llx ends past FB_LOCATION_TOP (%#llx)", mc, sz, fbEnd); return kWhyTmrSize; }
 		pa = kTmrOff + ((uint64_t)(rmmio[n33psp::kMmhubFbOffset] & 0x00FFFFFFu) << 24);   // amdgpu_gmc_vram_pa
 		N33Range rs[16];
-		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, true, n33Smu.pageOwned);
+		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, true, n33Smu.pageOwned, n33Gmc.tableOwned);
 		for (unsigned i = 0; i < n; i++)
 			if (n33psp::overlaps(kTmrOff, sz, rs[i].off, rs[i].len)) {
 				N48LOG("n33 psp2: refused SETUP_TMR: VRAM %#llx +%#llx overlaps protected kind %u at %#llx", kTmrOff, sz, rs[i].kind, rs[i].off);
@@ -9521,6 +9624,317 @@ uint32_t Navi48Bringup::n33SmuArm(uint32_t level) {
 	n33Smu.armed = (uint8_t)level;
 	N48LOG("n33 smu: armed S%u%s", level, level == 3 ? ", driver table page VRAM 0x8600000 zeroed and protected" : "");
 	return 0;
+}
+
+// ---- N33 GMC 11: NBIO 4.3, MMHUB 3.0.2, GFXHUB 3.0 and the GART (G0 to G6) ------------------------------
+// Design: stage3-gmc-design.md (D1 to D10). Every register value comes from n33gmc::plan() on the inputs read
+// at G0; userspace names a step, a GART slot and a page index or VRAM offset, never a value or an address.
+// Each write is journalled (before, after, target) for `gmc restore` and for n33ctl's tables. Called under
+// gN33PspLock. The MMHUB invalidation semaphore (0x1a6e2) is read only inside n33GmcFlush: a read acquires it.
+
+void Navi48Bringup::n33GmcTakeSnap(n33gmc::Snap *s) const {
+	using namespace n33gmc;
+	s->fbBase = rmmio[kMm.fbBase]; s->fbTop = rmmio[kMm.fbTop]; s->fbOffset = rmmio[kMm.fbOffset];
+	for (uint32_t i = 0; i < 7; i++) s->dcn[i] = rmmio[kDcnVm[i]];
+	s->hubpLo = rmmio[kN33Hubp0Addr]; s->hubpHi = rmmio[kN33Hubp0AddrHigh]; s->pitch = rmmio[kN33Hubp0Pitch];
+}
+
+// The G6 gate: AUTOLOAD_RLC succeeded in this load (so GC is powered and its registers answer), and then
+// RLC_RLCS_BOOTLOAD_STATUS bit 31. No GC register is read before the first condition holds (R7).
+bool Navi48Bringup::n33GmcGcUp() const {
+	return n33P2.autoload && (rmmio[n33gmc::kRlcBootload] & n33gmc::kBootloadComplete);
+}
+
+// D10: the direct register until G1 has programmed the remap in this load, the remapped one after (and only
+// while 0xe4d still reads the remap, so a write to BAR5 0x7F000 never lands on anything else); then a read of
+// RCC_CONFIG_MEMSIZE, as amdgpu_hdp_generic_flush.
+void Navi48Bringup::n33GmcHdpFlush() {
+	using namespace n33gmc;
+	OSSynchronizeIO();
+	if ((n33Gmc.done >> 1 & 1u) && rmmio[kRemapHdpMem] == kRemapMemVal && rmmioSize > (size_t)kRemapMemVal + 4)
+		rmmio[kHdpRemapDword] = 0;
+	else rmmio[kHdpFlushDirect] = 0;
+	(void)rmmio[kMemsize];
+}
+
+// gmc_v11_0_flush_gpu_tlb before KIQ/MES exist (gmc_v11_0.c:253-305), engine 17, VMID 0, flush type 0.
+// MMHUB: take the semaphore (a read returning 1), request, wait for the ack, release, then the private
+// invalidation through MMVM_L2_BANK_SELECT_RESERVED_CID2 bit 25. GFXHUB: request and ack only. 100 ms bounds.
+// Unlike Linux, a semaphore that never reads 1 sends nothing (and releases nothing it does not hold).
+uint32_t Navi48Bringup::n33GmcFlush(bool gc) {
+	using namespace n33gmc;
+	const Hub &h = gc ? kGc : kMm;
+	const Values &v = gc ? kGcV : kMmV;
+	uint32_t bits = 0;
+	n33GmcHdpFlush();
+	if (h.invSem17) {
+		for (int i = 0; i < 10000; i++) {
+			if (rmmio[h.invSem17] & 1u) { bits |= kFlushSem; break; }
+			IODelay(10);
+		}
+		if (!(bits & kFlushSem)) {
+			N48LOG("n33 gmc: %s flush: semaphore %#x not acquired in 100 ms, nothing sent", gc ? "GFXHUB" : "MMHUB", h.invSem17);
+			if (!gc) n33GmcLastFlush = bits;
+			return bits;
+		}
+	}
+	rmmio[h.invReq17] = v.req;
+	uint32_t ack = 0;
+	for (int i = 0; i < 10000; i++) {
+		ack = rmmio[h.invAck17];
+		if (ack & 1u) { bits |= kFlushAck; break; }
+		IODelay(10);
+	}
+	if (h.invSem17) rmmio[h.invSem17] = 0;
+	if (h.cid2) {
+		const uint32_t c = rmmio[h.cid2] | n33gmcf::MMVM_L2_BANK_SELECT_RESERVED_CID2__RESERVED_CACHE_PRIVATE_INVALIDATION.mask;
+		rmmio[h.cid2] = c;
+		(void)rmmio[h.cid2];
+		bits |= kFlushCid2;
+	}
+	N48LOG("n33 gmc: %s flush: req %#x, ack %#x, bits %#x%s", gc ? "GFXHUB" : "MMHUB", v.req, ack, bits,
+	       flush_ok(gc, bits) ? "" : " (NOT acknowledged)");
+	if (!gc) n33GmcLastFlush = bits;
+	return bits;
+}
+
+// D8: one 4 KiB page, physically contiguous, below 44 bits, zeroed then filled with a dword pattern (0 keeps
+// it zero), cached. As amd/amdgpu_sysmem.cpp, with the mask narrowed to GMC 11's 44-bit DMA mask.
+IOBufferMemoryDescriptor *Navi48Bringup::n33GmcAllocPage(uint64_t *pa, uint32_t pattern) {
+	*pa = 0;
+	IOBufferMemoryDescriptor *md = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+		kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMemoryMapperNone, n33gmc::kPage, n33gmc::kDmaPhysMask);
+	if (!md) return nullptr;
+	if (md->prepare() != kIOReturnSuccess) { md->release(); return nullptr; }
+	IOByteCount seg = 0;
+	const addr64_t phys = md->getPhysicalSegment(0, &seg, kIOMemoryMapperNone);
+	auto *cpu = static_cast<uint32_t *>(md->getBytesNoCopy());
+	if (!cpu || seg < n33gmc::kPage || !n33gmc::host_pa_ok(phys)) { md->complete(); md->release(); return nullptr; }
+	for (uint32_t i = 0; i < n33gmc::kPage / 4; i++) cpu[i] = pattern ? (pattern | i) : 0;
+	*pa = phys;
+	return md;
+}
+
+// One PTE as one 64-bit store through the uncached BAR0 mapping (Linux: writeq, amdgpu_gmc.c:175).
+void Navi48Bringup::n33GmcPte(uint32_t slot, uint64_t pte) {
+	*reinterpret_cast<volatile uint64_t *>(n33Bar0 + n33gmc::slot_off(slot)) = pte;
+}
+
+// One step. Returns a refusal (nothing written), or 0 with the outcome in out[]. A read-back mismatch, a fault
+// status after the step or a flush that did not complete is an outcome: the step stops where it is, nothing
+// is retried, and every later step is refused until reload (`gmc restore` stays available).
+uint32_t Navi48Bringup::n33GmcStep(uint32_t step, uint64_t *out, uint32_t outCount) {
+	using namespace n33gmc;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const bool gcUp = valid_step(step) && step == 6 && n33GmcGcUp();
+	uint32_t w = may_step(n33Gmc, step, gcUp);
+	if (w) return w;
+	Snap now = {};
+	n33GmcTakeSnap(&now);
+	w = preconditions(n33GmcSnap, now, rmmio[kMm.faultStatus]);
+	if (w) {
+		N48LOG("n33 gmc: refused G%u: %s (MMHUB fault status %#x)", step, w == kWhyFault ? "fault status not 0" : "snapshot changed since G0",
+		       rmmio[kMm.faultStatus]);
+		return w;
+	}
+	Inputs pin = n33GmcIn;
+	pin.dummyPa = n33GmcDummyPa;
+	if (step == 6) {
+		// GFXHUB must see the same FB location as MMHUB did at G0, and no fault of its own.
+		if (rmmio[kGc.fbBase] != n33GmcSnap.fbBase || rmmio[kGc.fbTop] != n33GmcSnap.fbTop || rmmio[kGc.fbOffset] != n33GmcSnap.fbOffset) {
+			N48LOG("n33 gmc: refused G6: GC FB location %#x..%#x offset %#x differs from MMHUB's", rmmio[kGc.fbBase], rmmio[kGc.fbTop], rmmio[kGc.fbOffset]);
+			return kWhyChanged;
+		}
+		if (rmmio[kGc.faultStatus]) { N48LOG("n33 gmc: refused G6: GC fault status %#x", rmmio[kGc.faultStatus]); return kWhyFault; }
+		pin.sysLow = rmmio[kGc.sysLow]; pin.sysHigh = rmmio[kGc.sysHigh];
+	}
+	if (step == 2) {
+		uint64_t why = 0;
+		if (n33P2.failed) return n33psp2::kWhyFailed;   // as every BAR0 write after a PSP failure
+		if (!n33WriteAllowed(kOwnedOff, kOwnedLen, &why)) {
+			N48LOG("n33 gmc: refused G2: table and mem_scratch VRAM %#llx +%#llx not writable (why %llu)", kOwnedOff, kOwnedLen, why);
+			return kWhyTable;
+		}
+		if (!n33GmcDummy) {
+			uint64_t pa = 0;
+			n33GmcDummy = n33GmcAllocPage(&pa, 0);
+			if (!n33GmcDummy) { N48LOG("n33 gmc: refused G2: no dummy page below 44 bits"); return kWhyHostPage; }
+			n33GmcDummyPa = pa;
+		}
+		pin.dummyPa = n33GmcDummyPa;
+	}
+	Entry *e = n33GmcPlanBuf;
+	uint32_t n = 0;
+	w = plan(step, pin, e, kPlanMax, &n);
+	if (w) { N48LOG("n33 gmc: refused G%u: plan refused (why %u)", step, w); return w; }
+	uint32_t writes = 0;
+	for (uint32_t i = 0; i < n; i++) if (e[i].op == kWrite) writes++;
+	if (n33GmcJournalN + writes > kJournalMax) return kWhyArg;
+
+	// From here on the step writes.
+	n33Gmc.attempted |= 1u << step;
+	uint64_t spot = 1;
+	if (step == 2) {
+		// D3/G2: the table (65536 x the dummy page, flags 0) and mem_scratch, then the HDP flush. Both join the
+		// protected list now (kind 14), before the first register names them.
+		n33Gmc.tableOwned = true;
+		const uint64_t unbound = pte_unbound(n33GmcDummyPa);
+		for (uint32_t s = 0; s < kGartPages; s++) n33GmcPte(s, unbound);
+		for (uint64_t o = 0; o < kScratchLen; o += 4) *reinterpret_cast<volatile uint32_t *>(n33Bar0 + kScratchOff + o) = 0;
+		n33GmcHdpFlush();
+		const uint64_t pteFirst = *reinterpret_cast<volatile uint64_t *>(n33Bar0 + slot_off(0));
+		const uint64_t pteLast = *reinterpret_cast<volatile uint64_t *>(n33Bar0 + slot_off(kGartPages - 1));
+		spot = (pteFirst == unbound && pteLast == unbound) ? 1 : 0;
+		N48LOG("n33 gmc: G2: table VRAM %#llx filled with %#llx (%u PTEs, read back %s), mem_scratch VRAM %#llx zeroed",
+		       kTableOff, unbound, kGartPages, spot ? "ok" : "WRONG", kScratchOff);
+	}
+	const uint32_t first = n33GmcJournalN;
+	uint32_t bad = 0, flush = 0;
+	bool flushed = false;
+	for (uint32_t i = 0; i < n; i++) {
+		const Entry &x = e[i];
+		if (x.op == kHdpFlush) { n33GmcHdpFlush(); continue; }
+		if (x.op == kFlushMm || x.op == kFlushGc) { flush = n33GmcFlush(x.op == kFlushGc); flushed = true; continue; }
+		Rec &r = n33GmcJournal[n33GmcJournalN++];
+		r.step = step; r.reg = x.reg; r.cmp = x.cmp;
+		r.before = rmmio[x.reg];
+		r.target = target(x, r.before);
+		rmmio[x.reg] = r.target;
+		r.after = rmmio[x.reg];
+		const bool mis = mismatch(r);
+		if (mis) bad++;
+		N48LOG("n33 gmc: G%u %#x: %#x -> %#x (reads %#x)%s", step, x.reg, r.before, r.target, r.after, mis ? " MISMATCH" : "");
+	}
+	if (step == 1 && !bad) {
+		// G1's done condition: one HDP flush through the remap (BAR5 dword 0x1FC00), then the MEMSIZE read.
+		if (rmmioSize > (size_t)kRemapMemVal + 4) {
+			OSSynchronizeIO();
+			rmmio[kHdpRemapDword] = 0;
+			N48LOG("n33 gmc: G1: HDP flush through the remap, MEMSIZE reads %#x", rmmio[kMemsize]);
+		} else {
+			bad++;
+			N48LOG("n33 gmc: G1: BAR5 is %zu bytes, the remap offset %#x is outside it", rmmioSize, kRemapMemVal);
+		}
+	}
+	const uint32_t mmFault = rmmio[kMm.faultStatus];
+	const uint32_t gcFault = step == 6 ? rmmio[kGc.faultStatus] : 0;
+	const bool ok = !bad && spot && !mmFault && !gcFault && (!flushed || flush_ok(step == 6, flush));
+	record_step(n33Gmc, step, ok);
+	N48LOG("n33 gmc: G%u %s: %u registers, %u mismatches, MMHUB fault status %#x, GC fault status %#x, flush bits %#x",
+	       step, ok ? "done" : "FAILED (nothing more this load; gmc restore is available)", n33GmcJournalN - first, bad,
+	       mmFault, gcFault, flush);
+	put(0, 0); put(1, ok ? 1 : 0); put(2, first); put(3, n33GmcJournalN - first); put(4, bad);
+	put(5, mmFault); put(6, gcFault); put(7, flush); put(8, spot);
+	return 0;
+}
+
+// gart map: kind 0 binds the kext's own host pages (index arg..arg+count-1, allocated on first use with a
+// known pattern); kind 1 binds VRAM at offset arg, which must pass n33WriteAllowed (so never the GOP scanout,
+// a DMCUB window or a protected page, the table itself included). The PTEs are written and HDP flushed;
+// `gart flush` invalidates the hubs. Checks run in the order arguments, VRAM range, state.
+uint32_t Navi48Bringup::n33GmcMap(uint32_t slot, uint32_t count, uint32_t kind, uint64_t arg, uint64_t *out, uint32_t outCount) {
+	using namespace n33gmc;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	uint32_t w = map_args(slot, count, kind, arg);
+	if (w) return w;
+	if (kind == kMapVram) {
+		uint64_t why = 0;
+		if (!n33WriteAllowed(arg, (uint64_t)count * kPage, &why)) {
+			N48LOG("n33 gmc: refused gart map of VRAM %#llx +%#llx (why %llu)", arg, (uint64_t)count * kPage, why);
+			return (uint32_t)why;
+		}
+	}
+	w = map_state(n33Gmc);
+	if (w) return w;
+	if (kind == kMapHost && !n33GmcHost[0]) {
+		for (uint32_t i = 0; i < kHostPages; i++) {
+			n33GmcHost[i] = n33GmcAllocPage(&n33GmcHostPa[i], 0x4E330000u | (i << 12));
+			if (!n33GmcHost[i]) {
+				for (uint32_t j = 0; j < i; j++) { n33GmcHost[j]->complete(); n33GmcHost[j]->release(); n33GmcHost[j] = nullptr; n33GmcHostPa[j] = 0; }
+				N48LOG("n33 gmc: refused gart map: no host page below 44 bits");
+				return kWhyHostPage;
+			}
+			N48LOG("n33 gmc: host page %u at physical %#llx (pattern %#x | dword index)", i, n33GmcHostPa[i], 0x4E330000u | (i << 12));
+		}
+	}
+	const uint64_t vbo = (uint64_t)(n33GmcIn.fbOffset & 0x00FFFFFFu) << 24;
+	uint64_t pte0 = 0;
+	for (uint32_t j = 0; j < count; j++) {
+		const uint64_t pte = kind == kMapHost ? pte_sys(n33GmcHostPa[arg + j]) : pte_vram(arg + (uint64_t)j * kPage + vbo);
+		n33GmcPte(slot + j, pte);
+		if (j == 0) pte0 = pte;
+		N48LOG("n33 gmc: GART slot %u (MC %#llx) -> PTE %#llx", slot + j, slot_mc(slot + j), pte);
+	}
+	n33GmcHdpFlush();
+	put(0, 0); put(1, pte0); put(2, slot_mc(slot)); put(3, count);
+	return 0;
+}
+
+uint32_t Navi48Bringup::n33GmcUnmap(uint32_t slot, uint32_t count, uint64_t *out, uint32_t outCount) {
+	using namespace n33gmc;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	uint32_t w = unmap_args(slot, count);
+	if (!w) w = map_state(n33Gmc);
+	if (w) return w;
+	const uint64_t pte = pte_unbound(n33GmcDummyPa);
+	for (uint32_t j = 0; j < count; j++) n33GmcPte(slot + j, pte);
+	n33GmcHdpFlush();
+	N48LOG("n33 gmc: GART slots %u..%u -> dummy page PTE %#llx", slot, slot + count - 1, pte);
+	put(0, 0); put(1, pte); put(2, count);
+	return 0;
+}
+
+// D6: every journalled before-value written back, newest first. Then nothing more runs in this load.
+uint32_t Navi48Bringup::n33GmcRestore(uint64_t *out, uint32_t outCount) {
+	using namespace n33gmc;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	bool hasGc = false;
+	for (uint32_t i = 0; i < n33GmcJournalN; i++) if (n33GmcJournal[i].step == 6) hasGc = true;
+	const uint32_t w = may_restore(n33Gmc, n33GmcJournalN, hasGc, hasGc && n33GmcGcUp());
+	if (w) return w;
+	uint32_t bad = 0;
+	for (uint32_t i = 0; i < n33GmcJournalN; i++) {
+		const Rec &r = n33GmcJournal[restore_index(i, n33GmcJournalN)];
+		rmmio[r.reg] = r.before;
+		const uint32_t rb = rmmio[r.reg];
+		if ((rb ^ r.before) & r.cmp) bad++;
+		N48LOG("n33 gmc: restore G%u %#x: -> %#x (reads %#x)", r.step, r.reg, r.before, rb);
+	}
+	record_restore(n33Gmc);   // first: the remap may be gone now, so the flush below takes the direct register
+	n33GmcHdpFlush();
+	N48LOG("n33 gmc: restored %u registers, %u read back differently; nothing more this load", n33GmcJournalN, bad);
+	put(0, 0); put(1, n33GmcJournalN); put(2, bad);
+	return 0;
+}
+
+// D6 at unload, with gN33PspLock held and before BAR0 goes: the hubs keep their state; every PTE back to the
+// dummy page with flags 0, HDP flush, flush each hub that was given the table. The dummy page is leaked on
+// purpose (PROTECTION_FAULT_DEFAULT_ADDR and the unbound PTEs still name it); the host pages are freed only
+// when nothing can still translate to them.
+void Navi48Bringup::n33GmcStop() {
+	using namespace n33gmc;
+	if (!rmmio) return;
+	const Unload u = unload_plan(n33Gmc);
+	bool flushesOk = true;
+	if (u.unmapAll && n33Bar0) {
+		const uint64_t pte = pte_unbound(n33GmcDummyPa);
+		for (uint32_t s = 0; s < kGartPages; s++) n33GmcPte(s, pte);
+		n33GmcHdpFlush();
+		N48LOG("n33 gmc: stop: every GART PTE -> dummy page %#llx", n33GmcDummyPa);
+	}
+	if (u.flushMm) flushesOk = flush_ok(false, n33GmcFlush(false)) && flushesOk;
+	if (u.flushGc) flushesOk = n33GmcGcUp() && flush_ok(true, n33GmcFlush(true)) && flushesOk;
+	const bool freeHost = free_host_pages(n33Gmc, flushesOk);
+	for (uint32_t i = 0; i < kHostPages; i++) {
+		if (!n33GmcHost[i]) continue;
+		if (freeHost) { n33GmcHost[i]->complete(); n33GmcHost[i]->release(); }
+		else N48LOG("n33 gmc: stop: host page %u (%#llx) leaked: a hub may still translate to it", i, n33GmcHostPa[i]);
+		n33GmcHost[i] = nullptr; n33GmcHostPa[i] = 0;
+	}
+	if (n33GmcDummy) {
+		N48LOG("n33 gmc: stop: dummy page %#llx leaked on purpose (D6)", n33GmcDummyPa);
+		n33GmcDummy = nullptr;   // ponytail: never released; one page per kext load that ran G2
+	}
 }
 
 // Stage 2 step 3: run the layout gate, judge the live GOP state, and publish the framebuffer nub.

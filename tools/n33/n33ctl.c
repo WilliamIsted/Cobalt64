@@ -27,7 +27,7 @@ static uint64_t num(const char *s) { return strtoull(s, NULL, 0); }
 
 // The kext's protected-range kinds (n33_protected): 0 is the GOP scanout, 1-8 are DMCUB
 // windows CW0-CW7, 9-11 are REGION4-REGION6, 12 the PSP ring pages (milestone 2), 13 the SMU driver table
-// page (S3). Names match the kext's comments.
+// page (S3), 14 the GART table and mem_scratch (GMC G2). Names match the kext's comments.
 static const char *kindName(uint64_t k) {
 	static char b[16];
 	if (k == 0) return "GOP scanout";
@@ -35,6 +35,7 @@ static const char *kindName(uint64_t k) {
 	if (k <= 11) { snprintf(b, sizeof b, "DMCUB REGION%llu", k + 1); return b; }
 	if (k == 12) return "PSP ring pages";
 	if (k == 13) return "SMU driver table";
+	if (k == 14) return "GART table and mem_scratch";
 	return "?";
 }
 
@@ -72,6 +73,19 @@ static const char *whyName(uint64_t why) {
 	case 27:  return "smu: C2PMSG_90 still 0 after 2 s before sending; nothing was written";
 	case 28:  return "smu: an earlier state-changing message did not answer OK; the ladder is over";
 	case 29:  return "smu: driver table page not writable, or not taken by S3's arm";
+	case 30:  return "gmc: not a step number (1, 2, 3, 4, 6), or a bad count, kind or VRAM alignment";
+	case 31:  return "gmc: out of order, twice, no G0 snapshot, no GART table yet, or G4 not done";
+	case 32:  return "gmc: FB location, DCN_VM, HUBP0 or the GC FB location changed since G0";
+	case 33:  return "gmc: a protection fault status is not 0";
+	case 34:  return "gmc: D4, the system aperture would not cover the FB";
+	case 35:  return "gmc: D4, the system aperture would reach the GART range";
+	case 36:  return "gmc: live FB location or MEMSIZE does not fit the D2/D3 placement";
+	case 37:  return "gmc: GC not up (no successful AUTOLOAD_RLC in this load, or BOOTLOAD_COMPLETE clear)";
+	case 38:  return "gmc: GART slot range outside the GART";
+	case 39:  return "gmc: GART table / mem_scratch range not writable (protected)";
+	case 40:  return "gmc: no dummy or host page below 44 bits";
+	case 41:  return "gmc: an earlier step or flush failed, or a restore ran; reload the kext";
+	case 42:  return "gmc: restore refused, an engine holds a GART address";
 	default:
 		if (why >= 100) { static char b[48]; snprintf(b, sizeof b, "overlaps protected %s", kindName(why - 100)); return b; }
 		return "?";
@@ -130,6 +144,9 @@ static void usage(void) {
 	    "                               PSP milestone 2: KM ring, TOC, TMR, GC firmware, RLC autoload\n"
 	    "  smu check | s1 | s2 | s3 | enable | state      SMU 13.0.7 mailbox (check is read-only; s1 sends queries)\n"
 	    "                               smu send <msg> <arg>: raw, for smu-negative.sh only\n"
+	    "  gmc state | g1 | g2 | g3 | g4 | g5 | g6 | restore   GMC 11 / MMHUB / GFXHUB / GART (state is G0, read-only)\n"
+	    "                               gmc flags | step <n> | map <slot> <count> <kind> <arg> | unmap <slot> <count> | flush:\n"
+	    "                               raw, for gmc-negative.sh only (flags reads no register)\n"
 	    "  why <code>                   explain a refusal code from the kernel log (no kext needed)\n"
 	    "all offsets/dwords accept 0x.. ; writes are re-checked in the kext\n");
 }
@@ -725,6 +742,284 @@ static int doSmu(int argc, char **argv) {
 	return 2;
 }
 
+// ---- gmc: NBIO 4.3, GMC 11 / MMHUB 3.0.2, GFXHUB 3.0 and the GART (overview repo stage3-gmc-design.md) -----
+// n33ctl gmc state     G0, read-only: take the kext's snapshot, print each step's registers (current and the
+//                      kext's target, "equals" or "differs"), the fault and invalidation registers, DCN_VM
+// n33ctl gmc g1..g4    one step each (G1 NBIO; G2 table, mem_scratch, apertures; G3 L1 TLB and L2; G4 VMID 0
+//                      live and the engine 17 flush), with before/after tables and the display check
+// n33ctl gmc g5        the GART bind test: 4 kext pages at slots 0 to 3, flush, read back, unmap, flush
+// n33ctl gmc g6        GFXHUB, only after psp2 2c in this kext load
+// n33ctl gmc restore   write every journalled before-value back (refused once an engine holds a GART address)
+// The kext computes every value and refuses anything off-plan; this tool keeps the order and stops after each
+// step for the display check. G1 to G4 are the fallback for m2 2a (design Q10): each is William's go.
+enum { aGmcState = 15, aGmcStep = 16, aGartMap = 17, aGartUnmap = 18, aGartFlush = 19, aGmcRestore = 20,
+       aGmcPlan = 21, aGmcRecord = 22 };
+enum { kGmcOpWrite = 0, kGmcOpHdp = 1, kGmcOpFlushMm = 2, kGmcOpFlushGc = 3 };
+#define kGmcTableOff    0x8800000ull
+#define kGmcPteFlagsSys 0x0003000000000077ull
+#define kGmcPteAddr     0x0000FFFFFFFFF000ull
+enum { kGmcMmFault = 0x1A68C, kGmcGcFault = 0x2828 };
+static const struct { uint32_t reg; const char *name; } kGmcNames[] = {
+	{ 0xE4D, "NBIF REMAP_HDP_MEM_FLUSH_CNTL" }, { 0xE4E, "NBIF REMAP_HDP_REG_FLUSH_CNTL" },
+	{ 0xDE0, "NBIF DOORBELL_APER_EN" }, { 0xE20, "NBIF BIF_FB_EN" }, { 0xDE3, "RCC_CONFIG_MEMSIZE" },
+	{ 0x1A72B, "MM CTX0_PT_BASE_LO32" }, { 0x1A72C, "MM CTX0_PT_BASE_HI32" }, { 0x1A74B, "MM CTX0_PT_START_LO32" },
+	{ 0x1A74C, "MM CTX0_PT_START_HI32" }, { 0x1A76B, "MM CTX0_PT_END_LO32" }, { 0x1A76C, "MM CTX0_PT_END_HI32" },
+	{ 0x1A86E, "MM AGP_TOP" }, { 0x1A86F, "MM AGP_BOT" }, { 0x1A870, "MM AGP_BASE" },
+	{ 0x1A871, "MM SYSTEM_APERTURE_LOW" }, { 0x1A872, "MM SYSTEM_APERTURE_HIGH" },
+	{ 0x1A858, "MM SYSTEM_APERTURE_DEFAULT_LSB" }, { 0x1A859, "MM SYSTEM_APERTURE_DEFAULT_MSB" },
+	{ 0x1A688, "MM L2_PROTECTION_FAULT_CNTL" }, { 0x1A689, "MM L2_PROTECTION_FAULT_CNTL2" },
+	{ 0x1A68C, "MM L2_PROTECTION_FAULT_STATUS" }, { 0x1A68D, "MM L2_PROTECTION_FAULT_ADDR_LO32" },
+	{ 0x1A68E, "MM L2_PROTECTION_FAULT_ADDR_HI32" }, { 0x1A68F, "MM L2_PROTECTION_FAULT_DEFAULT_LO32" },
+	{ 0x1A690, "MM L2_PROTECTION_FAULT_DEFAULT_HI32" }, { 0x1A873, "MM MX_L1_TLB_CNTL" },
+	{ 0x1A680, "MM VM_L2_CNTL" }, { 0x1A681, "MM VM_L2_CNTL2" }, { 0x1A682, "MM VM_L2_CNTL3" },
+	{ 0x1A698, "MM VM_L2_CNTL4" }, { 0x1A69E, "MM VM_L2_CNTL5" }, { 0x1A6C0, "MM VM_CONTEXT0_CNTL" },
+	{ 0x1A692, "MM IDENTITY_LOW_LO32" }, { 0x1A693, "MM IDENTITY_LOW_HI32" }, { 0x1A694, "MM IDENTITY_HIGH_LO32" },
+	{ 0x1A695, "MM IDENTITY_HIGH_HI32" }, { 0x1A696, "MM IDENTITY_PHYS_OFFSET_LO32" }, { 0x1A697, "MM IDENTITY_PHYS_OFFSET_HI32" },
+	{ 0x1A706, "MM INVALIDATE_ENG17_ACK" }, { 0x1A69B, "MM L2_BANK_SELECT_RESERVED_CID2" },
+	{ 0x2953, "GC CTX0_PT_BASE_LO32" }, { 0x2954, "GC CTX0_PT_BASE_HI32" }, { 0x2973, "GC CTX0_PT_START_LO32" },
+	{ 0x2974, "GC CTX0_PT_START_HI32" }, { 0x2993, "GC CTX0_PT_END_LO32" }, { 0x2994, "GC CTX0_PT_END_HI32" },
+	{ 0x28DA, "GC AGP_TOP" }, { 0x28DB, "GC AGP_BOT" }, { 0x28DC, "GC AGP_BASE" },
+	{ 0x28DD, "GC SYSTEM_APERTURE_LOW" }, { 0x28DE, "GC SYSTEM_APERTURE_HIGH" },
+	{ 0x2808, "GC SYSTEM_APERTURE_DEFAULT_LSB" }, { 0x2809, "GC SYSTEM_APERTURE_DEFAULT_MSB" },
+	{ 0x2824, "GC L2_PROTECTION_FAULT_CNTL" }, { 0x2825, "GC L2_PROTECTION_FAULT_CNTL2" },
+	{ 0x2828, "GC L2_PROTECTION_FAULT_STATUS" }, { 0x282B, "GC L2_PROTECTION_FAULT_DEFAULT_LO32" },
+	{ 0x282C, "GC L2_PROTECTION_FAULT_DEFAULT_HI32" }, { 0x28DF, "GC MX_L1_TLB_CNTL" },
+	{ 0x281C, "GC VM_L2_CNTL" }, { 0x281D, "GC VM_L2_CNTL2" }, { 0x281E, "GC VM_L2_CNTL3" },
+	{ 0x2834, "GC VM_L2_CNTL4" }, { 0x283A, "GC VM_L2_CNTL5" }, { 0x28E8, "GC VM_CONTEXT0_CNTL" },
+	{ 0x282E, "GC IDENTITY_LOW_LO32" }, { 0x282F, "GC IDENTITY_LOW_HI32" }, { 0x2830, "GC IDENTITY_HIGH_LO32" },
+	{ 0x2831, "GC IDENTITY_HIGH_HI32" }, { 0x2832, "GC IDENTITY_PHYS_OFFSET_LO32" }, { 0x2833, "GC IDENTITY_PHYS_OFFSET_HI32" },
+	{ 0x292E, "GC INVALIDATE_ENG17_ACK" }, { 0x307F, "CP_DEBUG" },
+	{ 0x3935, "DCN_VM_FB_LOCATION_BASE" }, { 0x3936, "DCN_VM_FB_LOCATION_TOP" }, { 0x3937, "DCN_VM_FB_OFFSET" },
+	{ 0x3938, "DCN_VM_AGP_BOT" }, { 0x3939, "DCN_VM_AGP_TOP" }, { 0x393A, "DCN_VM_AGP_BASE" }, { 0x3A19, "DCN_VM_CONTEXT0_CNTL" },
+};
+// Per-context and per-engine registers: { first, count, stride, name }. Stride 2 is a LO32/HI32 pair.
+static const struct { uint32_t base, count, stride; const char *name; } kGmcRanges[] = {
+	{ 0x1A6C1, 15, 1, "MM CONTEXT%u_CNTL" }, { 0x1A74D, 15, 2, "MM CONTEXT%u_PT_START" }, { 0x1A76D, 15, 2, "MM CONTEXT%u_PT_END" },
+	{ 0x1A707, 18, 2, "MM INV_ENG%u_ADDR_RANGE" },
+	{ 0x28E9, 15, 1, "GC CONTEXT%u_CNTL" }, { 0x2975, 15, 2, "GC CONTEXT%u_PT_START" }, { 0x2995, 15, 2, "GC CONTEXT%u_PT_END" },
+	{ 0x292F, 18, 2, "GC INV_ENG%u_ADDR_RANGE" },
+};
+static const char *gmcName(uint32_t reg) {
+	static char b[64];
+	for (unsigned i = 0; i < sizeof kGmcNames / sizeof kGmcNames[0]; i++) if (kGmcNames[i].reg == reg) return kGmcNames[i].name;
+	for (unsigned i = 0; i < sizeof kGmcRanges / sizeof kGmcRanges[0]; i++) {
+		const uint32_t base = kGmcRanges[i].base, st = kGmcRanges[i].stride;
+		if (reg < base || reg >= base + kGmcRanges[i].count * st) continue;
+		const uint32_t k = (reg - base) / st, first = strstr(kGmcRanges[i].name, "ENG") ? 0 : 1;
+		char n[48];
+		snprintf(n, sizeof n, kGmcRanges[i].name, k + first);
+		snprintf(b, sizeof b, "%s%s", n, st == 2 ? ((reg - base) % 2 ? "_HI32" : "_LO32") : "");
+		return b;
+	}
+	snprintf(b, sizeof b, "dword %#x", reg);
+	return b;
+}
+
+static int gmcState(uint64_t st[12], int take) {
+	uint64_t a = take ? 1 : 0;
+	memset(st, 0, 12 * sizeof st[0]);
+	return call(aGmcState, &a, 1, st, 12);
+}
+static int gmcDone(const uint64_t *st, int n) { return (int)(st[0] >> (n + 1) & 1); }
+static void gmcPrintState(const uint64_t *st) {
+	printf("kext: G0 %llu  done G1 %d G2 %d G3 %d G4 %d G6 %d  table %llu stopped %llu restored %llu engine %llu "
+	       "dummy %llu host %llu  journal %llu  last MMHUB flush %#llx  GC up %llu\n", st[0] & 1, gmcDone(st, 1),
+	       gmcDone(st, 2), gmcDone(st, 3), gmcDone(st, 4), gmcDone(st, 6), st[0] >> 8 & 1, st[0] >> 9 & 1, st[0] >> 10 & 1,
+	       st[0] >> 11 & 1, st[0] >> 12 & 1, st[0] >> 13 & 1, st[8], st[10], st[11]);
+	printf("G0 inputs: FB_LOCATION_BASE %#llx TOP %#llx FB_OFFSET %#llx MEMSIZE %#llx  system aperture as found %#llx..%#llx  "
+	       "dummy page %#llx\n", st[1], st[2], st[3], st[4], st[5], st[6], st[7]);
+}
+
+// A step's plan as the kext would write it now: current value, target, and whether they already agree.
+// *ffff counts registers that read 0xffffffff (G0's done condition).
+static int gmcPlan(uint32_t step, int *ffff, int *differs) {
+	uint64_t a[2] = { step, 0 }, o[8] = {0};
+	if (call(aGmcPlan, a, 2, o, 8)) { printf("G%u plan: REFUSED by the kext (n33ctl why <code> from the log)\n", step); return 1; }
+	const uint64_t n = o[7];
+	printf("G%u plan, %llu entries (current -> target):\n", step, n);
+	for (uint64_t i = 0; i < n; i++) {
+		a[1] = i;
+		if (call(aGmcPlan, a, 2, o, 8)) return 1;
+		if (o[0] == kGmcOpHdp) { printf("  -- HDP flush\n"); continue; }
+		if (o[0] == kGmcOpFlushMm || o[0] == kGmcOpFlushGc) { printf("  -- %s engine 17 flush, VMID 0\n", o[0] == kGmcOpFlushMm ? "MMHUB" : "GFXHUB"); continue; }
+		const int same = ((o[5] ^ o[6]) & o[4]) == 0;
+		if (o[5] == 0xFFFFFFFFull && ffff) (*ffff)++;
+		if (!same && differs) (*differs)++;
+		printf("  %-36s %#010llx -> %#010llx  %s%s\n", gmcName((uint32_t)o[1]), o[5], o[6],
+		       o[4] ? (same ? "equals" : "differs") : "self-clearing", o[2] == 0xFFFFFFFFull ? "" : " (fields only)");
+	}
+	return 0;
+}
+
+static int gmcJournal(uint64_t first, uint64_t count) {
+	for (uint64_t i = first; i < first + count; i++) {
+		uint64_t a = i, o[6] = {0};
+		if (call(aGmcRecord, &a, 1, o, 6)) return 1;
+		printf("  G%llu %-36s before %#010llx  after %#010llx  target %#010llx  %s\n", o[0], gmcName((uint32_t)o[1]), o[2], o[3], o[4],
+		       ((o[3] ^ o[4]) & o[5]) ? "MISMATCH" : o[5] ? "ok" : "recorded");
+	}
+	return 0;
+}
+
+// The display check's register half: HUBP0, DCN_VM and the protected ranges (the live DMCUB windows).
+struct gmcDisp { uint64_t hubp, pitch, n, prot[16][3]; uint32_t dcn[7]; };
+static int gmcDisplay(struct gmcDisp *d) {
+	static const uint32_t dcn[7] = { 0x3935, 0x3936, 0x3937, 0x3938, 0x3939, 0x393A, 0x3A19 };
+	uint64_t s[11] = {0};
+	memset(d, 0, sizeof *d);
+	if (call(aStatus, NULL, 0, s, 11)) return 1;
+	d->hubp = s[5]; d->pitch = s[6]; d->n = s[8] > 16 ? 16 : s[8];
+	for (uint64_t i = 0; i < d->n; i++) { uint64_t a = i; if (call(aProtected, &a, 1, d->prot[i], 3)) return 1; }
+	for (int i = 0; i < 7; i++) if (pspRd(dcn[i], &d->dcn[i])) return 1;
+	return 0;
+}
+static int gmcDisplaySame(const struct gmcDisp *a, const struct gmcDisp *b) {
+	int same = a->hubp == b->hubp && a->pitch == b->pitch && !memcmp(a->dcn, b->dcn, sizeof a->dcn);
+	// The GART table joins the list at G2 (kind 14): compare the ranges that existed before.
+	for (uint64_t i = 0; i < a->n; i++) {
+		int found = 0;
+		for (uint64_t j = 0; j < b->n; j++) if (!memcmp(a->prot[i], b->prot[j], sizeof a->prot[i])) found = 1;
+		if (!found) { printf("protected range [%llu] VRAM %#llx len %#llx (%s) moved or went away\n", i, a->prot[i][0], a->prot[i][1], kindName(a->prot[i][2])); same = 0; }
+	}
+	printf("display registers: HUBP0 %#llx pitch %#llx, DCN_VM %#x %#x %#x, %llu protected ranges: %s\n", b->hubp, b->pitch,
+	       b->dcn[0], b->dcn[1], b->dcn[2], b->n, same ? "unchanged" : "CHANGED");
+	return same;
+}
+
+static int gmcStep(uint32_t step) {
+	uint64_t st[12], o[9] = {0}, a = step;
+	struct gmcDisp before, after;
+	uint32_t cp0 = 0, cp1 = 0;
+	if (gmcState(st, 0)) return 1;
+	gmcPrintState(st);
+	if (!(st[0] & 1)) { printf("refusing: no G0 snapshot in this kext load (run gmc state first)\n"); return 1; }
+	if (gmcPlan(step, NULL, NULL) || gmcDisplay(&before)) return 1;
+	if (step == 6 && pspRd(kCpStat, &cp0)) return 1;
+	if (call(aGmcStep, &a, 1, o, 9)) { printf("G%u: REFUSED by the kext\n", step); return 1; }
+	printf("G%u: %s, %llu registers written, %llu mismatches, MMHUB fault status %#llx, GC fault status %#llx, flush bits %#llx%s\n",
+	       step, o[1] ? "done" : "FAILED (nothing more this load; gmc restore is available)", o[3], o[4], o[5], o[6], o[7],
+	       step == 2 ? (o[8] ? ", table read back ok" : ", TABLE READ BACK WRONG") : "");
+	if (gmcJournal(o[2], o[3]) || gmcDisplay(&after)) return 1;
+	const int same = gmcDisplaySame(&before, &after);
+	if (step == 6) {
+		if (pspRd(kCpStat, &cp1)) return 1;
+		printf("CP_STAT %#x -> %#x: %s\n", cp0, cp1, cp0 == cp1 ? "unchanged" : "CHANGED");
+	}
+	printf("display check: confirm the desktop is still on the monitor 60 s from now. The next step is a separate go.\n");
+	return !(o[1] == 1 && same && cp0 == cp1);
+}
+
+// G0: read-only. Every register the steps will write, the fault and invalidation state and DCN_VM.
+static int gmcG0(void) {
+	static const uint32_t extra[] = { 0x1A68C, 0x1A68D, 0x1A68E, 0x1A706, 0x1A69B, 0xE20, 0xDE3,
+	                                  0x3935, 0x3936, 0x3937, 0x3938, 0x3939, 0x393A, 0x3A19 };
+	uint64_t st[12];
+	int bad = 0, ffff = 0, differs = 0;
+	if (gmcState(st, 1)) return 1;
+	gmcPrintState(st);
+	if (st[1] != 0x8000 || st[2] != 0x83ff || st[3] != 0) { printf("FB location DIFFERS from the measured 0x8000 / 0x83ff / 0\n"); bad = 1; }
+	const uint32_t steps[] = { 1, 2, 3, 4, 6 };
+	for (unsigned i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+		if (steps[i] == 6 && !st[11]) { printf("G6 plan: GC not up in this load (no GC register read)\n"); continue; }
+		if (gmcPlan(steps[i], &ffff, &differs)) bad = 1;
+	}
+	if (!(st[0] >> 12 & 1)) printf("(the fault default address targets read 0 until G2 allocates the dummy page)\n");
+	for (unsigned i = 0; i < sizeof extra / sizeof extra[0]; i++) {
+		uint32_t v = 0;
+		if (pspRd(extra[i], &v)) return 1;
+		if (v == 0xFFFFFFFFu) ffff++;
+		printf("  %-36s %#010x\n", gmcName(extra[i]), v);
+		if (extra[i] == kGmcMmFault && v) { printf("MMHUB fault status is not 0\n"); bad = 1; }
+	}
+	struct gmcDisp d;
+	if (gmcDisplay(&d)) return 1;
+	for (uint64_t i = 0; i < d.n; i++) printf("protected [%llu] VRAM %#llx len %#llx  %s\n", i, d.prot[i][0], d.prot[i][1], kindName(d.prot[i][2]));
+	printf("IOMMU (Q2): record `ioreg -l | grep -ic AppleVTD` with this output (expect 0)\n");
+	if (ffff) { printf("%d register(s) read 0xffffffff\n", ffff); bad = 1; }
+	printf("%d planned register(s) differ from their target now\n", differs);
+	printf("%s\n", bad ? "G0 check FAILED: do not run G1" : "G0 ok");
+	return bad;
+}
+
+// G5: the bind test. Not a DMA proof (design Q5).
+static int gmcG5(void) {
+	uint64_t st[12], m[4] = { 0, 4, 0, 0 }, o[4] = {0}, f[4] = {0}, u[2] = { 0, 4 }, uo[3] = {0};
+	int bad = 0;
+	if (gmcState(st, 0)) return 1;
+	gmcPrintState(st);
+	if (!gmcDone(st, 4)) { printf("refusing: G5 needs G4 done in this kext load\n"); return 1; }
+	const int gcLive = gmcDone(st, 6) && st[11];
+	if (call(aGartMap, m, 4, o, 4)) { printf("gart map REFUSED\n"); return 1; }
+	printf("mapped 4 kext pages at slots 0..3 (MC %#llx), first PTE %#llx\n", o[2], o[1]);
+	for (int pass = 0; pass < 2; pass++) {
+		if (call(aGartFlush, NULL, 0, f, 4)) { printf("gart flush REFUSED\n"); return 1; }
+		const int ok = f[1] == 7 && (!gcLive || (f[2] & 2));
+		printf("flush: MMHUB bits %#llx, GFXHUB bits %#llx, MMHUB fault status %#llx: %s\n", f[1], f[2], f[3], ok && !f[3] ? "ok" : "FAILED");
+		if (!ok || f[3]) bad = 1;
+		uint64_t prev = 0;
+		for (uint32_t s = 0; s < 4; s++) {
+			uint64_t a0 = kGmcTableOff + 8ull * s, a1 = a0 + 4, lo = 0, hi = 0;
+			if (call(aBar0Read, &a0, 1, &lo, 1) || call(aBar0Read, &a1, 1, &hi, 1)) return 1;
+			const uint64_t pte = hi << 32 | lo, pa = pte & kGmcPteAddr;
+			int good;
+			if (pass == 0) good = (pte & ~kGmcPteAddr) == kGmcPteFlagsSys && pa && pa < (1ull << 44) && pa != prev && (s || pte == o[1]);
+			else good = pte == (st[7] & kGmcPteAddr);
+			prev = pa;
+			printf("  slot %u PTE %#018llx  %s\n", s, pte, good ? "ok" : "WRONG");
+			if (!good) bad = 1;
+		}
+		if (pass == 0) {
+			if (call(aGartUnmap, u, 2, uo, 3)) { printf("gart unmap REFUSED\n"); return 1; }
+			printf("unmapped slots 0..3 to the dummy page (PTE %#llx)\n", uo[1]);
+			if (gmcState(st, 0)) return 1;
+		}
+	}
+	printf("%s\n", bad ? "G5 FAILED" : "G5 done: PTEs bound and unbound, every flush acknowledged, no fault (not a DMA proof)");
+	return bad;
+}
+
+static int doGmc(int argc, char **argv) {
+	const char *sub = argv[2];
+	uint64_t st[12], o[9] = {0};
+	if (!strcmp(sub, "flags") && argc == 3) { if (gmcState(st, 0)) return 1; gmcPrintState(st); return 0; }
+	if (!strcmp(sub, "state") && argc == 3) return gmcG0();
+	if (sub[0] == 'g' && sub[1] >= '1' && sub[1] <= '6' && sub[2] == 0 && argc == 3) {
+		if (sub[1] == '5') return gmcG5();
+		return gmcStep((uint32_t)(sub[1] - '0'));
+	}
+	if (!strcmp(sub, "restore") && argc == 3) {
+		if (call(aGmcRestore, NULL, 0, o, 3)) { printf("restore REFUSED\n"); return 1; }
+		printf("restored %llu registers (newest first), %llu read back differently. Nothing more runs until the kext is reloaded.\n", o[1], o[2]);
+		return o[2] ? 1 : 0;
+	}
+	// Raw access for tools/n33/gmc-negative.sh. The kext checks every call; one it accepts really writes.
+	if (!strcmp(sub, "step") && argc == 4) {
+		uint64_t a = num(argv[3]);
+		if (call(aGmcStep, &a, 1, o, 9)) return 1;
+		printf("step %llu: ok %llu, %llu registers\n", a, o[1], o[3]);
+		return o[1] == 1 ? 0 : 1;
+	}
+	if (!strcmp(sub, "map") && argc == 7) {
+		uint64_t a[4] = { num(argv[3]), num(argv[4]), num(argv[5]), num(argv[6]) };
+		if (call(aGartMap, a, 4, o, 4)) return 1;
+		printf("mapped: first PTE %#llx at MC %#llx\n", o[1], o[2]);
+		return 0;
+	}
+	if (!strcmp(sub, "unmap") && argc == 5) {
+		uint64_t a[2] = { num(argv[3]), num(argv[4]) };
+		if (call(aGartUnmap, a, 2, o, 3)) return 1;
+		printf("unmapped %llu slot(s)\n", o[2]);
+		return 0;
+	}
+	if (!strcmp(sub, "flush") && argc == 3) {
+		if (call(aGartFlush, NULL, 0, o, 4)) return 1;
+		printf("flush: MMHUB bits %#llx, GFXHUB bits %#llx, MMHUB fault status %#llx\n", o[1], o[2], o[3]);
+		return 0;
+	}
+	usage();
+	return 2;
+}
+
 int main(int argc, char **argv) {
 	if (argc < 2) { usage(); return 2; }
 	if (!strcmp(argv[1], "why") && argc == 3) { printf("%s\n", whyName(num(argv[2]))); return 0; }
@@ -793,6 +1088,8 @@ int main(int argc, char **argv) {
 		rc = doPsp2(argc, argv);
 	} else if (!strcmp(cmd, "smu") && argc >= 3) {
 		rc = doSmu(argc, argv);
+	} else if (!strcmp(cmd, "gmc") && argc >= 3) {
+		rc = doGmc(argc, argv);
 	} else if (!strcmp(cmd, "fbpublish") && argc == 2) {
 		static const char *why[] = { "published", "not ready (no BAR0 or not observing)", "already published",
 		                             "HUBP0 is not on the GOP scanout", "layout gate refused", "snapshot refused",
