@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <CommonCrypto/CommonDigest.h>
+#include "n33_fw.h"
 
 enum { kSelRegRead = 7, kSelN33 = 0x4e33 };
 enum { aStatus = 0, aRegWrite = 1, aBar0Read = 2, aBar0Write = 3, aCopy = 4, aFill = 5, aProtected = 6, aFbPublish = 7 };
@@ -25,12 +26,13 @@ static kern_return_t n33(uint64_t action, const uint64_t *args, uint32_t n, uint
 static uint64_t num(const char *s) { return strtoull(s, NULL, 0); }
 
 // The kext's protected-range kinds (n33_protected): 0 is the GOP scanout, 1-8 are DMCUB
-// windows CW0-CW7, 9-11 are REGION4-REGION6. Names match the kext's comments.
+// windows CW0-CW7, 9-11 are REGION4-REGION6, 12 the PSP ring pages (milestone 2). Names match the kext's comments.
 static const char *kindName(uint64_t k) {
 	static char b[16];
 	if (k == 0) return "GOP scanout";
 	if (k <= 8) { snprintf(b, sizeof b, "DMCUB CW%llu", k - 1); return b; }
 	if (k <= 11) { snprintf(b, sizeof b, "DMCUB REGION%llu", k + 1); return b; }
+	if (k == 12) return "PSP ring pages";
 	return "?";
 }
 
@@ -53,6 +55,14 @@ static const char *whyName(uint64_t why) {
 	case 12:  return "no PSP window set, or C2PMSG_36 changed since it was validated";
 	case 13:  return "sOS is already alive (C2PMSG_81 != 0)";
 	case 14:  return "PSP window overlaps the framebuffer surface";
+	case 15:  return "psp2: no KM ring created by this kext load";
+	case 16:  return "psp2: command out of order, or sent twice";
+	case 17:  return "psp2: fw_type not on the milestone 2 list";
+	case 18:  return "psp2: image not page aligned inside fw_buf / fw_pri, or empty";
+	case 19:  return "psp2: LOAD_TOC answer 0 or above 32 MiB";
+	case 20:  return "psp2: TMR overlaps a live DMCUB window or REGION";
+	case 21:  return "psp2: an earlier command failed; reload the kext";
+	case 22:  return "psp2: ring state (sOS down, C2PMSG_64 not ready, wptr not 0, MMHUB base, or ring exists)";
 	default:
 		if (why >= 100) { static char b[48]; snprintf(b, sizeof b, "overlaps protected %s", kindName(why - 100)); return b; }
 		return "?";
@@ -106,6 +116,8 @@ static void usage(void) {
 	    "  fill <dst> <len> <val>       fill BAR0 with a dword (guarded)\n"
 	    "  flip <bar0off>               point HUBP0 scanout at a VRAM offset (latches)\n"
 	    "  psp check|load <sos.bin> [off]  PSP 13.0.7 bootloader chain (check is read-only)\n"
+	    "  psp2 check <fwdir> <smu.bin> | 2a <fwdir> <smu.bin> | 2b <smu.bin> --power-cycled [--size-ok] | 2c <fwdir> | state | destroy\n"
+	    "                               PSP milestone 2: KM ring, TOC, TMR, GC firmware, RLC autoload\n"
 	    "  why <code>                   explain a refusal code from the kernel log (no kext needed)\n"
 	    "all offsets/dwords accept 0x.. ; writes are re-checked in the kext\n");
 }
@@ -270,6 +282,276 @@ static int doPsp(int argc, char **argv) {
 	return 0;
 }
 
+// ---- psp2: PSP 13.0.7 milestone 2 (stage 3 step 1; overview repo stage3-psp-m2-design.md) ----------------
+// n33ctl psp2 check <fwdir> <smu.bin>        read-only preflight (D10)
+// n33ctl psp2 2a <fwdir> <smu.bin>            preflight, ring create, LOAD_TOC (prints the TMR size)
+// n33ctl psp2 2b <smu.bin> --power-cycled [--size-ok]   LOAD_IP_FW SMU, SETUP_TMR
+// n33ctl psp2 2c <fwdir>                      26 x LOAD_IP_FW, AUTOLOAD_RLC, then the RLC/CP check
+// n33ctl psp2 state | destroy
+// The kext builds every ring frame and command; this tool stages images through the guarded BAR0 path
+// and decides the order. Any non-zero PSP status or a timeout ends the run, and the kext refuses every
+// later command until it is reloaded (D5).
+enum { aPspRing = 8, aPspCmd = 9, aPspDestroy = 10, aPspState = 11 };
+enum { cToc = 1, cIpFw = 2, cTmr = 3, cAutoload = 4 };
+#define kP2FwPri      0x8000000ull
+#define kP2FwBuf      0x8200000ull
+#define kP2FwBufSize  0x300000ull
+#define kP2TmrOff     0x3FC000000ull
+#define kP2TmrMax     (32ull << 20)
+#define kP2TmrExpect  0x1300000u        // LOAD_TOC's answer under Linux on this card (dmesg)
+#define kP2SmuVer     0x00525F00u       // 82.95.0, the running PMFW (D7)
+enum { kC2p33 = 0x16061, kC2p67 = 0x16083, kHdpRemap = 0xE4D,
+       kMp1C2p66 = 0x16282, kMp1C2p82 = 0x16292, kMp1C2p90 = 0x1629A,
+       kRlcBootload = 0xEE82, kCpStat = 0x21A0, kImuScratch0 = 0xE068 };
+static const struct { uint32_t reg; const char *name; } kP2Mmhub[] = {
+	{ 0x1A86C, "FB_LOCATION_BASE" }, { 0x1A86D, "FB_LOCATION_TOP" }, { 0x1A857, "FB_OFFSET" },
+	{ 0x1A86E, "AGP_TOP" }, { 0x1A86F, "AGP_BOT" }, { 0x1A870, "AGP_BASE" },
+	{ 0x1A871, "SYSTEM_APERTURE_LOW" }, { 0x1A872, "SYSTEM_APERTURE_HIGH" },
+	{ 0x1A873, "MX_L1_TLB_CNTL" }, { 0x1A6C0, "VM_CONTEXT0_CNTL" },
+};
+// D11: linux-firmware afabaf77, except the SMU image (217ca6e4, the file Ubuntu loaded on this card).
+static const struct { const char *file; uint32_t size; const char *sha; } kP2Pins[] = {
+	{ "sdma_6_0_2.bin",      34560,  "16c374344d2894da751f7028f9ec1f7520035fa9548d8c750d99a00a4afa86c7" },
+	{ "gc_11_0_2_pfp.bin",   234944, "9020f53788ad881fa01aa656fc082f9f8d3cdfc81f70aaac0bed6e6001491128" },
+	{ "gc_11_0_2_me.bin",    324080, "f5fe48f97acbd3ce13b35929290bfbac01ce522631cc91dcef1fdeb3ff35c8ed" },
+	{ "gc_11_0_2_mec.bin",   406528, "19bf080d6e672de5ed3fb86e3fdbdda4d700d8e3bda2dbdcc923101484ad645b" },
+	{ "gc_11_0_2_mes_2.bin", 263696, "719f446830ec8766f47b9cfcf1dc606b77dbf720a9e868c4cfcdc60e0767d1a7" },
+	{ "gc_11_0_2_mes1.bin",  221408, "5f8f0b50b7a9f8c34f68ee516a51968ed190cb0d0fb36c99e5301799dd65097c" },
+	{ "gc_11_0_2_imu.bin",   132352, "9befca62b0b0cfd252c3df4a9edca295526f4d43821cd99a6326454995a6ca2d" },
+	{ "gc_11_0_2_rlc.bin",   178848, "b43eb2fd0600f50a1a5796bc9983d6b39b5c20960234920f5e89cb362193e0b8" },
+	{ "psp_13_0_7_sos.bin",  248496, "94db505fa6482f258c33a0a8d412050f6d843ab4ada368252e988f82f8a26fa8" },
+	{ "smu_13_0_7.bin",      287080, "ccecc0fd0196b9613c920a51c2fd9436e739ff19dda5bdf74d97562387231732" },
+};
+enum { kPinSdma, kPinPfp, kPinMe, kPinMec, kPinMes2, kPinMes1, kPinImu, kPinRlc, kPinSos, kPinSmu, kPins };
+
+static void sha256hex(const uint8_t *b, size_t n, char hex[65]) {
+	uint8_t dg[CC_SHA256_DIGEST_LENGTH];
+	CC_SHA256(b, (CC_LONG)n, dg);
+	for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(hex + 2 * i, 3, "%02x", dg[i]);
+}
+
+// Read a pinned file (path = dir/name, or the full path when dir is NULL); refuse on size or sha256.
+static uint8_t *p2load(const char *dir, const char *path, int pin, size_t *n) {
+	char full[1024];
+	snprintf(full, sizeof full, "%s%s%s", dir ? dir : "", dir ? "/" : "", dir ? kP2Pins[pin].file : path);
+	FILE *f = fopen(full, "rb");
+	if (!f) { fprintf(stderr, "cannot open %s\n", full); return NULL; }
+	uint8_t *b = malloc(kP2Pins[pin].size + 1);
+	*n = b ? fread(b, 1, kP2Pins[pin].size + 1, f) : 0;
+	fclose(f);
+	char hex[65];
+	if (!b || *n != kP2Pins[pin].size) { fprintf(stderr, "refusing %s: %zu bytes, pinned %u\n", full, *n, kP2Pins[pin].size); free(b); return NULL; }
+	sha256hex(b, *n, hex);
+	if (strcmp(hex, kP2Pins[pin].sha)) { fprintf(stderr, "refusing %s: sha256 %s\n", full, hex); free(b); return NULL; }
+	return b;
+}
+
+static int p2stage(uint64_t off, const uint8_t *p, uint32_t n, const char *what) {
+	uint64_t o[1] = {0};
+	for (uint32_t i = 0; i < n; i += 4) {
+		uint32_t w = 0;
+		memcpy(&w, p + i, n - i < 4 ? n - i : 4);
+		uint64_t a[2] = { off + i, w };
+		if (call(aBar0Write, a, 2, o, 1)) { fprintf(stderr, "staging %s failed at VRAM %#llx\n", what, off + i); return 1; }
+	}
+	return 0;
+}
+
+static int p2state(uint64_t s[8]) {
+	uint32_t got = 8;
+	if (n33(aPspState, NULL, 0, s, &got) != kIOReturnSuccess) { fprintf(stderr, "psp2 state call failed\n"); return 1; }
+	return 0;
+}
+static void p2printState(const uint64_t *s) {
+	printf("kext: ring %llu toc %llu smu %llu tmr %llu rlcG %llu autoload %llu FAILED %llu; tmr answer %#llx; fence %llu; "
+	       "C2PMSG_64 %#llx _67 %#llx _81 %#llx\n", s[0] & 1, s[0] >> 1 & 1, s[0] >> 2 & 1, s[0] >> 3 & 1, s[0] >> 4 & 1,
+	       s[0] >> 5 & 1, s[0] >> 6 & 1, s[1], s[2], s[5], s[6], s[7]);
+}
+
+// resp.fw_addr is the "FW address within TMR" (psp_gfx_if.h:452) but its form (MC, physical, or an offset
+// into the TMR) is not documented, so any of the three is accepted, with the whole image inside the TMR.
+static int p2inTmr(uint64_t a, uint64_t n, uint64_t mc, uint64_t pa, uint64_t len, const char **form) {
+	const uint64_t base[3] = { mc, pa, 0 };
+	static const char *const nm[3] = { "MC address", "physical address", "TMR offset" };
+	for (int i = 0; i < 3; i++)
+		if (a >= base[i] && a - base[i] <= len && n <= len - (a - base[i])) { *form = nm[i]; return 1; }
+	return 0;
+}
+
+// One ring command. 0 only when the PSP fenced it with status 0. *o gets fenced, status, tmr_size, fw_addr.
+static int p2cmd(uint32_t cmd, uint32_t type, uint64_t off, uint64_t size, const char *name, uint64_t o[7]) {
+	uint64_t a[4] = { cmd, type, off, size };
+	memset(o, 0, 7 * sizeof o[0]);
+	if (call(aPspCmd, a, 4, o, 7)) { printf("%s: REFUSED by the kext\n", name); return 1; }
+	printf("%-26s index %llu  %s  status %#llx  fw_addr %#llx  tmr_size %#llx\n", name, o[5],
+	       o[1] ? "fenced" : "TIMEOUT", o[2], o[4], o[3]);
+	return !(o[1] == 1 && o[2] == 0);
+}
+
+// D10: the read-only preflight. 2a runs it first and stops on any refusal. 0 = ok.
+static int p2check(const char *fwdir, const char *smu, const uint64_t *st, uint64_t fbBase, const uint64_t *s) {
+	int bad = 0;
+	p2printState(st);
+	const uint32_t regs[] = { kC2p81, kC2p58, kC2p64, kC2p67, kC2p33, kC2p35, kC2p36, kHdpRemap };
+	const char *names[] = { "C2PMSG_81", "C2PMSG_58", "C2PMSG_64", "C2PMSG_67", "C2PMSG_33", "C2PMSG_35", "C2PMSG_36", "HDP remap (0xe4d)" };
+	uint32_t v[8] = {0}, mm[10] = {0};
+	for (int i = 0; i < 8; i++) { if (pspRd(regs[i], &v[i])) return 1; printf("%-20s %#x\n", names[i], v[i]); }
+	for (int i = 0; i < 10; i++) { if (pspRd(kP2Mmhub[i].reg, &mm[i])) return 1; printf("MMHUB %-20s %#x\n", kP2Mmhub[i].name, mm[i]); }
+	if (v[0] == 0) { printf("REFUSE: sOS not alive (C2PMSG_81 0): run milestone 1 first\n"); bad = 1; }
+	if ((v[2] & 0x8000FFFFu) != 0x80000000u) { printf("REFUSE: C2PMSG_64 not ready for ring creation\n"); bad = 1; }
+	if (v[3] != 0 && !(st[0] & 1)) { printf("REFUSE: C2PMSG_67 is %#x with no ring of ours (a ring from an earlier load?)\n", v[3]); bad = 1; }
+	const uint64_t fbLo = (uint64_t)(mm[0] & 0xFFFFFFu) << 24, fbHi = ((uint64_t)(mm[1] & 0xFFFFFFu) << 24) + (1ull << 24);
+	const uint64_t lo = fbBase + kP2FwPri, hi = fbBase + kP2TmrOff + kP2TmrMax;
+	printf("plan: MC %#llx .. %#llx; FB_LOCATION %#llx .. %#llx\n", lo, hi, fbLo, fbHi);
+	if (fbLo != fbBase || lo < fbLo || hi > fbHi) { printf("REFUSE: the plan's MC addresses fall outside FB_LOCATION\n"); bad = 1; }
+	const uint64_t apLo = (uint64_t)mm[6] << 18, apHi = ((uint64_t)mm[7] << 18) + (1ull << 18);
+	if (mm[7] > mm[6]) {
+		printf("system aperture %#llx .. %#llx: %s\n", apLo, apHi, (lo >= apLo && hi <= apHi) ? "plan inside" : "PLAN OUTSIDE");
+		if (!(lo >= apLo && hi <= apHi)) bad = 1;
+	} else printf("system aperture not set (LOW %#x HIGH %#x)\n", mm[6], mm[7]);
+	const struct { uint64_t off, len; const char *what; } plan[] = {
+		{ kP2FwPri, 1ull << 20, "fw_pri" }, { 0x8100000, 0x3000, "ring, command, fence" },
+		{ kP2FwBuf, kP2FwBufSize, "fw_buf" }, { kP2TmrOff, kP2TmrMax, "TMR (up to 32 MiB)" } };
+	for (uint64_t i = 0; i < s[8]; i++) {
+		uint64_t a = i, p[3] = {0};
+		if (call(aProtected, &a, 1, p, 3)) return 1;
+		printf("protected [%llu] VRAM %#llx len %#llx  %s\n", i, p[0], p[1], kindName(p[2]));
+		for (unsigned k = 0; k < sizeof plan / sizeof plan[0]; k++)
+			if (plan[k].off < p[0] + p[1] && p[0] < plan[k].off + plan[k].len && p[2] != 12) {
+				printf("REFUSE: %s overlaps protected [%llu]\n", plan[k].what, i); bad = 1;
+			}
+	}
+	
+	for (int i = 0; i < kPins; i++) {
+		size_t n = 0;
+		uint8_t *b = i == kPinSmu ? p2load(NULL, smu, i, &n) : p2load(fwdir, NULL, i, &n);
+		if (!b) { bad = 1; continue; }
+		printf("firmware %-20s %zu bytes, ucode_version %#x, sha256 ok\n", kP2Pins[i].file, n, n33_rd32(b, 16));
+		if (i == kPinSmu && n33_rd32(b, 16) != kP2SmuVer) { printf("REFUSE: SMU image is not 82.95.0\n"); bad = 1; }
+		free(b);
+	}
+	printf("%s\n", bad ? "check FAILED: do not run 2a" : "check ok");
+	return bad;
+}
+
+static int doPsp2(int argc, char **argv) {
+	const char *sub = argv[2];
+	uint64_t st[8] = {0}, s[9] = {0}, o[7] = {0};
+	if (p2state(st) || call(aStatus, NULL, 0, s, 9)) return 1;
+	const uint64_t fbBase = s[1];
+
+	if (!strcmp(sub, "state")) { p2printState(st); return 0; }
+	if (!strcmp(sub, "destroy")) {
+		uint64_t d[3] = {0};
+		if (call(aPspDestroy, NULL, 0, d, 3)) return 1;
+		printf("ring destroyed: %s, C2PMSG_64 %#llx (no more commands until the kext is reloaded)\n", d[2] ? "ok" : "NO ANSWER", d[1]);
+		return d[2] ? 0 : 1;
+	}
+
+	if (!strcmp(sub, "check") && argc == 5) return p2check(argv[3], argv[4], st, fbBase, s);
+
+	if (!strcmp(sub, "2a") && argc == 5) {
+		if (st[0] != 0) { printf("refusing: the kext already has PSP state (reload the kext; see psp2 state)\n"); p2printState(st); return 1; }
+		if (p2check(argv[3], argv[4], st, fbBase, s)) return 1;   // D10: the preflight is not optional
+		size_t n = 0;
+		uint8_t *sos = p2load(argv[3], NULL, kPinSos, &n);
+		struct n33img toc;
+		if (!sos || n33_fw_toc(sos, n, &toc)) { fprintf(stderr, "TOC not found\n"); free(sos); return 1; }
+		uint64_t f[3] = { kP2FwPri, 1ull << 20, 0 }, fo[1];
+		int rc = call(aFill, f, 3, fo, 1) || p2stage(kP2FwPri, toc.p, toc.n, "TOC");
+		free(sos);
+		if (rc) return 1;
+		printf("TOC staged at VRAM %#llx (%u bytes)\n", kP2FwPri, toc.n);
+		uint64_t r[3] = {0};
+		if (call(aPspRing, NULL, 0, r, 3)) { printf("ring create REFUSED\n"); return 1; }
+		printf("ring create: %s, C2PMSG_64 %#llx\n", r[2] ? "ok" : "NO ANSWER", r[1]);
+		if (!r[2]) return 1;
+		if (p2cmd(cToc, 0, 0, toc.n, "LOAD_TOC", o)) return 1;
+		uint32_t c81 = 0;
+		pspRd(kC2p81, &c81);
+		printf("C2PMSG_81 %#x, C2PMSG_67 %#llx\n", c81, o[6]);
+		if (o[3] == kP2TmrExpect) { printf("2a done: TMR size %#llx as predicted. 2b is a separate go.\n", o[3]); return 0; }
+		if (o[3] && o[3] <= kP2TmrMax) printf("2a done, STOP: D6 address unchanged, size %#llx differs from the prediction %#x. 2b is William's call (--size-ok).\n", o[3], kP2TmrExpect);
+		else printf("2a done, STOP: TMR size %#llx is 0 or above 32 MiB; a new placement is designed before 2b.\n", o[3]);
+		return 1;
+	}
+
+	if (!strcmp(sub, "2b") && argc >= 5) {
+		int cycled = 0, sizeOk = 0;
+		for (int i = 4; i < argc; i++) { if (!strcmp(argv[i], "--power-cycled")) cycled = 1; else if (!strcmp(argv[i], "--size-ok")) sizeOk = 1; }
+		if (!cycled) { printf("refusing: 2b runs at most once per power cycle (D13); pass --power-cycled to state it\n"); return 1; }
+		if ((st[0] & 0x4F) != 0x3) { printf("refusing: needs ring and LOAD_TOC done, nothing after, no failure\n"); p2printState(st); return 1; }
+		if (st[1] != kP2TmrExpect && !sizeOk) { printf("refusing: TMR size %#llx is not the predicted %#x (Q9: William's call, --size-ok)\n", st[1], kP2TmrExpect); return 1; }
+		size_t n = 0;
+		uint8_t *smu = p2load(NULL, argv[3], kPinSmu, &n);
+		struct n33img im; uint32_t ver = 0;
+		if (!smu || n33_fw_smu(smu, n, &im, &ver) || ver != kP2SmuVer) { fprintf(stderr, "SMU image refused\n"); free(smu); return 1; }
+		uint32_t m[3][2] = {{0}};
+		const uint32_t mr[3] = { kMp1C2p90, kMp1C2p66, kMp1C2p82 };
+		for (int i = 0; i < 3; i++) pspRd(mr[i], &m[i][0]);
+		printf("before: MP1 C2PMSG_90 %#x _66 %#x _82 %#x\n", m[0][0], m[1][0], m[2][0]);
+		uint64_t f[3] = { kP2FwBuf, (im.n + 0xFFFull) & ~0xFFFull, 0 }, fo[1];
+		int rc = call(aFill, f, 3, fo, 1) || p2stage(kP2FwBuf, im.p, im.n, "SMU");
+		free(smu);
+		if (rc) return 1;
+		if (p2cmd(cIpFw, 18, kP2FwBuf, im.n, "LOAD_IP_FW SMU (82.95.0)", o)) return 1;
+		if (p2cmd(cTmr, 0, 0, 0, "SETUP_TMR", o)) return 1;
+		for (int i = 0; i < 3; i++) pspRd(mr[i], &m[i][1]);
+		uint32_t c81 = 0;
+		pspRd(kC2p81, &c81);
+		printf("after: MP1 C2PMSG_90 %#x _66 %#x _82 %#x; C2PMSG_81 %#x\n", m[0][1], m[1][1], m[2][1], c81);
+		printf("2b done%s. Check the monitor still shows the desktop.\n", c81 ? "" : ", BUT C2PMSG_81 is 0");
+		return c81 ? 0 : 1;
+	}
+
+	if (!strcmp(sub, "2c") && argc == 4) {
+		if ((st[0] & 0x7F) != 0xF) { printf("refusing: needs ring, LOAD_TOC, SMU and SETUP_TMR done, nothing after, no failure\n"); p2printState(st); return 1; }
+		uint8_t *b[kPinRlc + 1] = {0}; size_t n[kPinRlc + 1] = {0};
+		int rc = 0;
+		for (int i = 0; i <= kPinRlc && !rc; i++) if (!(b[i] = p2load(argv[3], NULL, i, &n[i]))) rc = 1;
+		struct n33files fl;
+		struct n33img gc[26];
+		uint64_t offs[26], used = 0;
+		if (!rc) {
+			for (int i = 0; i < 7; i++) { fl.p[i] = b[i]; fl.n[i] = n[i]; }
+			rc = n33_fw_gc(&fl, b[kPinRlc], n[kPinRlc], gc);
+			if (!rc) used = n33_pack(gc, 26, offs);
+			if (!rc && used > kP2FwBufSize) rc = 1;
+		}
+		if (!rc) {
+			uint64_t f[3] = { kP2FwBuf, used, 0 }, fo[1];
+			rc = call(aFill, f, 3, fo, 1);
+			for (int i = 0; i < 26 && !rc; i++) {
+				rc = p2stage(kP2FwBuf + offs[i], gc[i].p, gc[i].n, gc[i].name);
+				printf("staged %-26s VRAM %#llx  %#x bytes\n", gc[i].name, kP2FwBuf + offs[i], gc[i].n);
+			}
+		}
+		const uint64_t tmrMc = fbBase + kP2TmrOff, tmrLen = ((uint64_t)st[1] + 0xFFF) & ~0xFFFull;
+		for (int i = 0; i < 26 && !rc; i++) {
+			rc = p2cmd(cIpFw, gc[i].type, kP2FwBuf + offs[i], gc[i].n, gc[i].name, o);
+			const char *form = NULL;
+			if (!rc && !p2inTmr(o[4], gc[i].n, tmrMc, kP2TmrOff, tmrLen, &form)) { printf("STOP: %s landed at %#llx, not inside the TMR in any form\n", gc[i].name, o[4]); rc = 1; }
+			if (!rc && i == 0) printf("fw_addr form: %s\n", form);
+		}
+		for (int i = 0; i <= kPinRlc; i++) free(b[i]);
+		if (rc) return 1;
+		if (p2cmd(cAutoload, 0, 0, 0, "AUTOLOAD_RLC", o)) return 1;
+		uint32_t boot = 0, cp = 0, imu = 0;
+		for (int t = 0; t < 100; t++) {                       // Linux: usec_timeout, about 100 ms
+			if (pspRd(kRlcBootload, &boot) || pspRd(kCpStat, &cp)) return 1;
+			if ((boot & 0x80000000u) && cp == 0) break;
+			usleep(1000);
+		}
+		pspRd(kImuScratch0, &imu);
+		printf("RLC_RLCS_BOOTLOAD_STATUS %#x  CP_STAT %#x  GFX_IMU_SCRATCH_0 %#x (expected 0x0b214700)\n", boot, cp, imu);
+		const int ok = (boot & 0x80000000u) && cp == 0;
+		printf("%s\n", ok ? "2c done: RLC autoload complete" : "2c: autoload NOT complete (next suspect: the SMU handshake, Q4)");
+		return !ok;
+	}
+	usage();
+	return 2;
+}
+
 int main(int argc, char **argv) {
 	if (argc < 2) { usage(); return 2; }
 	if (!strcmp(argv[1], "why") && argc == 3) { printf("%s\n", whyName(num(argv[2]))); return 0; }
@@ -334,6 +616,8 @@ int main(int argc, char **argv) {
 		}
 	} else if (!strcmp(cmd, "psp") && argc >= 4) {
 		rc = doPsp(argc, argv);
+	} else if (!strcmp(cmd, "psp2") && argc >= 3) {
+		rc = doPsp2(argc, argv);
 	} else if (!strcmp(cmd, "fbpublish") && argc == 2) {
 		static const char *why[] = { "published", "not ready (no BAR0 or not observing)", "already published",
 		                             "HUBP0 is not on the GOP scanout", "layout gate refused", "snapshot refused",

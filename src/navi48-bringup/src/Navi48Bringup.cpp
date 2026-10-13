@@ -16,6 +16,11 @@
 #include "Navi48MetalNub.hpp"   // 0.0.610: terminate a published Metal nub at stop
 #include "Navi48DisplayNub.hpp"       // 0.0.652 (M5): fbpublish 2
 #include "N33Framebuffer.hpp"         // N33 stage 2 step 3: the N33 framebuffer nub and layout gate
+#if defined(N33_OBSERVE)
+// Serializes n33Call (milestone 2, D4: no BAR0 write while a PSP command is in flight; a command and its
+// fence wait run inside one call). ponytail: allocated once, never freed, as gN33FbLock.
+static IOLock *gN33PspLock { nullptr };
+#endif
 #include <libkern/c++/OSData.h>
 #include "amd/native_s1b.h"   // 0.0.600 (native S1b): navi48-native=1, default OFF
 #include "amd/native_s1c.h"   // 0.0.612: n1c_latch_pci_bars
@@ -8967,10 +8972,13 @@ void Navi48Bringup::stop(IOService *provider) {
 	if (n33Observing) {
 		n48::uninstall_ttl_hook();
 		n33FbDetach();             // the framebuffer can no longer flip HUBP0
+		if (gN33PspLock) IOLockLock(gN33PspLock);   // no n33Call runs from here on against unmapped BARs
+		n33PspStop();              // DESTROY_RINGS if this load created the KM ring (milestone 2, D13)
 		n33RestoreScanout();       // HUBP0 back on the GOP surface before BAR0 and the registers go away
 		if (n33Bar0Map) { n33Bar0Map->release(); n33Bar0Map = nullptr; n33Bar0 = nullptr; }
 		dev.rmmio = nullptr; dev.rmmioSize = 0;
 		unmapRegisters();
+		if (gN33PspLock) IOLockUnlock(gN33PspLock);
 		super::stop(provider);
 		return;
 	}
@@ -9008,6 +9016,7 @@ bool Navi48Bringup::startN33Observe() {
 	n33SnapshotScanout();
 	if (!n33MapBar0()) N48LOG("n33: BAR0 not mapped; BAR0 actions will refuse");
 	n33FbAttach();
+	if (!gN33PspLock) gN33PspLock = IOLockAlloc();
 	gNavi48Ttl.bind(this);
 	n48::TtlHookResult hook = n48::install_ttl_hook(pciDevice, &gNavi48Ttl);
 	N48LOG("n33: TTL hook %s (%s)", hook.installed ? "installed" : "NOT installed", hook.why);
@@ -9033,8 +9042,9 @@ constexpr uint64_t kN33Margin     = 64ull << 10;
 constexpr uint64_t kN33MaxXfer    = 64ull << 20;
 constexpr uint32_t kN33Hubp0SurfCfg   = 0x3AA5;   // HUBP0_DCSURF_SURFACE_CONFIG (reglist.tsv)
 enum : uint32_t { kN33Status = 0, kN33RegWrite = 1, kN33Bar0Read = 2, kN33Bar0Write = 3,
-                  kN33Bar0Copy = 4, kN33Bar0Fill = 5, kN33Protected = 6, kN33FbPublish = 7 };
-struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6
+                  kN33Bar0Copy = 4, kN33Bar0Fill = 5, kN33Protected = 6, kN33FbPublish = 7,
+                  kN33PspRing = 8, kN33PspCmd = 9, kN33PspDestroy = 10, kN33PspState = 11 };
+struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages
 }
 
 void Navi48Bringup::n33SnapshotScanout() {
@@ -9121,7 +9131,7 @@ bool Navi48Bringup::n33MapBar0() {
 // Every VRAM range that must never be written: the GOP's scanout as found at start and each
 // enabled DMCUB window, read live so a window DMCUB moves is still covered.
 static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uint64_t gopOff, uint64_t gopLen,
-                              N33Range *out, unsigned max) {
+                              N33Range *out, unsigned max, bool pspPages) {
 	unsigned n = 0;
 	auto add = [&](uint64_t gpu, uint64_t len, uint32_t kind) {
 		if (n >= max || gpu < fbOffset || len == 0) return;   // below fbOffset: not VRAM
@@ -9143,6 +9153,7 @@ static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uin
 		const uint64_t gpu = ((uint64_t)r[kN33RegionOffset + 2 * i + 1] << 32) | r[kN33RegionOffset + 2 * i];
 		add(gpu, (uint64_t)(top & 0x1FFFFFFF) + 1, 9 + i);
 	}
+	if (pspPages && n < max) out[n++] = { n33psp2::kRing, n33psp2::kPspPages, 12 };   // milestone 2: the PSP's ring pages
 	return n;
 }
 
@@ -9151,14 +9162,23 @@ bool Navi48Bringup::n33WriteAllowed(uint64_t off, uint64_t len, uint64_t *why) c
 	if (!n33Bar0 || len == 0 || (off & 3) || (len & 3) || len > kN33MaxXfer) { *why = 1; return false; }
 	if (off < kN33WriteFloor || off > n33Bar0Size || len > n33Bar0Size - off) { *why = 2; return false; }
 	N33Range rs[16];
-	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16);
+	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, n33PspPagesOwned());
 	for (unsigned i = 0; i < n; i++)
 		if (off < rs[i].off + rs[i].len && rs[i].off < off + len) { *why = 100 + rs[i].kind; return false; }   // off + len <= n33Bar0Size here
 	return true;
 }
 
 IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount) {
+	if (!gN33PspLock) return kIOReturnNotReady;
+	IOLockLock(gN33PspLock);
+	const IOReturn r = n33CallLocked(action, in, inCount, out, outCount);
+	IOLockUnlock(gN33PspLock);
+	return r;
+}
+
+IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount) {
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	if (!rmmio) return kIOReturnNotReady;   // stopping (BAR0 actions check n33Bar0 themselves)
 	auto need = [&](uint32_t k) { return inCount >= k; };
 	uint64_t why = 0;
 	switch (action) {
@@ -9167,7 +9187,7 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 		put(0, n33Bar0Size); put(1, n33FbBase); put(2, n33FbOffset); put(3, n33GopOff); put(4, n33GopLen);
 		put(5, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
 		put(6, rmmio[kN33Hubp0Pitch]); put(7, rmmio[kN33Hubp0FlipCtl]);
-		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16));
+		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, n33PspPagesOwned()));
 		put(9, n33SurfCfg); put(10, n33Bar0Phys);
 		return kIOReturnSuccess;
 	}
@@ -9176,7 +9196,7 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 	case kN33Protected: {
 		if (!need(1)) return kIOReturnBadArgument;
 		N33Range rs[16];
-		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16);
+		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, n33PspPagesOwned());
 		if (in[0] >= n) return kIOReturnNotFound;
 		put(0, rs[in[0]].off); put(1, rs[in[0]].len); put(2, rs[in[0]].kind);
 		return kIOReturnSuccess;
@@ -9238,6 +9258,7 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 	}
 	case kN33Bar0Write: {
 		if (!need(2)) return kIOReturnBadArgument;
+		if (n33P2.failed) { put(0, n33psp2::kWhyFailed); return kIOReturnNotPermitted; }   // milestone 2 D4/D5: the PSP may still be reading
 		if (!n33WriteAllowed(in[0], 4, &why)) { put(0, why); return kIOReturnNotPermitted; }
 		*reinterpret_cast<volatile uint32_t *>(n33Bar0 + in[0]) = (uint32_t)in[1];
 		put(0, 0);
@@ -9246,6 +9267,7 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 	case kN33Bar0Copy: {   // in: src, dst, len
 		if (!need(3)) return kIOReturnBadArgument;
 		const uint64_t src = in[0], dst = in[1], len = in[2];
+		if (n33P2.failed) { put(0, n33psp2::kWhyFailed); return kIOReturnNotPermitted; }
 		if ((src & 3) || src > n33Bar0Size || len > n33Bar0Size - src) { put(0, 7); return kIOReturnNotPermitted; }
 		if (!n33WriteAllowed(dst, len, &why)) { put(0, why); return kIOReturnNotPermitted; }
 		if (src < dst + len && dst < src + len) { put(0, 8); return kIOReturnNotPermitted; }
@@ -9258,6 +9280,7 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 	}
 	case kN33Bar0Fill: {   // in: dst, len, value
 		if (!need(3)) return kIOReturnBadArgument;
+		if (n33P2.failed) { put(0, n33psp2::kWhyFailed); return kIOReturnNotPermitted; }
 		if (!n33WriteAllowed(in[0], in[1], &why)) { put(0, why); return kIOReturnNotPermitted; }
 		auto *d = reinterpret_cast<volatile uint32_t *>(n33Bar0 + in[0]);
 		for (uint64_t i = 0; i < in[1] / 4; i++) d[i] = (uint32_t)in[2];
@@ -9265,9 +9288,155 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 		put(0, 0);
 		return kIOReturnSuccess;
 	}
+	case kN33PspRing: {           // out: 0, C2PMSG_64 after, created ok (1/0)
+		uint32_t c64 = 0;
+		const uint32_t w = n33PspRingCreate(&c64);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		put(0, 0); put(1, c64); put(2, n33P2.failed ? 0 : 1);
+		return kIOReturnSuccess;
+	}
+	case kN33PspCmd: {            // in: cmd, fw_type, VRAM offset, size. out: 0, fenced, status, tmr_size, fw_addr, index, wptr after
+		if (!need(4)) return kIOReturnBadArgument;
+		const uint32_t w = n33PspSubmit((uint32_t)in[0], (uint32_t)in[1], in[2], in[3], out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33PspDestroy: {        // out: 0, C2PMSG_64 after, ok (1/0)
+		uint32_t c64 = 0;
+		if (!n33P2.ring) { put(0, n33psp2::kWhyNoRing); return kIOReturnNotPermitted; }
+		const bool ok = n33PspRingDestroy(&c64);
+		put(0, 0); put(1, c64); put(2, ok ? 1 : 0);
+		return kIOReturnSuccess;
+	}
+	case kN33PspState: {          // out: flags, tmrAnswer, fence, loaded[0], loaded[1], C2PMSG_64, _67, _81
+		const auto &s = n33P2;
+		put(0, (uint64_t)s.ring | (uint64_t)s.toc << 1 | (uint64_t)s.smu << 2 | (uint64_t)s.tmr << 3 |
+		       (uint64_t)s.rlcG << 4 | (uint64_t)s.autoload << 5 | (uint64_t)s.failed << 6);
+		put(1, s.tmrAnswer); put(2, s.fence); put(3, s.loaded[0]); put(4, s.loaded[1]);
+		put(5, rmmio[n33psp2::kC2pmsg64]); put(6, rmmio[n33psp2::kC2pmsg67]); put(7, rmmio[n33psp2::kC2pmsg81]);
+		return kIOReturnSuccess;
+	}
 	default:
 		return kIOReturnUnsupported;
 	}
+}
+
+// ---- N33 stage 3 step 1, milestone 2: the PSP KM ring --------------------------------------------------
+// Design: stage3-psp-m2-design.md (D1 to D6, D13). The kext owns the ring, command and fence pages and
+// builds every frame and command (n33psp2::build_*) from checked arguments; n33ctl stages the images
+// into fw_pri / fw_buf through the guarded BAR0 path and decides the order. Called under gN33PspLock.
+
+void Navi48Bringup::n33PspW(uint64_t off, uint32_t v) { *reinterpret_cast<volatile uint32_t *>(n33Bar0 + off) = v; }
+uint32_t Navi48Bringup::n33PspR(uint64_t off) const { return *reinterpret_cast<volatile uint32_t *>(n33Bar0 + off); }
+
+// psp_wait_for on an MP0 mailbox: Linux spins 100000 x 1 us; this sleeps 1 ms up to 100 times.
+static bool n33_wait_tos(volatile uint32_t *r, uint32_t reg, uint32_t *last) {
+	for (int i = 0; i < 100; i++) {
+		*last = r[reg];
+		if (n33psp2::tos_ok(*last)) return true;
+		IOSleep(1);
+	}
+	*last = r[reg];
+	return n33psp2::tos_ok(*last);
+}
+
+// psp_v13_0_ring_create, non-SR-IOV branch. Once per kext load. A create that does not answer still
+// marks the ring as sent (so stop() destroys it and its pages stay protected) and latches failure.
+uint32_t Navi48Bringup::n33PspRingCreate(uint32_t *c64) {
+	using namespace n33psp2;
+	uint64_t why = 0;
+	*c64 = rmmio[kC2pmsg64];
+	if (n33P2.ring || n33P2.fence || n33P2.failed) return kWhyRingState;
+	if (!n33psp::mmhub_agrees(rmmio[n33psp::kMmhubFbBase], n33FbBase)) return kWhyRingState;   // MC addresses are MMHUB's
+	if (rmmio[kC2pmsg81] == 0 || rmmio[kC2pmsg67] != 0 || !tos_ok(*c64)) return kWhyRingState;
+	if (!n33WriteAllowed(kRing, kPspPages, &why)) return (uint32_t)why;
+	for (uint64_t o = 0; o < kPspPages; o += 4) n33PspW(kRing + o, 0);
+	const uint64_t mc = n33FbBase + kRing;
+	OSSynchronizeIO();
+	rmmio[kC2pmsg69] = (uint32_t)mc;
+	rmmio[kC2pmsg70] = (uint32_t)(mc >> 32);
+	rmmio[kC2pmsg71] = kRingBytes;
+	rmmio[kC2pmsg64] = kRingCreateKm;
+	n33P2.ring = true;
+	IOSleep(20);                                   // "handshake issue with hardware" (psp_v13_0.c:470)
+	const bool ok = n33_wait_tos(rmmio, kC2pmsg64, c64);
+	if (!ok) n33P2.failed = true;
+	N48LOG("n33 psp2: ring create at VRAM %#llx (MC %#llx): %s, C2PMSG_64 %#x", kRing, mc, ok ? "ok" : "NO ANSWER", *c64);
+	return 0;
+}
+
+// psp_v13_0_ring_stop: DESTROY_RINGS, 20 ms, wait for the response flag. The pages stay protected.
+bool Navi48Bringup::n33PspRingDestroy(uint32_t *c64) {
+	using namespace n33psp2;
+	rmmio[kC2pmsg64] = kRingDestroy;
+	IOSleep(20);
+	const bool ok = n33_wait_tos(rmmio, kC2pmsg64, c64);
+	n33P2.ring = false;
+	n33P2.failed = true;                           // one ring per kext load: nothing more is sent
+	N48LOG("n33 psp2: ring destroyed: %s, C2PMSG_64 %#x", ok ? "ok" : "NO ANSWER", *c64);
+	return ok;
+}
+
+void Navi48Bringup::n33PspStop() {           // called by stop() with gN33PspLock held
+	if (rmmio && n33P2.ring) { uint32_t c64 = 0; n33PspRingDestroy(&c64); }
+}
+
+// One command through the KM ring: psp_cmd_submit_buf + psp_ring_cmd_submit. Returns a refusal, or 0
+// with the outcome in out[] (a non-zero PSP status or a timeout is an outcome, not a refusal, and
+// latches failure: D5).
+uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount) {
+	using namespace n33psp2;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const uint32_t w = may_send(n33P2, cmd, fwType, off, size);
+	if (w) return w;
+	uint64_t mc = 0, sz = size, pa = 0;
+	if (cmd == kToc) {
+		mc = n33FbBase + kFwPri;
+	} else if (cmd == kIpFw) {
+		mc = n33FbBase + off;
+	} else if (cmd == kTmr) {
+		sz = tmr_bytes(n33P2.tmrAnswer);
+		mc = n33FbBase + kTmrOff;
+		const uint64_t fbEnd = ((uint64_t)(rmmio[n33psp::kMmhubFbTop] & 0x00FFFFFFu) << 24) + (1ull << 24);
+		if (mc + sz > fbEnd) { N48LOG("n33 psp2: refused SETUP_TMR: MC %#llx +%#llx ends past FB_LOCATION_TOP (%#llx)", mc, sz, fbEnd); return kWhyTmrSize; }
+		pa = kTmrOff + ((uint64_t)(rmmio[n33psp::kMmhubFbOffset] & 0x00FFFFFFu) << 24);   // amdgpu_gmc_vram_pa
+		N33Range rs[16];
+		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, 16, true);
+		for (unsigned i = 0; i < n; i++)
+			if (n33psp::overlaps(kTmrOff, sz, rs[i].off, rs[i].len)) {
+				N48LOG("n33 psp2: refused SETUP_TMR: VRAM %#llx +%#llx overlaps protected kind %u at %#llx", kTmrOff, sz, rs[i].kind, rs[i].off);
+				return kWhyTmrOverlap;
+			}
+		if (sz != n33P2.tmrAnswer) N48LOG("n33 psp2: TMR size %#x rounded up to %#llx", n33P2.tmrAnswer, sz);
+	}
+	const uint32_t wptr = rmmio[kC2pmsg67];
+	const int32_t slot = frame_slot(wptr);
+	if (slot < 0) { n33P2.failed = true; N48LOG("n33 psp2: write pointer %#x is not a frame boundary", wptr); return kWhyRingState; }
+
+	uint32_t c[kCmdDw], f[kFrameDw];
+	build_cmd(c, cmd, fwType, mc, sz, pa);
+	for (uint64_t o = 0; o < kPage; o += 4) n33PspW(kCmd + o, 0);
+	for (uint32_t i = 0; i < kCmdDw; i++) n33PspW(kCmd + 4ull * i, c[i]);
+	const uint32_t index = ++n33P2.fence;
+	build_frame(f, n33FbBase + kCmd, n33FbBase + kFence, index);
+	for (uint32_t i = 0; i < kFrameDw; i++) n33PspW(kRing + 64ull * (uint32_t)slot + 4ull * i, f[i]);
+	OSSynchronizeIO();
+	rmmio[kHdpFlush] = 0;                          // HDP flush (D9), as amdgpu_hdp_generic_flush
+	(void)rmmio[kMemsize];
+	rmmio[kC2pmsg67] = next_wptr(wptr);            // the doorbell
+
+	bool fenced = false;                           // psp_timeout: Linux 20000 x 60..100 us; here 1 ms up to 2000 times
+	for (int i = 0; i < 2000 && !fenced; i++) {
+		if (n33PspR(kFence) == index) fenced = true; else IOSleep(1);
+	}
+	const uint32_t status = n33PspR(kCmd + kRespStatus);
+	const uint64_t fwAddr = ((uint64_t)n33PspR(kCmd + kRespFwAddrHi) << 32) | n33PspR(kCmd + kRespFwAddrLo);
+	const uint32_t tmr = n33PspR(kCmd + kRespTmrSize);
+	record(n33P2, cmd, fwType, fenced, status, tmr);
+	N48LOG("n33 psp2: cmd %#x type %u (MC %#llx, %#llx bytes) index %u slot %d: %s, status %#x, fw_addr %#llx, tmr_size %#x",
+	       c[2], fwType, mc, sz, index, slot, fenced ? "fenced" : "TIMEOUT", status, fwAddr, tmr);
+	put(0, 0); put(1, fenced ? 1 : 0); put(2, status); put(3, tmr); put(4, fwAddr); put(5, index); put(6, rmmio[kC2pmsg67]);
+	return 0;
 }
 
 // Stage 2 step 3: run the layout gate, judge the live GOP state, and publish the framebuffer nub.

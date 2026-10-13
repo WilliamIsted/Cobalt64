@@ -32,6 +32,7 @@
 #include "ipdiscovery.hpp"
 #include "psp.hpp"
 #include "amd/amdgpu_regs.h"
+#include "amd/n33_psp2_pure.h"      // N33 milestone 2: n33psp2::State (pure, no kernel types)
 #include "amd/n48log.h"
 #include "amd/rebar_pure.h"   // 0.0.663: Resizable BAR planning (pure)
 #include "amd/amdgpu_init.h"
@@ -133,6 +134,16 @@ private:
 	void n33RestoreScanout();
 	void n33FbAttach();
 	void n33FbDetach();
+	// N33 stage 3 step 1, milestone 2: the PSP KM ring (n33psp2::, Navi48Bringup.cpp).
+	IOReturn n33CallLocked(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount);
+	n33psp2::State n33P2 {};
+	bool     n33PspPagesOwned() const { return n33P2.ring || n33P2.fence || n33P2.failed; }   // sticky once a ring was sent
+	void     n33PspW(uint64_t off, uint32_t v);
+	uint32_t n33PspR(uint64_t off) const;
+	uint32_t n33PspRingCreate(uint32_t *c64);
+	bool     n33PspRingDestroy(uint32_t *c64);
+	void     n33PspStop();
+	uint32_t n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount);
 #endif
 	// --- stages ---
 	bool probeMemSize();
