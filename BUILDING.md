@@ -37,6 +37,12 @@
   sha256 of each copy against the revision the project was developed with; a different
   linux-firmware revision may work, but only that one has been run.
 
+  That revision is linux-firmware `d357c6fd5a37ab86d14753219a5d5aa84a8c336d` (2026-05-07). It is the
+  first main-line commit where all ten files match the hashes in `fetch-firmware.sh`, and they stay
+  equal through `be0763096c1ddccf5635ae7346a44c1a6944f37e` (2026-08-10). Found 2026-10-13 by hashing
+  every historical version of each file. To get it:
+  `git -C linux-firmware checkout d357c6fd`, then run `fetch-firmware.sh`; all ten print `ok`.
+
 ## Build
 
 ```
