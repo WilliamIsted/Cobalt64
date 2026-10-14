@@ -35,6 +35,7 @@
 #include "amd/n33_psp2_pure.h"      // N33 milestone 2: n33psp2::State (pure, no kernel types)
 #include "amd/n33_smu_pure.h"       // N33 SMU mailbox: n33smu::State (pure, no kernel types)
 #include "amd/n33_gmc_pure.h"       // N33 GMC 11 / GART: n33gmc::State, Snap, Inputs, Rec (pure, no kernel types)
+#include "amd/n33_sdma_pure.h"      // N33 step 5, CP RS64 and SDMA 6.0.2: n33sdma::State, Entry, Rec (pure, no kernel types)
 #include "amd/n48log.h"
 #include "amd/rebar_pure.h"   // 0.0.663: Resizable BAR planning (pure)
 #include "amd/amdgpu_init.h"
@@ -174,6 +175,19 @@ private:
 	uint32_t n33GmcUnmap(uint32_t slot, uint32_t count, uint64_t *out, uint32_t outCount);
 	uint32_t n33GmcRestore(uint64_t *out, uint32_t outCount);
 	void     n33GmcStop();
+	// N33 stage 3 step 5: CP RS64 start (C1) and SDMA0 queue 0, mmio or doorbell kick (n33sdma::, Navi48Bringup.cpp).
+	n33sdma::State n33Sdma {};
+	n33sdma::Rec   n33SdmaJournal[n33sdma::kJournalMax] {};
+	uint32_t       n33SdmaJournalN { 0 };
+	n33sdma::Entry n33SdmaPlanBuf[n33sdma::kPlanMax] {};
+	uint32_t n33SdmaRd(uint32_t reg);
+	void     n33SdmaWr(uint32_t reg, uint32_t v);
+	uint32_t n33SdmaRun(uint32_t phase, uint32_t n, uint32_t *bad, uint32_t rptr[2]);
+	uint32_t n33SdmaPagesClear() const;
+	uint32_t n33GfxRs64(uint64_t *out, uint32_t outCount);
+	uint32_t n33SdmaStart(uint32_t mode, uint64_t *out, uint32_t outCount);
+	uint32_t n33SdmaTest(uint32_t n, uint64_t *out, uint32_t outCount);
+	uint32_t n33SdmaStop(bool unload, uint64_t *out, uint32_t outCount);
 #endif
 	// --- stages ---
 	bool probeMemSize();

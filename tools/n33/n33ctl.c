@@ -27,7 +27,7 @@ static uint64_t num(const char *s) { return strtoull(s, NULL, 0); }
 
 // The kext's protected-range kinds (n33_protected): 0 is the GOP scanout, 1-8 are DMCUB
 // windows CW0-CW7, 9-11 are REGION4-REGION6, 12 the PSP ring pages (milestone 2), 13 the SMU driver table
-// page (S3), 14 the GART table and mem_scratch (GMC G2). Names match the kext's comments.
+// page (S3), 14 the GART table and mem_scratch (GMC G2), 15 the step-5 SDMA pages (E1). Names match the kext's comments.
 static const char *kindName(uint64_t k) {
 	static char b[16];
 	if (k == 0) return "GOP scanout";
@@ -36,6 +36,7 @@ static const char *kindName(uint64_t k) {
 	if (k == 12) return "PSP ring pages";
 	if (k == 13) return "SMU driver table";
 	if (k == 14) return "GART table and mem_scratch";
+	if (k == 15) return "step-5 SDMA ring, wb and test pages";
 	return "?";
 }
 
@@ -86,6 +87,18 @@ static const char *whyName(uint64_t why) {
 	case 40:  return "gmc: no dummy or host page below 44 bits";
 	case 41:  return "gmc: an earlier step or flush failed, or a restore ran; reload the kext";
 	case 42:  return "gmc: restore refused, an engine holds a GART address";
+	case 43:  return "step 5: GC not up (no successful AUTOLOAD_RLC in this load, BOOTLOAD_COMPLETE clear, or CP_STAT not 0)";
+	case 44:  return "step 5: out of order (C1 after G6 or twice, G6 before C1, start before G6 or twice, test before start, "
+	                 "after stop or before the previous test, stop with no queue, ring or journal full)";
+	case 45:  return "step 5: 2c did not load PFP/ME/MEC (types 87-89) with the pinned sizes in this load";
+	case 46:  return "step 5: SDMA0 not as expected before start (RB_ENABLE 1 or STATUS_REG not idle)";
+	case 47:  return "step 5: a step-5 VRAM page overlaps a live DMCUB window or another protected range";
+	case 48:  return "step 5: GART slot 0 not bound to host page A, or a hub flush did not acknowledge";
+	case 49:  return "step 5: latched failure (or this mode already timed out); sdma stop, then reload or the other mode";
+	case 50:  return "step 5: GCVM_L2_PROTECTION_FAULT_STATUS not 0 before the step";
+	case 51:  return "step 5: start in the other mode while the queue runs; sdma stop first";
+	case 52:  return "step 5: db mode: BAR2 not mapped or too small, or the NBIO doorbell aperture not enabled";
+	case 53:  return "step 5: not a test number (1 to 3) or a mode (mmio, db)";
 	default:
 		if (why >= 100) { static char b[48]; snprintf(b, sizeof b, "overlaps protected %s", kindName(why - 100)); return b; }
 		return "?";
@@ -147,6 +160,9 @@ static void usage(void) {
 	    "  gmc state | g1 | g2 | g3 | g4 | g5 | g6 | restore   GMC 11 / MMHUB / GFXHUB / GART (state is G0, read-only)\n"
 	    "                               gmc flags | step <n> | map <slot> <count> <kind> <arg> | unmap <slot> <count> | flush:\n"
 	    "                               raw, for gmc-negative.sh only (flags reads no register)\n"
+	    "  gfx rs64                     C1: CP RS64 start addresses and pipe resets (after psp2 2c, before gmc g6)\n"
+	    "  sdma state | start mmio|db | test 1|2|3 | stop   SDMA0 queue 0 and the first GART DMA (state is C0, read-only)\n"
+	    "                               sdma flags | journal <i> | start <n>: raw, for sdma-negative.sh only (flags reads no register)\n"
 	    "  why <code>                   explain a refusal code from the kernel log (no kext needed)\n"
 	    "all offsets/dwords accept 0x.. ; writes are re-checked in the kext\n");
 }
@@ -1020,6 +1036,170 @@ static int doGmc(int argc, char **argv) {
 	return 2;
 }
 
+// ---- gfx / sdma: stage 3 step 5, CP RS64 start and SDMA0 queue 0 (overview repo stage3-step5-gfx-sdma-design.md) -----
+// n33ctl gfx rs64           C1: config_gfx_rs64 with the pinned PFP/ME/MEC start addresses; after psp2 2c, before gmc g6
+// n33ctl sdma state         C0, read-only: SDMA0, CP, GRBM, RLC and GCVM registers (refused before autoload)
+// n33ctl sdma start mmio|db E1: SDMA0 queue 0, write pointer by MMIO (mmio) or by the BAR2 doorbell (db); after gmc g6
+// n33ctl sdma test 1|2|3    E2 WRITE to the VRAM test page, E3 WRITE to host page A through GART slot 0, E4 FENCE
+// n33ctl sdma stop          E6: queue off, doorbell off, engine halted, pointers zeroed; a start in either mode may follow
+// The kext computes every value and builds every packet; this tool keeps the order and stops after each step for the
+// display check. Each step is William's go. If test 1 times out in mmio mode: sdma stop, sdma start db, sdma test 1.
+enum { aGfxRs64 = 23, aSdmaState = 24, aSdmaStart = 25, aSdmaTest = 26, aSdmaStop = 27, aSdmaRecord = 28 };
+static const struct { uint32_t reg; const char *name; } kSdmaNames[] = {
+	{ 0xF89A, "SDMA0_F32_CNTL" }, { 0x127C, "SDMA0_CNTL" }, { 0x1282, "SDMA0_SEM_WAIT_FAIL_TIMER_CNTL" },
+	{ 0x1285, "SDMA0_STATUS_REG" }, { 0x128E, "SDMA0_WATCHDOG_CNTL" }, { 0x129C, "SDMA0_UTCL1_CNTL" },
+	{ 0x129F, "SDMA0_UTCL1_PAGE" }, { 0x12B0, "SDMA0_ERROR_LOG" }, { 0x12E0, "SDMA0_QUEUE0_RB_CNTL" },
+	{ 0x12E1, "SDMA0_QUEUE0_RB_BASE" }, { 0x12E2, "SDMA0_QUEUE0_RB_BASE_HI" }, { 0x12E3, "SDMA0_QUEUE0_RB_RPTR" },
+	{ 0x12E4, "SDMA0_QUEUE0_RB_RPTR_HI" }, { 0x12E5, "SDMA0_QUEUE0_RB_WPTR" }, { 0x12E6, "SDMA0_QUEUE0_RB_WPTR_HI" },
+	{ 0x12E8, "SDMA0_QUEUE0_RB_RPTR_ADDR_HI" }, { 0x12E9, "SDMA0_QUEUE0_RB_RPTR_ADDR_LO" }, { 0x12EA, "SDMA0_QUEUE0_IB_CNTL" },
+	{ 0x12F1, "SDMA0_QUEUE0_CONTEXT_STATUS" }, { 0x12F2, "SDMA0_QUEUE0_DOORBELL" }, { 0x130B, "SDMA0_QUEUE0_DOORBELL_OFFSET" },
+	{ 0x1312, "SDMA0_QUEUE0_RB_WPTR_POLL_ADDR_HI" }, { 0x1313, "SDMA0_QUEUE0_RB_WPTR_POLL_ADDR_LO" },
+	{ 0x1315, "SDMA0_QUEUE0_MINOR_PTR_UPDATE" }, { 0x21A0, "CP_STAT" }, { 0x2004, "GRBM_STATUS" }, { 0xA803, "CP_ME_CNTL" },
+	{ 0xC904, "CP_MEC_RS64_CNTL" }, { 0xF840, "CP_PFP_IC_BASE_LO" }, { 0xF844, "CP_ME_IC_BASE_LO" }, { 0xF84C, "CP_CPC_IC_BASE_LO" },
+	{ 0xA98A, "RLC_CP_SCHEDULERS" }, { 0xC807, "CP_MES_CNTL" }, { 0xA900, "GRBM_GFX_CNTL" },
+	{ 0x2828, "GCVM_L2_PROTECTION_FAULT_STATUS" }, { 0x2829, "GCVM_L2_PROTECTION_FAULT_ADDR_LO32" },
+	{ 0x282A, "GCVM_L2_PROTECTION_FAULT_ADDR_HI32" }, { 0x30A4, "CP_PFP_PRGRM_CNTR_START" }, { 0x30B9, "CP_PFP_PRGRM_CNTR_START_HI" },
+	{ 0x30A5, "CP_ME_PRGRM_CNTR_START" }, { 0x30D9, "CP_ME_PRGRM_CNTR_START_HI" }, { 0xC900, "CP_MEC_RS64_PRGRM_CNTR_START" },
+	{ 0xC938, "CP_MEC_RS64_PRGRM_CNTR_START_HI" }, { 0x507A42, "NBIO S2A_DOORBELL_ENTRY_2_CTRL (RSMU)" },
+};
+static const char *sdmaName(uint32_t reg) {
+	static char b[24];
+	for (unsigned i = 0; i < sizeof kSdmaNames / sizeof kSdmaNames[0]; i++) if (kSdmaNames[i].reg == reg) return kSdmaNames[i].name;
+	snprintf(b, sizeof b, "dword %#x", reg);
+	return b;
+}
+
+static int sdmaFlags(uint64_t st[15]) {
+	uint64_t a = 0;
+	memset(st, 0, 15 * sizeof st[0]);
+	return call(aSdmaState, &a, 1, st, 15);
+}
+static void sdmaPrintFlags(const uint64_t *st) {
+	static const char *mode[] = { "none", "mmio", "db" }, *latch[] = { "none", "timeout", "hard" };
+	printf("kext: C1 attempted %llu done %llu  pages %llu running %llu mode %s latch %s timed-out modes %#llx  fw pinned %llu "
+	       "BAR2 %llu (%llu bytes)  engine holds GART %llu  G6 %llu  GC up %llu\n", st[0] & 1, st[0] >> 1 & 1, st[0] >> 2 & 1,
+	       st[0] >> 3 & 1, st[1] < 3 ? mode[st[1]] : "?", st[2] < 3 ? latch[st[2]] : "?", st[3], st[0] >> 4 & 1, st[0] >> 5 & 1,
+	       st[10], st[0] >> 6 & 1, st[0] >> 7 & 1, st[11]);
+	printf("      wptr %llu dwords, fence seq %llu, tests ok %#llx, starts %llu, journal %llu, S2A entry 2 as found %#llx, "
+	       "2c sizes 87/88/89 %#llx/%#llx/%#llx\n", st[4], st[5], st[6], st[7], st[8], st[9], st[12], st[13], st[14]);
+}
+static int sdmaJournal(uint64_t first, uint64_t count) {
+	static const char *phase[] = { "?", "C1", "E1", "E6" };
+	for (uint64_t i = first; i < first + count; i++) {
+		uint64_t a = i, o[7] = {0};
+		if (call(aSdmaRecord, &a, 1, o, 7)) return 1;
+		printf("  %s %-40s before %#010llx  after %#010llx  target %#010llx  %s\n", o[0] < 4 ? phase[o[0]] : "?",
+		       sdmaName((uint32_t)o[2]), o[3], o[4], o[5], ((o[4] ^ o[5]) & o[6]) ? "MISMATCH" : o[6] ? "ok" : "recorded");
+	}
+	return 0;
+}
+
+// C0: read-only. The kext refuses before autoload (no GC register is read then).
+static int sdmaState(void) {
+	uint64_t st[15], a = 1, o[3] = {0};
+	int ffff = 0;
+	if (sdmaFlags(st)) return 1;
+	sdmaPrintFlags(st);
+	if (call(aSdmaState, &a, 1, o, 3)) { printf("sdma state: REFUSED by the kext (GC not up?)\n"); return 1; }
+	const uint64_t n = o[2];
+	for (uint64_t i = 1; i <= n; i++) {
+		a = i;
+		if (call(aSdmaState, &a, 1, o, 3)) return 1;
+		if (o[1] == 0xFFFFFFFFull) ffff++;
+		printf("  %-40s %#010llx%s\n", sdmaName((uint32_t)o[0]), o[1], o[1] == 0xFFFFFFFFull ? "  (0xffffffff)" : "");
+	}
+	if (ffff) printf("%d register(s) read 0xffffffff: C0 not done\n", ffff);
+	else printf("C0 done: no register reads 0xffffffff\n");
+	return ffff ? 1 : 0;
+}
+
+static int gfxRs64(void) {
+	uint64_t st[15], o[10] = {0};
+	struct gmcDisp before, after;
+	if (sdmaFlags(st)) return 1;
+	sdmaPrintFlags(st);
+	if (gmcDisplay(&before)) return 1;
+	if (call(aGfxRs64, NULL, 0, o, 10)) { printf("C1: REFUSED by the kext\n"); return 1; }
+	printf("C1: %s, %llu writes, %llu mismatches, CP_STAT %#llx, GRBM_GFX_CNTL %#llx, CP_ME_CNTL %#llx, CP_MEC_RS64_CNTL %#llx, "
+	       "GC fault status %#llx\n", o[1] ? "done" : "FAILED (gmc g6 stays refused this load)", o[3], o[4], o[5], o[6], o[7], o[8], o[9]);
+	if (sdmaJournal(o[2], o[3]) || gmcDisplay(&after)) return 1;
+	const int same = gmcDisplaySame(&before, &after);
+	printf("each *_PRGRM_CNTR_START should read 0x00000c00 and each _HI 0x0001c000 (rows above).\n");
+	printf("display check: confirm the desktop is still on the monitor 60 s from now. gmc g6 is the next go.\n");
+	return !(o[1] == 1 && same);
+}
+
+static int sdmaStart(uint64_t mode) {
+	uint64_t st[15], o[16] = {0};
+	struct gmcDisp before, after;
+	if (sdmaFlags(st)) return 1;
+	sdmaPrintFlags(st);
+	if (gmcDisplay(&before)) return 1;
+	if (call(aSdmaStart, &mode, 1, o, 16)) { printf("E1 (%s): REFUSED by the kext\n", mode == 2 ? "db" : "mmio"); return 1; }
+	printf("E1 (%s): %s, %llu writes, %llu mismatches\n", mode == 2 ? "db" : "mmio", o[1] ? "done" : "FAILED (latched: sdma stop)", o[3], o[4]);
+	if (sdmaJournal(o[2], o[3]) || gmcDisplay(&after)) return 1;
+	printf("RB_CNTL %#llx (want RB_ENABLE 1), RB_BASE %#llx (want 0x8008a000) _HI %#llx (want 0), F32_CNTL %#llx (want HALT 0), "
+	       "STATUS_REG %#llx (want IDLE), RB_RPTR %#llx (want 0), GC fault status %#llx\n", o[5], o[6], o[7], o[8], o[9], o[10], o[11]);
+	printf("DOORBELL %#llx, DOORBELL_OFFSET %#llx", o[13], o[14]);
+	if (mode == 2) printf(", S2A entry 2 %#llx (want fields 0x3009001d under 0xf1ffffbf), doorbell at BAR2 + %#llx", o[15], o[12]);
+	printf("\n");
+	const int same = gmcDisplaySame(&before, &after);
+	printf("display check: confirm the desktop is still on the monitor 60 s from now. sdma test 1 is the next go.\n");
+	return !(o[1] == 1 && same);
+}
+
+static int sdmaTest(uint64_t n) {
+	static const char *what[] = { "", "WRITE to the VRAM test page (E2)", "WRITE to host page A via GART slot 0 (E3)",
+	                              "FENCE to host page A + 8 (E4)" };
+	uint64_t st[15], o[16] = {0};
+	struct gmcDisp before, after;
+	if (sdmaFlags(st)) return 1;
+	sdmaPrintFlags(st);
+	if (gmcDisplay(&before)) return 1;
+	if (call(aSdmaTest, &n, 1, o, 16)) { printf("test %llu: REFUSED by the kext\n", n); return 1; }
+	printf("test %llu, %s, %s mode: %s after %llu us\n", n, n <= 3 ? what[n] : "?", st[1] == 2 ? "db" : "mmio",
+	       o[1] ? "DONE" : o[14] == 1 ? "TIMEOUT (timeout only)" : "FAILED (latched)", o[15]);
+	printf("  target MC %#llx reads %#llx, RB_RPTR %#llx, RB_WPTR %#llx, wptr %#llx bytes, rptr slot %#llx\n", o[12], o[2], o[3], o[4], o[5], o[6]);
+	printf("  GC fault status %#llx, ERROR_LOG %#llx, STATUS_REG %#llx, CONTEXT_STATUS %#llx, F32_CNTL %#llx", o[7], o[8], o[9], o[10], o[11]);
+	if (n >= 2) printf(", slot 0 PTE %#llx", o[13]);
+	printf("\n");
+	if (gmcDisplay(&after)) return 1;
+	const int same = gmcDisplaySame(&before, &after);
+	if (!o[1] && o[14] == 1 && st[1] == 1)
+		printf("mmio timed out with nothing else wrong. Same-boot fallback, each its own go: sdma stop, sdma start db, sdma test 1.\n");
+	else if (!o[1]) printf("record the lines above, then sdma stop. Nothing more until the kext is reloaded.\n");
+	printf("display check: confirm the desktop is still on the monitor 60 s from now.\n");
+	return !(o[1] == 1 && same);
+}
+
+static int doSdma(int argc, char **argv) {
+	const char *sub = argv[2];
+	uint64_t st[15], o[10] = {0};
+	if (!strcmp(sub, "flags") && argc == 3) { if (sdmaFlags(st)) return 1; sdmaPrintFlags(st); return 0; }
+	if (!strcmp(sub, "state") && argc == 3) return sdmaState();
+	if (!strcmp(sub, "start") && argc == 4) {
+		if (!strcmp(argv[3], "mmio")) return sdmaStart(1);
+		if (!strcmp(argv[3], "db")) return sdmaStart(2);
+		uint64_t m = num(argv[3]);   // raw number, for sdma-negative.sh only
+		if (call(aSdmaStart, &m, 1, o, 10)) return 1;
+		printf("start %llu: ok %llu\n", m, o[1]);
+		return o[1] == 1 ? 0 : 1;
+	}
+	if (!strcmp(sub, "test") && argc == 4) return sdmaTest(num(argv[3]));
+	if (!strcmp(sub, "stop") && argc == 3) {
+		if (call(aSdmaStop, NULL, 0, o, 10)) { printf("E6: REFUSED by the kext\n"); return 1; }
+		printf("E6: %s, %llu writes, %llu mismatches, RB_RPTR %#llx -> %#llx over 1 s, now %#llx, F32_CNTL %#llx (want HALT 1), RB_CNTL %#llx\n",
+		       o[1] ? "done" : "FAILED (latched)", o[3], o[4], o[5], o[6], o[7], o[8], o[9]);
+		if (sdmaJournal(o[2], o[3])) return 1;
+		if (sdmaFlags(st)) return 1;
+		sdmaPrintFlags(st);
+		return o[1] == 1 ? 0 : 1;
+	}
+	if (!strcmp(sub, "journal") && argc == 4) return sdmaJournal(num(argv[3]), 1);
+	usage();
+	return 2;
+}
+
 int main(int argc, char **argv) {
 	if (argc < 2) { usage(); return 2; }
 	if (!strcmp(argv[1], "why") && argc == 3) { printf("%s\n", whyName(num(argv[2]))); return 0; }
@@ -1090,6 +1270,10 @@ int main(int argc, char **argv) {
 		rc = doSmu(argc, argv);
 	} else if (!strcmp(cmd, "gmc") && argc >= 3) {
 		rc = doGmc(argc, argv);
+	} else if (!strcmp(cmd, "gfx") && argc == 3 && !strcmp(argv[2], "rs64")) {
+		rc = gfxRs64();
+	} else if (!strcmp(cmd, "sdma") && argc >= 3) {
+		rc = doSdma(argc, argv);
 	} else if (!strcmp(cmd, "fbpublish") && argc == 2) {
 		static const char *why[] = { "published", "not ready (no BAR0 or not observing)", "already published",
 		                             "HUBP0 is not on the GOP scanout", "layout gate refused", "snapshot refused",
