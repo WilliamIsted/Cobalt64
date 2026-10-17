@@ -80,6 +80,9 @@ static void placement_cases() {
 	CHECK(lo32(g.ring >> 8) == 0x8008A050u && hi32(g.ring >> 8) == 0);
 	CHECK(lo32(g.code >> 8) == 0x8008A070u && lo32(g.code >> 40) == 0);
 	CHECK(kOwnedOff == 0x8A03000 && kOwnedOff + kOwnedLen == 0x8A09000);
+	// T1 (step 7): the IB page is the one page past the six step-6 pages, inside BAR0 above the floor.
+	CHECK(g.ib == 0x8008A09000ull && kIbOff == 0x8A09000 && kIbOff == kOwnedOff + kOwnedLen && kIbLen == 0x1000);
+	CHECK(kIbOff >= (16ull << 20) && kIbOff + kIbLen <= (256ull << 20));
 	// Clear of step 5's kind 15, the GMC table (14), the SMU table (13), the PSP pages (12) and our surface; above the
 	// 16 MiB floor and inside the 256 MiB BAR0.
 	auto clear = [](uint64_t off, uint64_t len) { return kOwnedOff + kOwnedLen <= off || off + len <= kOwnedOff; };
@@ -370,6 +373,52 @@ static void outcome_cases() {
 	CHECK(mismatch(r));
 }
 
+// T1 (step 7): the INDIRECT_BUFFER packet, the may_ib gate and record_ib bookkeeping.
+static void t1_cases() {
+	const Geo g = geo(kFbBase);
+	uint32_t p[kSubmitDw];
+	CHECK(kOpIndirectBuffer == 0x3F && kIbValid == 0x00800000u);
+	// INDIRECT_BUFFER (3): header 0xC0023F00, ib_lo (dword-aligned), ib_hi, control = VALID | IB_SIZE | VMID (D3).
+	CHECK(pkt_indirect_buffer(p, g.ib, 41, 0) == 4);
+	CHECK(p[0] == 0xC0023F00u && p[1] == 0x08A09000u && p[2] == 0x80 && p[3] == 0x00800029u);
+	CHECK(ib_control(41, 0) == 0x00800029u && ib_control(41, 0) == (kIbValid | 41));
+	CHECK(ib_control(0xFFFFFu, 3) == (kIbValid | 0xFFFFFu | (3u << 24)));   // IB_SIZE bits 19:0, VMID bits 27:24
+	CHECK(ib_control(0x100000u, 0) == kIbValid);                           // IB_SIZE masked to 20 bits
+	// The ring packet pads to 256; the IB content is the 41-dword K4 stream, dword-aligned, never ring-padded.
+	CHECK(pad(p, 4) == 256 && p[4] == kNop && p[255] == kNop);
+	uint32_t ib[kSubmitDw];
+	CHECK(pkt_dispatch(ib, g.code, g.hostB, g.hostB + kHostFence4, 1, true) == 41);
+
+	CHECK(kWhyIbOrder == 62 && kWhyIbOverlap == 63);
+	// may_ib: needs running, not latched, and K2 (test 1) or K3 (test 2) landed since the start.
+	State s = {};
+	CHECK(may_ib(s) == kWhyIbOrder);                       // not running
+	record_start(s, kModeMmio, true);
+	CHECK(may_ib(s) == kWhyIbOrder);                       // running but no ring packet landed yet
+	record_test(s, 1, kLatchNone, false);                  // K2
+	CHECK(may_ib(s) == kWhyOk);
+	State s3 = {};
+	record_start(s3, kModeDb, true);
+	s3.testsOk = 1u << 2;                                   // only K3 landed: also enough
+	CHECK(may_ib(s3) == kWhyOk);
+	// A latched queue refuses with 56 (kWhyLatched), not 62, matching the hardware gate.
+	State h = {};
+	record_start(h, kModeMmio, true);
+	record_test(h, 1, kLatchNone, false);
+	record_test(h, 1, kLatchHard, false);
+	CHECK(may_ib(h) == kWhyLatched);
+	// record_ib: one 256-dword ring submission, no test bit set, the latch carried.
+	State r = {};
+	record_start(r, kModeMmio, true);
+	record_test(r, 1, kLatchNone, false);
+	const uint32_t tOk = r.testsOk;
+	const uint64_t wp0 = r.wptrDw;
+	record_ib(r, kLatchNone);
+	CHECK(r.wptrDw == wp0 + kSubmitDw && r.testsOk == tOk && r.latch == kLatchNone);
+	record_ib(r, kLatchTimeout);
+	CHECK(r.latch == kLatchTimeout && r.timedOut == (1u << kModeMmio) && r.wptrDw == wp0 + 2 * kSubmitDw);
+}
+
 // ---- Part 2: the Linux headers --------------------------------------------------------------------------------
 typedef std::map<std::string, unsigned long long> Defs;
 static bool load_defs(const std::string &path, Defs &d) {
@@ -516,7 +565,7 @@ static int header_check(const char *root) {
 		{ "PACKET3_NOP", kOpNop }, { "PACKET3_DISPATCH_DIRECT", kOpDispatchDirect }, { "PACKET3_WRITE_DATA", kOpWriteData },
 		{ "PACKET3_EVENT_WRITE", kOpEventWrite }, { "PACKET3_RELEASE_MEM", kOpReleaseMem }, { "PACKET3_SET_SH_REG", kOpSetShReg },
 		{ "PACKET3_SET_UCONFIG_REG", kOpSetUconfigReg }, { "PACKET3_SET_SH_REG_START", kShRegStart },
-		{ "PACKET3_SET_UCONFIG_REG_START", kUconfigStart },
+		{ "PACKET3_SET_UCONFIG_REG_START", kUconfigStart }, { "PACKET3_INDIRECT_BUFFER", kOpIndirectBuffer },
 	};
 	const ValRow ev[] = { { "CS_PARTIAL_FLUSH", kCsPartialFlush & 0xFF }, { "CACHE_FLUSH_AND_INV_TS_EVENT", kRelMemBase & 0xFF } };
 	int bad = 0;
@@ -537,6 +586,7 @@ static int header_check(const char *root) {
 
 int main(int argc, char **argv) {
 	placement_cases(); shader_cases(); packet_cases(); mqd_cases(); start_cases(); stop_cases(); gate_cases(); outcome_cases();
+	t1_cases();
 	if (argc > 1) fails += header_check(argv[1]);
 	else printf("header check skipped: pass the Linux tree root (3857c2fe) as the first argument\n");
 	if (fails) { printf("%d FAILED\n", fails); return 1; }

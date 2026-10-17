@@ -9055,9 +9055,10 @@ enum : uint32_t { kN33Status = 0, kN33RegWrite = 1, kN33Bar0Read = 2, kN33Bar0Wr
                   kN33GmcRestore = 20, kN33GmcPlan = 21, kN33GmcRecord = 22,
                   kN33GfxRs64 = 23, kN33SdmaState = 24, kN33SdmaStart = 25, kN33SdmaTest = 26, kN33SdmaStop = 27,
                   kN33SdmaRecord = 28,
-                  kN33CpState = 29, kN33CpHqd = 30, kN33CpStart = 31, kN33CpTest = 32, kN33CpStop = 33, kN33CpRecord = 34 };
-struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch, 15 step-5 SDMA pages, 16 step-6 compute pages
-constexpr unsigned kN33Ranges = 20;   // 17 kinds can be live at once
+                  kN33CpState = 29, kN33CpHqd = 30, kN33CpStart = 31, kN33CpTest = 32, kN33CpStop = 33, kN33CpRecord = 34,
+                  kN33CpIb = 35 };
+struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch, 15 step-5 SDMA pages, 16 step-6 compute pages, 17 step-7 T1 IB page
+constexpr unsigned kN33Ranges = 21;   // 18 kinds can be live at once
 }
 extern "C" {
 extern const uint8_t fw_shader_store_magic_gfx11[];   // src/fw/fw_shader_store_magic_gfx11.c (C linkage), step 6 D6
@@ -9149,7 +9150,7 @@ bool Navi48Bringup::n33MapBar0() {
 // enabled DMCUB window, read live so a window DMCUB moves is still covered.
 static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uint64_t gopOff, uint64_t gopLen,
                               N33Range *out, unsigned max, bool pspPages, bool smuPage, bool gmcPages, bool sdmaPages,
-                              bool cpPages) {
+                              bool cpPages, bool cpIbPage) {
 	unsigned n = 0;
 	auto add = [&](uint64_t gpu, uint64_t len, uint32_t kind) {
 		if (n >= max || gpu < fbOffset || len == 0) return;   // below fbOffset: not VRAM
@@ -9176,6 +9177,7 @@ static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uin
 	if (gmcPages && n < max) out[n++] = { n33gmc::kOwnedOff, n33gmc::kOwnedLen, 14 };   // GMC D3: the hubs walk it
 	if (sdmaPages && n < max) out[n++] = { n33sdma::kOwnedOff, n33sdma::kOwnedLen, 15 };   // step 5 D2: SDMA0 fetches and writes them
 	if (cpPages && n < max) out[n++] = { n33cp::kOwnedOff, n33cp::kOwnedLen, 16 };         // step 6 D2: the MEC fetches and writes them
+	if (cpIbPage && n < max) out[n++] = { n33cp::kIbOff, n33cp::kIbLen, 17 };              // step 7 T1 D4: the MEC fetches the IB page
 	return n;
 }
 
@@ -9184,7 +9186,7 @@ bool Navi48Bringup::n33WriteAllowed(uint64_t off, uint64_t len, uint64_t *why) c
 	if (!n33Bar0 || len == 0 || (off & 3) || (len & 3) || len > kN33MaxXfer) { *why = 1; return false; }
 	if (off < kN33WriteFloor || off > n33Bar0Size || len > n33Bar0Size - off) { *why = 2; return false; }
 	N33Range rs[kN33Ranges];
-	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned);
+	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned);
 	for (unsigned i = 0; i < n; i++)
 		if (off < rs[i].off + rs[i].len && rs[i].off < off + len) { *why = 100 + rs[i].kind; return false; }   // off + len <= n33Bar0Size here
 	return true;
@@ -9209,7 +9211,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		put(0, n33Bar0Size); put(1, n33FbBase); put(2, n33FbOffset); put(3, n33GopOff); put(4, n33GopLen);
 		put(5, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
 		put(6, rmmio[kN33Hubp0Pitch]); put(7, rmmio[kN33Hubp0FlipCtl]);
-		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned));
+		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned));
 		put(9, n33SurfCfg); put(10, n33Bar0Phys);
 		return kIOReturnSuccess;
 	}
@@ -9218,7 +9220,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	case kN33Protected: {
 		if (!need(1)) return kIOReturnBadArgument;
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned);
+		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned);
 		if (in[0] >= n) return kIOReturnNotFound;
 		put(0, rs[in[0]].off); put(1, rs[in[0]].len); put(2, rs[in[0]].kind);
 		return kIOReturnSuccess;
@@ -9520,7 +9522,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 			const auto &s = n33Cp;
 			put(0, (uint64_t)s.pagesOwned | (uint64_t)s.running << 1 | (uint64_t)n33CpBlobOk() << 2 | (uint64_t)(dev.bar2 != nullptr) << 3 |
 			       (uint64_t)n33Gmc.engineHolds << 4 | (uint64_t)n33Sdma.c1 << 5 | (uint64_t)((n33Gmc.done >> 6 & 1u) && !n33Gmc.stopped) << 6 |
-			       (uint64_t)n33Sdma.running << 7 | (uint64_t)s.k5aDataAll << 8);
+			       (uint64_t)n33Sdma.running << 7 | (uint64_t)s.k5aDataAll << 8 | (uint64_t)s.ibOwned << 9);
 			put(1, s.mode); put(2, s.latch); put(3, s.timedOut); put(4, s.wptrDw); put(5, s.seq); put(6, s.testsOk); put(7, s.starts);
 			put(8, n33CpJournalN); put(9, s.found.s2a); put(10, s.found.dbLower | (uint64_t)s.found.dbUpper << 32);
 			put(11, n33GmcGcUp() ? 1 : 0); put(12, dev.bar2 ? dev.bar2Size : 0); put(13, fw_shader_store_magic_gfx11_size); put(14, s.k1Grbm);
@@ -9563,6 +9565,11 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		if (in[0] >= n33CpJournalN) return kIOReturnNotFound;
 		const n33sdma::Rec &r = n33CpJournal[in[0]];
 		put(0, r.phase); put(1, r.op); put(2, r.reg); put(3, r.before); put(4, r.after); put(5, r.target); put(6, r.cmp);
+		return kIOReturnSuccess;
+	}
+	case kN33CpIb: {              // T1 (step 7): K4's dispatch run from a VRAM IB through INDIRECT_BUFFER. out: see n33CpIb
+		const uint32_t w = n33CpIb(out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
 		return kIOReturnSuccess;
 	}
 	default:
@@ -9650,7 +9657,7 @@ uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off
 		if (mc + sz > fbEnd) { N48LOG("n33 psp2: refused SETUP_TMR: MC %#llx +%#llx ends past FB_LOCATION_TOP (%#llx)", mc, sz, fbEnd); return kWhyTmrSize; }
 		pa = kTmrOff + ((uint64_t)(rmmio[n33psp::kMmhubFbOffset] & 0x00FFFFFFu) << 24);   // amdgpu_gmc_vram_pa
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned);
+		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned);
 		for (unsigned i = 0; i < n; i++)
 			if (n33psp::overlaps(kTmrOff, sz, rs[i].off, rs[i].len)) {
 				N48LOG("n33 psp2: refused SETUP_TMR: VRAM %#llx +%#llx overlaps protected kind %u at %#llx", kTmrOff, sz, rs[i].kind, rs[i].off);
@@ -10126,7 +10133,7 @@ uint32_t Navi48Bringup::n33SdmaPagesClear() const {
 	if (!n33Bar0 || kOwnedOff < kN33WriteFloor || kOwnedOff + kOwnedLen > n33Bar0Size) return kWhyOverlap;
 	N33Range rs[kN33Ranges];
 	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
-	                                 n33Gmc.tableOwned, false, n33Cp.pagesOwned);
+	                                 n33Gmc.tableOwned, false, n33Cp.pagesOwned, n33Cp.ibOwned);
 	for (unsigned i = 0; i < n; i++)
 		if (kOwnedOff < rs[i].off + rs[i].len && rs[i].off < kOwnedOff + kOwnedLen) {
 			N48LOG("n33 sdma: step-5 pages VRAM %#llx +%#llx overlap protected kind %u at %#llx", kOwnedOff, kOwnedLen, rs[i].kind, rs[i].off);
@@ -10401,7 +10408,7 @@ uint32_t Navi48Bringup::n33CpPagesClear() const {
 	if (!n33Bar0 || kOwnedOff < kN33WriteFloor || kOwnedOff + kOwnedLen > n33Bar0Size) return kWhyOverlap;
 	N33Range rs[kN33Ranges];
 	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
-	                                 n33Gmc.tableOwned, n33Sdma.pagesOwned, false);
+	                                 n33Gmc.tableOwned, n33Sdma.pagesOwned, false, n33Cp.ibOwned);
 	for (unsigned i = 0; i < n; i++)
 		if (kOwnedOff < rs[i].off + rs[i].len && rs[i].off < kOwnedOff + kOwnedLen) {
 			N48LOG("n33 cp: step-6 pages VRAM %#llx +%#llx overlap protected kind %u at %#llx", kOwnedOff, kOwnedLen, rs[i].kind, rs[i].off);
@@ -10677,6 +10684,137 @@ uint32_t Navi48Bringup::n33CpStop(bool unload, uint64_t *out, uint32_t outCount)
 	       resetRan ? " after the reset stage" : "", active, rptr, dbc, mec, db ? (dbOk ? ", db routing restored" : ", db routing NOT restored") : "");
 	put(0, 0); put(1, ok ? 1 : 0); put(2, first); put(3, n33CpJournalN - first); put(4, bad); put(5, active); put(6, rptr);
 	put(7, dbc); put(8, mec); put(9, (uint64_t)busy | (uint64_t)resetRan << 1);
+	return 0;
+}
+
+// 63: the T1 IB page must sit inside BAR0 above the floor and clear of the GOP scanout, every live DMCUB window and
+// every other protected range (its own kind 17 is left out, so a re-run after a stop still passes).
+uint32_t Navi48Bringup::n33CpIbPageClear() const {
+	using namespace n33cp;
+	if (!n33Bar0 || kIbOff < kN33WriteFloor || kIbOff + kIbLen > n33Bar0Size) return kWhyIbOverlap;
+	N33Range rs[kN33Ranges];
+	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
+	                                 n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, false);
+	for (unsigned i = 0; i < n; i++)
+		if (kIbOff < rs[i].off + rs[i].len && rs[i].off < kIbOff + kIbLen) {
+			N48LOG("n33 cp: T1 IB page VRAM %#llx +%#llx overlaps protected kind %u at %#llx", kIbOff, kIbLen, rs[i].kind, rs[i].off);
+			return kWhyIbOverlap;
+		}
+	return kWhyOk;
+}
+
+// T1 (step 7): the K4 store_magic dispatch, moved into a VRAM indirect buffer and reached by an INDIRECT_BUFFER packet
+// from the step-6 compute queue, instead of inline in the ring. Design: stage3-step7-command-design.md "The first
+// sub-step T1". Needs the queue running and a plain ring packet (K2/K3) already landed since the start (code 62). The IB
+// page is kind 17 once this runs. The byte stream in the IB is byte-for-byte K4's, so T1 changes one variable only:
+// whether the MEC fetches and runs a VRAM IB reached through INDIRECT_BUFFER.
+uint32_t Navi48Bringup::n33CpIb(uint64_t *out, uint32_t outCount) {
+	using namespace n33cp;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	auto w32 = [&](uint64_t off, uint32_t v) { *reinterpret_cast<volatile uint32_t *>(n33Bar0 + off) = v; };
+	auto r32 = [&](uint64_t off) { return *reinterpret_cast<volatile uint32_t *>(n33Bar0 + off); };
+	uint32_t w = may_ib(n33Cp);
+	if (w) return w;
+	if (!n33GmcGcUp()) return kWhyGcDown;
+	if (rmmio[kGcFaultStatus]) { N48LOG("n33 cp: refused ib: GC fault status %#x", rmmio[kGcFaultStatus]); return kWhyFault; }
+	if (n33P2.failed) return n33psp2::kWhyFailed;
+	const bool db = n33Cp.mode == kModeDb;
+	if (db && (!dev.bar2 || dev.bar2Size < kBar2Need)) return kWhyDoorbell;
+	if (!n33CpBlobOk()) { N48LOG("n33 cp: refused ib: the embedded gfx11 shader is not the pinned blob"); return kWhyBlob; }
+	w = n33CpIbPageClear();
+	if (w) return w;
+	const Geo g = geo(n33FbBase);
+	// GART host page B at slot 1, both hubs flushed, the PTE read back: the same binding K3/K4 proved (D2, D10).
+	const uint64_t want = n33GmcHost[kHostB] ? n33gmc::pte_sys(n33GmcHostPa[kHostB]) : 0;
+	if (!want || *reinterpret_cast<volatile uint64_t *>(n33Bar0 + n33gmc::slot_off(kSlotB)) != want) {
+		uint64_t mo[4] = {};
+		const uint32_t mw = n33GmcMap(kSlotB, 1, n33gmc::kMapHost, kHostB, mo, 4);
+		if (mw) { N48LOG("n33 cp: refused ib: gart map of host page B refused (why %u)", mw); return kWhyGart; }
+	}
+	const uint32_t mm = n33GmcFlush(false), gc = n33GmcFlush(true);
+	if (!n33gmc::flush_ok(false, mm) || !n33gmc::flush_ok(true, gc)) {
+		n33Gmc.stopped = true;
+		N48LOG("n33 cp: refused ib: hub flush bits MMHUB %#x GFXHUB %#x (GMC stopped)", mm, gc);
+		return kWhyGart;
+	}
+	const uint64_t pte = *reinterpret_cast<volatile uint64_t *>(n33Bar0 + n33gmc::slot_off(kSlotB));
+	if (!n33GmcHost[kHostB] || pte != n33gmc::pte_sys(n33GmcHostPa[kHostB])) { N48LOG("n33 cp: refused ib: slot 1 PTE %#llx", pte); return kWhyGart; }
+	volatile uint32_t *hb = static_cast<volatile uint32_t *>(n33GmcHost[kHostB]->getBytesNoCopy());
+	n33Gmc.engineHolds = true;   // D10: gmc restore refused and the host pages leaked from now on
+
+	const uint32_t seq = n33Cp.seq + 1, fenceDw = kHostFence4 / 4;
+	// Build the K4 dispatch stream into the IB page: zero the page, NOP-fill it (R3: a stray fetch past the IB runs
+	// NOPs, not a type-0 header), write the 41-dword stream at offset 0, HDP flush, read it back through BAR0.
+	uint32_t ib[kSubmitDw];
+	const uint32_t ibDw = pkt_dispatch(ib, g.code, g.hostB, g.hostB + kHostFence4, seq, true);
+	for (uint64_t o = 0; o < kIbLen; o += 4) w32(kIbOff + o, kNop);
+	for (uint32_t i = 0; i < ibDw; i++) w32(kIbOff + 4ull * i, ib[i]);
+	n33Cp.ibOwned = true;   // kind 17 from now until unload
+	// Pre-fill the result dwords and the fence in host page B, as K4 does, so landing is a fresh write.
+	for (uint32_t i = 0; i < kResultDw; i++) hb[i] = kBefore;
+	hb[fenceDw] = kBefore;
+	n33GmcHdpFlush();
+	bool ibOk = true;
+	for (uint32_t i = 0; i < ibDw; i++) if (r32(kIbOff + 4ull * i) != ib[i]) ibOk = false;
+
+	// The ring carries only INDIRECT_BUFFER + NOP pad to 256 dwords; the fence is in the IB, not the ring.
+	uint32_t pk[kSubmitDw];
+	uint32_t len = pkt_indirect_buffer(pk, g.ib, ibDw, 0);
+	const uint32_t body = len;
+	len = pad(pk, len);
+	const uint64_t at = ring_off(n33Cp.wptrDw);
+	for (uint32_t i = 0; i < len; i++) w32(kRingOff + at + 4ull * i, pk[i]);
+	const uint64_t wp = n33Cp.wptrDw + len;
+	const uint32_t rptr0 = n33CpHqdRd(kPqRptr);
+	*reinterpret_cast<volatile uint64_t *>(n33Bar0 + kWptrSlot) = wp;
+	n33GmcHdpFlush();
+	if (db) {
+		*reinterpret_cast<volatile uint64_t *>(dev.bar2 + kDbByte) = wp;
+	} else {
+		rmmio[kGrbmGfxCntl] = kSelQ0;
+		rmmio[kPqWptrLo] = lo32(wp);
+		rmmio[kPqWptrHi] = hi32(wp);
+		rmmio[kGrbmGfxCntl] = 0;
+	}
+	n33Cp.seq = seq;
+	auto landed = [&]() { uint32_t k = 0; for (uint32_t i = 0; i < kResultDw; i++) k += hb[i] == kMagic + i; return k; };
+	const uint32_t limit = timeout_us(3);   // the 2 s dispatch timeout
+	bool seen = false, fence = false;
+	uint32_t value = 0, data = 0, us = 0, dataUs = 0xFFFFFFFFu, fenceUs = 0xFFFFFFFFu;
+	for (; us < limit; us += 100) {
+		value = hb[fenceDw];
+		if (value == seq && fenceUs == 0xFFFFFFFFu) fenceUs = us;
+		if ((data = landed()) == kResultDw && dataUs == 0xFFFFFFFFu) dataUs = us;
+		fence = value == seq;
+		seen = fence && data == kResultDw;
+		if (seen) break;
+		IODelay(100);
+	}
+	auto quiet = [&](uint32_t gg) { return !(gg & kSpiBusy) && (!(gg & kCpBusy) || (n33Cp.k1Grbm & kCpBusy)); };
+	uint32_t grbm = rmmio[kGrbmStatus];
+	for (; seen && us < limit && !quiet(grbm); us += 100) { IODelay(100); grbm = rmmio[kGrbmStatus]; }
+	if (!quiet(grbm)) seen = false;
+	uint32_t rptr = n33CpHqdRd(kPqRptr);
+	for (int i = 0; seen && i < 1000 && !rptr_at(rptr, wp); i++) { IODelay(100); rptr = n33CpHqdRd(kPqRptr); }
+	rmmio[kGrbmGfxCntl] = kSelQ0;
+	const uint32_t active = rmmio[kHqdActive], err = rmmio[kHqdError];
+	rmmio[kGrbmGfxCntl] = 0;
+	const uint32_t fault = rmmio[kGcFaultStatus], cpc = rmmio[kCpcStatus], slot = r32(kRptrSlot), ip = rmmio[kMecInstrPntr];
+	const TestRead r = { seen, rptr_at(rptr, wp), (active & kActive) != 0, fault, err, rptr != rptr0 };
+	const uint32_t latch = outcome(r);
+	record_ib(n33Cp, latch);
+	N48LOG("n33 cp: T1 ib (%s, %u-dword IB at %#llx, INDIRECT_BUFFER control %#x) -> page B: %s after %u us, data %u/32 "
+	       "(first %d us), fence %s (first %d us, seq %u), IB read-back %s, PQ_RPTR %#x -> %#x, wptr %llu, rptr slot %#x, "
+	       "ACTIVE %#x, HQD_ERROR %#x, INSTR_PNTR %#x, GRBM_STATUS %#x (K1 %#x), CPC_STATUS %#x, GC fault %#x (addr %#x:%#x)%s",
+	       db ? "db" : "mmio", ibDw, g.ib, pk[3], seen ? "seen" : "NOT SEEN", us, data, (int)dataUs, fence ? "landed" : "no",
+	       (int)fenceUs, seq, ibOk ? "ok" : "MISMATCH", rptr0, rptr, wp, slot, active, err, ip, grbm, n33Cp.k1Grbm, cpc, fault,
+	       rmmio[kGcFaultAddrHi], rmmio[kGcFaultAddrLo],
+	       latch == kLatchNone ? " (T1: the MEC ran a VRAM IB through INDIRECT_BUFFER)"
+	       : latch == kLatchTimeout ? " (timeout only: cp stop, then start in the other mode, re-run to K3, cp ib)"
+	       : " (LATCHED: cp stop, then reload)");
+	put(0, 0); put(1, latch == kLatchNone ? 1 : 0); put(2, data); put(3, value); put(4, rptr); put(5, wp); put(6, slot);
+	put(7, fault); put(8, err); put(9, active); put(10, grbm); put(11, (uint64_t)dataUs << 32 | fenceUs);
+	put(12, g.ib); put(13, (uint64_t)ibOk | (uint64_t)body << 1 | (uint64_t)ibDw << 8); put(14, latch); put(15, us);
 	return 0;
 }
 

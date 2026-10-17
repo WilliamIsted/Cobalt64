@@ -39,6 +39,7 @@ static const char *kindName(uint64_t k) {
 	if (k == 14) return "GART table and mem_scratch";
 	if (k == 15) return "step-5 SDMA ring, wb and test pages";
 	if (k == 16) return "step-6 compute queue pages";
+	if (k == 17) return "step-7 T1 IB page";
 	return "?";
 }
 
@@ -110,6 +111,8 @@ static const char *whyName(uint64_t why) {
 	case 59:  return "step 6: db mode: BAR2 not mapped or smaller than 0x20 bytes, or the NBIO doorbell aperture not enabled";
 	case 60:  return "step 6: not a test number (1 to 5) or a mode (mmio, db)";
 	case 61:  return "step 6: the embedded gfx11 shader blob is not the pinned one (size or sha256)";
+	case 62:  return "step 7 T1: cp ib before cp start, or before a plain ring packet (cp test 1/K2 or test 2/K3) succeeded since the start";
+	case 63:  return "step 7 T1: the IB page overlaps a live DMCUB window or another protected range";
 	default:
 		if (why >= 100) { static char b[48]; snprintf(b, sizeof b, "overlaps protected %s", kindName(why - 100)); return b; }
 		return "?";
@@ -175,6 +178,7 @@ static void usage(void) {
 	    "  sdma state | start mmio|db | test 1|2|3 | stop   SDMA0 queue 0 and the first GART DMA (state is C0, read-only)\n"
 	    "                               sdma flags | journal <i> | start <n>: raw, for sdma-negative.sh only (flags reads no register)\n"
 	    "  cp state | hqd | start db|mmio | test 1..5 | stop   step 6: one MEC compute queue, K2 to K5b (state, hqd read-only)\n"
+	    "  cp ib                        step 7 T1: K4's store_magic dispatch run from a VRAM IB through INDIRECT_BUFFER (after cp test 2/K3)\n"
 	    "                               cp flags | journal <i> | start <n>: raw, for cp-negative.sh only (flags reads no register)\n"
 	    "  log                          print the kext's own log (holds every refusal line, unlike the unified log)\n"
 	    "  why <code>                   explain a refusal code from n33ctl log (no kext needed)\n"
@@ -1209,7 +1213,7 @@ static int doSdma(int argc, char **argv) {
 // n33ctl cp stop             K6: drain (the reset stage if needed), pointers and doorbell off, MEC halted
 // The kext computes every value and builds every packet; this tool keeps the order and stops after each step for the
 // display check. Each step is William's go. If K2 times out in db mode: cp stop, cp start mmio, cp test 1 (D4).
-enum { aCpState = 29, aCpHqd = 30, aCpStart = 31, aCpTest = 32, aCpStop = 33, aCpRecord = 34 };
+enum { aCpState = 29, aCpHqd = 30, aCpStart = 31, aCpTest = 32, aCpStop = 33, aCpRecord = 34, aCpIb = 35 };
 static const struct { uint32_t reg; const char *name; } kCpNames[] = {
 	{ 0xC904, "CP_MEC_RS64_CNTL" }, { 0xC908, "CP_MEC_RS64_INSTR_PNTR" }, { 0x3083, "CP_PQ_WPTR_POLL_CNTL" },
 	{ 0x30B8, "CP_PQ_STATUS" }, { 0x305C, "CP_MEC_DOORBELL_RANGE_LOWER" }, { 0x305D, "CP_MEC_DOORBELL_RANGE_UPPER" },
@@ -1257,8 +1261,8 @@ static void cpPrintFlags(const uint64_t *st) {
 	       st[1] < 3 ? mode[st[1]] : "?", st[2] < 3 ? latch[st[2]] : "?", st[3], st[0] >> 2 & 1, st[13], st[0] >> 3 & 1, st[12],
 	       st[0] >> 4 & 1, st[0] >> 5 & 1, st[0] >> 6 & 1, st[0] >> 7 & 1, st[11]);
 	printf("      wptr %llu dwords, fence seq %llu, tests ok %#llx, starts %llu, journal %llu, K5a data all %llu, "
-	       "S2A entry 0 as found %#llx, MEC doorbell range as found %#llx/%#llx, GRBM_STATUS at K1 %#llx\n", st[4], st[5], st[6],
-	       st[7], st[8], st[0] >> 8 & 1, st[9], st[10] & 0xFFFFFFFFull, st[10] >> 32, st[14]);
+	       "IB page owned %llu, S2A entry 0 as found %#llx, MEC doorbell range as found %#llx/%#llx, GRBM_STATUS at K1 %#llx\n",
+	       st[4], st[5], st[6], st[7], st[8], st[0] >> 8 & 1, st[0] >> 9 & 1, st[9], st[10] & 0xFFFFFFFFull, st[10] >> 32, st[14]);
 }
 static int cpJournal(uint64_t first, uint64_t count) {
 	static const char *phase[] = { "?", "K1", "K6" };
@@ -1360,6 +1364,30 @@ static int cpTest(uint64_t n) {
 	return !(o[1] == 1 && same);
 }
 
+// T1 (step 7): K4's store_magic dispatch run from a VRAM IB through INDIRECT_BUFFER. After cp test 2 (K3) or test 3 (K4).
+static int cpIb(void) {
+	uint64_t st[15], o[16] = {0};
+	struct gmcDisp before, after;
+	if (cpFlags(st)) return 1;
+	cpPrintFlags(st);
+	if (gmcDisplay(&before)) return 1;
+	if (call(aCpIb, NULL, 0, o, 16)) { printf("T1 (cp ib): REFUSED by the kext\n"); return 1; }
+	printf("T1 (cp ib), %s mode: %s after %llu us\n", st[1] == 2 ? "db" : "mmio",
+	       o[1] ? "DONE" : o[14] == 1 ? "TIMEOUT (timeout only)" : "FAILED (latched)", o[15]);
+	printf("  IB at MC %#llx, %llu dwords, read-back %s; host page B: %llu of 32 dwords 0xca11ed47 + i; fence reads %#llx; "
+	       "first data / fence at %lld / %lld us\n", o[12], o[13] >> 8, o[13] & 1 ? "ok" : "MISMATCH", o[2], o[3],
+	       (long long)(int32_t)(o[11] >> 32), (long long)(int32_t)(o[11] & 0xFFFFFFFFull));
+	printf("  PQ_RPTR %#llx, wptr %llu dwords (ring: %llu-dword INDIRECT_BUFFER + NOP pad), rptr slot %#llx, ACTIVE %#llx, "
+	       "HQD_ERROR %#llx, GRBM_STATUS %#llx, GC fault status %#llx\n", o[4], o[5], (o[13] >> 1) & 0x7f, o[6], o[9], o[8], o[10], o[7]);
+	if (gmcDisplay(&after)) return 1;
+	const int same = gmcDisplaySame(&before, &after);
+	if (!o[1] && o[14] == 1 && st[1] == 2)
+		printf("db timed out with nothing else wrong. Same-boot fallback, each its own go: cp stop, cp start mmio, step 6 to K3, cp ib.\n");
+	else if (!o[1]) printf("record the lines above, then cp stop. Nothing more until the kext is reloaded.\n");
+	printf("display check: confirm the desktop is still on the monitor 60 s from now.\n");
+	return !(o[1] == 1 && same);
+}
+
 static int doCp(int argc, char **argv) {
 	const char *sub = argv[2];
 	uint64_t st[15], o[10] = {0};
@@ -1375,6 +1403,7 @@ static int doCp(int argc, char **argv) {
 		return o[1] == 1 ? 0 : 1;
 	}
 	if (!strcmp(sub, "test") && argc == 4) return cpTest(num(argv[3]));
+	if (!strcmp(sub, "ib") && argc == 3) return cpIb();
 	if (!strcmp(sub, "stop") && argc == 3) {
 		if (call(aCpStop, NULL, 0, o, 10)) { printf("K6: REFUSED by the kext\n"); return 1; }
 		printf("K6: %s, %llu writes, %llu mismatches, drain %s%s, ACTIVE %#llx (want 0), PQ_RPTR %#llx (want 0), "

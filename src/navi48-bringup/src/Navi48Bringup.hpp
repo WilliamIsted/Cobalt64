@@ -201,6 +201,8 @@ private:
 	uint32_t n33CpStart(uint32_t mode, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpTest(uint32_t n, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpStop(bool unload, uint64_t *out, uint32_t outCount);
+	uint32_t n33CpIbPageClear() const;
+	uint32_t n33CpIb(uint64_t *out, uint32_t outCount);
 #endif
 	// --- stages ---
 	bool probeMemSize();
