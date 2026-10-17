@@ -3,9 +3,10 @@
 # repo). Every command here must be REFUSED by the kext before anything is written; a refusal never changes state. The
 # kext logs each refusal as "n33: refused action A (why C)"; the script reads those lines back and compares them.
 #
-#   sudo tools/n33/cp-negative.sh pre  [n33ctl]   fresh kext load: no psp2 2c, nothing of step 6
-#   sudo tools/n33/cp-negative.sh gc   [n33ctl]   after psp2 2c, gmc g1 to g4 and gfx rs64 (C1), before gmc g6
-#   sudo tools/n33/cp-negative.sh post [n33ctl]   after cp start db or mmio (K1), before cp test 1
+#   sudo tools/n33/cp-negative.sh pre   [n33ctl]   fresh kext load: no psp2 2c, nothing of step 6
+#   sudo tools/n33/cp-negative.sh gc    [n33ctl]   after psp2 2c, gmc g1 to g4 and gfx rs64 (C1), before gmc g6
+#   sudo tools/n33/cp-negative.sh post  [n33ctl]   after cp start db or mmio (K1), before cp test 1
+#   sudo tools/n33/cp-negative.sh ibown [n33ctl]   after a successful cp ib (step 7 T1), the IB page owned (kind 17)
 #
 # The BAR0 writes to the step-6 pages are refused only once K1 owns them (kind 16, why 116); before that the VRAM is
 # ordinary and a write would land, so only `post` runs them. Each phase first checks the kext's state with `cp flags`,
@@ -17,7 +18,7 @@
 set -u
 PHASE="${1:-}"
 N33CTL="${2:-./n33ctl}"
-[ "$PHASE" = pre ] || [ "$PHASE" = gc ] || [ "$PHASE" = post ] || { echo "usage: $0 pre|gc|post [n33ctl]" >&2; exit 2; }
+[ "$PHASE" = pre ] || [ "$PHASE" = gc ] || [ "$PHASE" = post ] || [ "$PHASE" = ibown ] || { echo "usage: $0 pre|gc|post|ibown [n33ctl]" >&2; exit 2; }
 [ -x "$N33CTL" ] || { echo "no n33ctl at $N33CTL" >&2; exit 2; }
 
 FLAGS="$("$N33CTL" cp flags)" || exit 1
@@ -33,6 +34,7 @@ post) want "running 1 mode "; want "tests ok 0,"; want "C1 1 G6 1 "; swant "page
       if echo "$FLAGS" | grep -q -- "running 1 mode db latch none "; then MODE=db; OTHER=mmio
       elif echo "$FLAGS" | grep -q -- "running 1 mode mmio latch none "; then MODE=mmio; OTHER=db
       else want "running 1 mode db|mmio latch none "; fi ;;
+ibown) want "running 1 "; want "latch none "; want "IB page owned 1" ;;
 esac
 
 # Refusal lines already in the kext's own log; this run's are the ones after them.
@@ -59,6 +61,7 @@ pre)
 	t "cp start with mode x"                       31 60 cp start x
 	t "cp test 9"                                  32 60 cp test 9
 	t "cp test 1 before start"                     32 54 cp test 1
+	t "cp ib before start"                         35 62 cp ib
 	t "cp stop with no queue"                      33 54 cp stop
 	t "raw write to CP_MEC_RS64_CNTL"               1 6  regwrite 0xc904 0
 	t "raw write to CP_HQD_ACTIVE"                  1 6  regwrite 0x320b 1
@@ -69,6 +72,7 @@ pre)
 	;;
 gc)
 	t "cp start db before gmc g6"                  31 54 cp start db
+	t "cp ib before start"                         35 62 cp ib
 	;;
 post)
 	t "BAR0 write to the compute ring"              3 116 w 0x8a05000 0
@@ -81,9 +85,16 @@ post)
 	t "cp test 2 before test 1"                    32 54 cp test 2
 	t "cp test 3 before test 2"                    32 54 cp test 3
 	t "cp test 9"                                  32 60 cp test 9
+	t "cp ib before a ring packet (K2/K3)"         35 62 cp ib
 	t "sdma start mmio while the compute queue runs" 25 "44|43" sdma start mmio
 	t "raw write to CP_HQD_PQ_WPTR_LO"              1 6  regwrite 0x323f 0x100
 	t "raw write to CP_MEC_RS64_CNTL"               1 6  regwrite 0xc904 0x40000000
+	echo "== skipped here: BAR0 writes to the IB page (refused only once cp ib owns it; run ibown)"
+	;;
+ibown)
+	# The IB page (VRAM 0x8a09000) is protected kind 17 only after a successful cp ib; why 117 = 100 + 17.
+	t "BAR0 write into the IB page"                 3 117 w 0x8a09000 0
+	t "gart map of VRAM onto the IB page"          17 117 gmc map 0 1 1 0x8a09000
 	;;
 esac
 "$N33CTL" cp flags || FAIL=1

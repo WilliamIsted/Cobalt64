@@ -101,6 +101,7 @@ constexpr uint64_t kMqdOff  = 0x8A03000, kEopOff = 0x8A04000, kRingOff = 0x8A050
                    kCodeOff = 0x8A07000, kVramOff = 0x8A08000;
 constexpr uint64_t kRptrSlot = kWbOff, kWptrSlot = kWbOff + 0x20;
 constexpr uint64_t kOwnedOff = kMqdOff, kOwnedLen = 6 * kPage;   // protected range kind 16: 0x8A03000 to 0x8A09000
+constexpr uint64_t kIbOff = kOwnedOff + kOwnedLen, kIbLen = kPage;   // T1 (step 7): the IB page 0x8A09000, protected kind 17 once cp ib owns it
 constexpr uint32_t kRingDw = 1024, kSubmitDw = 256;               // commit pads to 256 dwords (align_mask 0xff)
 // Host page B (the GMC code's host page 1) at GART slot 1: result dwords 0 to 31 at +0, then the K3 word and the
 // three fences.
@@ -111,10 +112,10 @@ constexpr uint32_t kMagic = 0xCA11ED47u;
 using n33sdma::kBefore;
 using n33sdma::kAfter;
 
-struct Geo { uint64_t mqd, eop, ring, rptr, wptr, code, vram, hostB; };   // MC addresses
+struct Geo { uint64_t mqd, eop, ring, rptr, wptr, code, vram, ib, hostB; };   // MC addresses
 inline Geo geo(uint64_t fbBase) {
 	return { fbBase + kMqdOff, fbBase + kEopOff, fbBase + kRingOff, fbBase + kRptrSlot, fbBase + kWptrSlot,
-	         fbBase + kCodeOff, fbBase + kVramOff, n33gmc::slot_mc(kSlotB) };
+	         fbBase + kCodeOff, fbBase + kVramOff, fbBase + kIbOff, n33gmc::slot_mc(kSlotB) };
 }
 inline uint32_t lo32(uint64_t v) { return (uint32_t)v; }
 inline uint32_t hi32(uint64_t v) { return (uint32_t)(v >> 32); }
@@ -135,7 +136,7 @@ inline bool blob_ok(uint64_t size, const uint8_t digest[32]) {
 // ---- Packets (PM4 type 3, nvd.h; no SHADER_TYPE bit on a MEC queue) ---------------------------------------------
 constexpr uint32_t pkt3(uint32_t op, uint32_t n) { return (3u << 30) | ((n & 0x3FFFu) << 16) | ((op & 0xFFu) << 8); }
 constexpr uint32_t kOpNop = 0x10, kOpDispatchDirect = 0x15, kOpWriteData = 0x37, kOpEventWrite = 0x46,
-                   kOpReleaseMem = 0x49, kOpSetShReg = 0x76, kOpSetUconfigReg = 0x79;
+                   kOpReleaseMem = 0x49, kOpIndirectBuffer = 0x3F, kOpSetShReg = 0x76, kOpSetUconfigReg = 0x79;
 constexpr uint32_t kNop = pkt3(kOpNop, 0x3FFF);          // one-dword NOP 0xFFFF1000 (gfx_v11_0.c:7130), also the ring fill
 constexpr uint32_t kShRegStart = 0x2C00, kUconfigStart = 0xC000;
 constexpr uint32_t kWriteDataCtl = (5u << 8) | (1u << 20);   // DST_SEL 5 (memory), WR_CONFIRM, ENGINE_SEL 0
@@ -187,6 +188,15 @@ inline uint32_t pad(uint32_t *p, uint32_t n) {
 	while (n % kSubmitDw) p[n++] = kNop;
 	return n;
 }
+// T1 (step 7): the INDIRECT_BUFFER control dword, identical on gfx11 and gfx12 (gfx_v11_0.c:6043-6076; nvd.h:224-241):
+// INDIRECT_BUFFER_VALID (bit 23) | IB_SIZE (bits 19:0) | VMID (bits 27:24); no CHAIN, PRE_ENB or CACHE_POLICY (D3).
+constexpr uint32_t kIbValid = 1u << 23;
+inline uint32_t ib_control(uint32_t sizeDw, uint32_t vmid) { return kIbValid | (sizeDw & 0xFFFFFu) | ((vmid & 0xFu) << 24); }
+// PACKET3(INDIRECT_BUFFER, 2): header 0xC0023F00, ib_lo (dword-aligned), ib_hi, control. 4 dwords.
+inline uint32_t pkt_indirect_buffer(uint32_t *p, uint64_t ibMc, uint32_t sizeDw, uint32_t vmid) {
+	p[0] = pkt3(kOpIndirectBuffer, 2); p[1] = lo32(ibMc) & ~3u; p[2] = hi32(ibMc); p[3] = ib_control(sizeDw, vmid);
+	return 4;
+}
 
 // ---- MQD (struct v11_compute_mqd, gfx_v11_0_compute_mqd_init, gfx_v11_0.c:4337-4479) -----------------------------
 // The header words and dwords 128 to 183 with the values K1b writes, from the reset defaults K0 checks. The CP reads
@@ -231,6 +241,8 @@ enum Why : uint32_t {
 	                     // bytes, or the NBIO doorbell aperture not enabled
 	kWhyArg = 60,        // not a test number (1 to 5) or a mode (mmio, db)
 	kWhyBlob = 61,       // the embedded gfx11 shader blob is not the pinned one (size or sha256)
+	kWhyIbOrder = 62,    // T1 (step 7): cp ib before cp start, or before a plain ring packet (K2/K3) succeeded since the start
+	kWhyIbOverlap = 63,  // T1: the IB page overlaps a live DMCUB window or another protected range
 };
 
 // ---- Plans (step 5's Entry and read-back rule, plus three ops of its own) ---------------------------------------
@@ -335,6 +347,7 @@ struct State {
 	Found found;            // db mode: S2A entry 0 and the MEC doorbell range as K1 found them
 	uint32_t k1Grbm;        // GRBM_STATUS at the end of K1, for the dispatch tests' busy check
 	bool k5aDataAll;        // K5a's 32 VRAM dwords all landed without GL2_WB
+	bool ibOwned;           // T1 (step 7): cp ib took the IB page (kind 17); kept until unload, like pagesOwned
 };
 
 // K1's MEC check (code 55): C1 leaves 0x40000000; a K6 in this load leaves pipe 0 active as well.
@@ -383,6 +396,23 @@ inline uint32_t outcome(const TestRead &r) {
 inline void record_test(State &s, uint32_t n, uint32_t latch, bool k5aAll = false) {
 	s.wptrDw += kSubmitDw;
 	if (latch == kLatchNone) { s.testsOk |= 1u << n; if (n == 4) s.k5aDataAll = k5aAll; return; }
+	if (latch == kLatchTimeout) s.timedOut |= 1u << s.mode;
+	if (latch > s.latch) s.latch = latch;
+}
+
+// T1 (step 7): cp ib runs an INDIRECT_BUFFER from the started queue. It needs the queue running, not latched, and a
+// plain ring packet (K2 = test 1, or K3 = test 2) already landed since this start, so an IB failure cannot be blamed on
+// a queue that never fetched the ring (design "Refusal codes"). A latched queue is 56, not 62, as the hardware gate.
+inline uint32_t may_ib(const State &s) {
+	if (!s.running) return kWhyIbOrder;
+	if (s.latch != kLatchNone) return kWhyLatched;
+	if (!(s.testsOk & ((1u << 1) | (1u << 2)))) return kWhyIbOrder;   // neither K2 nor K3 succeeded since the start
+	return kWhyOk;
+}
+// Bookkeeping for one T1 kick: like record_test but no test bit is set (T1 is not a numbered ring test). The ring grew
+// by one 256-dword submission (the INDIRECT_BUFFER and its NOP pad); the IB itself is not in the ring.
+inline void record_ib(State &s, uint32_t latch) {
+	s.wptrDw += kSubmitDw;
 	if (latch == kLatchTimeout) s.timedOut |= 1u << s.mode;
 	if (latch > s.latch) s.latch = latch;
 }
