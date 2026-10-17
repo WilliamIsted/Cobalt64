@@ -25,7 +25,7 @@ static uint32_t reset_default(uint32_t reg) {
 	switch (reg) {
 	case kRbCntl: return 0x00040800u;
 	case kF32Cntl: return 0x08084001u;
-	case kUtcl1Page: return 0x010CEC00u;
+	case kUtcl1Page: return 0x010CEC20u;   // measured after autoload (AM run 2026-10-17); the header default is 0x010CEC00
 	default: return 0;
 	}
 }
@@ -114,7 +114,7 @@ static void start_cases() {
 		CHECK(r->get(kRbCntl) == 0x00841815u);                 // RB_SIZE 10, RB_PRIV, RPTR_WB, F32 poll, RB_ENABLE
 		CHECK((r->get(kRbCntl) & kRbWptrPoll) == 0);
 		CHECK(r->get(kF32Cntl) == 0x08084000u);                // HALT 0, TH1_RESET 0
-		CHECK(r->get(kUtcl1Page) == 0x010CEC00u);              // the design's computed value
+		CHECK(r->get(kUtcl1Page) == 0x010CEC20u);              // bit 5 as found, kept by the mask
 		CHECK(r->get(kUtcl1Cntl) == ((3u << 9) | 9u));
 		CHECK(r->get(kWatchdog) == 1);
 		CHECK(r->get(kRbBase) == 0x8008A000u && r->get(kRbBaseHi) == 0);
