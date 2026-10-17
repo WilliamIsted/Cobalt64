@@ -5,7 +5,7 @@
 #
 #   sudo tools/n33/sdma-negative.sh pre  [n33ctl]   fresh kext load: no psp2 2c, nothing of step 5
 #   sudo tools/n33/sdma-negative.sh gc   [n33ctl]   after psp2 2c and gmc g1 to g4, before gfx rs64 (C1)
-#   sudo tools/n33/sdma-negative.sh post [n33ctl]   after sdma start mmio (E1), before sdma test 1
+#   sudo tools/n33/sdma-negative.sh post [n33ctl]   after sdma start mmio or db (E1), before sdma test 1
 #
 # The BAR0 writes to the step-5 pages are refused only once E1 owns them (kind 15); before that the VRAM is ordinary
 # and a write would land, so only `post` runs them. Each phase first checks the kext's state with `sdma flags` and
@@ -29,7 +29,11 @@ case "$PHASE" in
 pre)  want "C1 attempted 0 done 0 "; want "pages 0 running 0 "; want "GC up 0" ;;
 gc)   want "C1 attempted 0 done 0 "; want "running 0 "; want "fw pinned 1 "; want "GC up 1"
       gwant "G4 1 G6 0 "; gwant "stopped 0 " ;;
-post) want "C1 attempted 1 done 1 "; want "running 1 mode mmio latch none "; want "tests ok 0,"; want "G6 1 " ;;
+post) want "C1 attempted 1 done 1 "; want "running 1 mode "; want "tests ok 0,"; want "G6 1 "
+      # The start tests depend on the running mode: the same mode is out of order (44), the other one a switch (51).
+      if echo "$FLAGS" | grep -q -- "running 1 mode mmio latch none "; then MODE=mmio; OTHER=db
+      elif echo "$FLAGS" | grep -q -- "running 1 mode db latch none "; then MODE=db; OTHER=mmio
+      else want "running 1 mode mmio|db latch none "; fi ;;
 esac
 
 # Refusal lines already in the kext's own log; this run's are the ones after them. The unified log is not used:
@@ -76,8 +80,8 @@ post)
 	t "BAR0 fill of the wb page"                    5 115 fill 0x8a01000 16 0
 	t "BAR0 copy onto the VRAM test page"           4 115 copy 0x2000000 0x8a02000 4096
 	t "gart map of VRAM onto the SDMA ring"        17 115 gmc map 0 1 1 0x8a00000
-	t "a second sdma start mmio"                   25 44 sdma start mmio
-	t "sdma start db while mmio runs"              25 51 sdma start db
+	t "a second sdma start $MODE"                   25 44 sdma start "$MODE"
+	t "sdma start $OTHER while $MODE runs"              25 51 sdma start "$OTHER"
 	t "sdma test 2 before test 1"                  26 44 sdma test 2
 	t "sdma test 3 before test 2"                  26 44 sdma test 3
 	t "sdma test 9"                                26 53 sdma test 9
