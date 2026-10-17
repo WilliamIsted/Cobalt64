@@ -74,7 +74,7 @@ static const char *whyName(uint64_t why) {
 	case 26:  return "smu: PMFW marked hung (timeout or unknown response); reload the kext";
 	case 27:  return "smu: C2PMSG_90 still 0 after 2 s before sending; nothing was written";
 	case 28:  return "smu: an earlier state-changing message did not answer OK; the ladder is over";
-	case 29:  return "smu: driver table page not writable, or not taken by S3's arm";
+	case 29:  return "smu: driver table page not writable, or not taken by S2's arm";
 	case 30:  return "gmc: not a step number (1, 2, 3, 4, 6), or a bad count, kind or VRAM alignment";
 	case 31:  return "gmc: out of order, twice, no G0 snapshot, no GART table yet, or G4 not done";
 	case 32:  return "gmc: FB location, DCN_VM, HUBP0 or the GC FB location changed since G0";
@@ -156,7 +156,7 @@ static void usage(void) {
 	    "  psp2 check <fwdir> <smu.bin> | 2a <fwdir> <smu.bin> | 2b <smu.bin> --power-cycled [--size-ok] | 2c <fwdir> | state | destroy\n"
 	    "                               psp2 send <cmd> <type> <off> <size> | ring: raw, for psp2-negative.sh only\n"
 	    "                               PSP milestone 2: KM ring, TOC, TMR, GC firmware, RLC autoload\n"
-	    "  smu check | s1 | s2 | s3 | enable | state      SMU 13.0.7 mailbox (check is read-only; s1 sends queries)\n"
+	    "  smu check | s1 | s2 | s3 | state      SMU 13.0.7 mailbox (check is read-only; s1 sends queries)\n"
 	    "                               smu send <msg> <arg>: raw, for smu-negative.sh only\n"
 	    "  gmc state | g1 | g2 | g3 | g4 | g5 | g6 | restore   GMC 11 / MMHUB / GFXHUB / GART (state is G0, read-only)\n"
 	    "                               gmc flags | step <n> | map <slot> <count> <kind> <arg> | unmap <slot> <count> | flush:\n"
@@ -615,14 +615,14 @@ static int doPsp2(int argc, char **argv) {
 // ---- smu: the SMU 13.0.7 driver mailbox (overview repo stage3-smu-handshake-design.md, S0 to S3) ---------
 // n33ctl smu check     S0: read the driver, debug and DAL mailboxes and the kext's state. No writes.
 // n33ctl smu s1        S1: GetSmuVersion, GetDriverIfVersion, GetRunningSmuFeatures High and Low (queries)
-// n33ctl smu s2        milestone 2d, only after a 2c that did not complete: arm, allowed masks, EnableAllSmuFeatures
-// n33ctl smu s3        only if S2's enable answered 0xFD: arm, driver table address, TransferTableSmu2Dram
-// n33ctl smu enable    the re-sent EnableAllSmuFeatures after S3 (a separate go)
+// n33ctl smu s2        milestone 2d, only after a 2c that did not complete: arm, driver table address,
+//                      EnableAllSmuFeatures with no masks (tinygrad AM's order on this card, 2026-10-17)
+// n33ctl smu s3        only if S2's enable answered 0xFD: arm, allowed masks, EnableAllSmuFeatures again
 // The kext runs each message with Linux's protocol and refuses anything off the D4 allowlist; this tool
 // keeps the order and the stop points. Any answer other than 0x1 ends the run.
 enum { aSmuSend = 12, aSmuArm = 13, aSmuState = 14 };
 enum { mGetSmuVersion = 0x2, mGetDriverIfVersion = 0x3, mMaskLow = 0x4, mMaskHigh = 0x5, mEnableAll = 0x6,
-       mRunningLow = 0xC, mRunningHigh = 0xD, mDramHigh = 0xE, mDramLow = 0xF, mSmu2Dram = 0x12 };
+       mRunningLow = 0xC, mRunningHigh = 0xD, mDramHigh = 0xE, mDramLow = 0xF };
 #define kSmuMaskHigh 0x0001a3a4u
 #define kSmuMaskLow  0x71fe7f7fu
 #define kSmuTableOff 0x8600000ull
@@ -643,8 +643,8 @@ static int smuState(uint64_t st[6]) {
 }
 static void smuPrintState(const uint64_t *st) {
 	printf("kext: armed S%llu hung %llu stopped %llu maskHigh %llu maskLow %llu enables %llu (last %#llx) dramHigh %llu dramLow %llu "
-	       "xfer %llu page %llu; C2PMSG_90 %#llx _66 %#llx _82 %#llx\n", st[0] >> 8 & 0xFF, st[0] & 1, st[0] >> 1 & 1, st[0] >> 2 & 1,
-	       st[0] >> 3 & 1, st[1], st[2], st[0] >> 4 & 1, st[0] >> 5 & 1, st[0] >> 6 & 1, st[0] >> 7 & 1, st[3], st[4], st[5]);
+	       "page %llu; C2PMSG_90 %#llx _66 %#llx _82 %#llx\n", st[0] >> 8 & 0xFF, st[0] & 1, st[0] >> 1 & 1, st[0] >> 2 & 1,
+	       st[0] >> 3 & 1, st[1], st[2], st[0] >> 4 & 1, st[0] >> 5 & 1, st[0] >> 7 & 1, st[3], st[4], st[5]);
 }
 
 // One message. 0 only when it answered 0x1. *result gets C2PMSG_82 after, *resp the response.
@@ -718,12 +718,13 @@ static int doSmu(int argc, char **argv) {
 		uint64_t mask = 0;
 		if (smuFeatures(&mask)) return 1;
 		if ((mask >> 37 & 1) && (mask >> 1 & 1)) { printf("refusing: GFX_IMU and DPM_GFXCLK are both on, so the design does not expect S2 to help\n"); return 1; }
+		const uint64_t mc = s[1] + kSmuTableOff;
 		uint64_t lv = 2, o[1] = {0};
-		if (call(aSmuArm, &lv, 1, o, 1)) { printf("arm S2 REFUSED\n"); return 1; }
-		printf("armed S2. Watch the monitor.\n");
+		if (call(aSmuArm, &lv, 1, o, 1)) { printf("arm S2 REFUSED (driver table page not writable?)\n"); return 1; }
+		printf("armed S2: driver table page VRAM %#llx (MC %#llx) zeroed and protected. Watch the monitor.\n", kSmuTableOff, mc);
 		uint32_t resp = 0;
-		if (smuMsg(mMaskHigh, kSmuMaskHigh, "SetAllowedFeaturesMaskHigh", NULL, NULL) ||
-		    smuMsg(mMaskLow, kSmuMaskLow, "SetAllowedFeaturesMaskLow", NULL, NULL)) return 1;
+		if (smuMsg(mDramHigh, (uint32_t)(mc >> 32), "SetDriverDramAddrHigh", NULL, NULL) ||
+		    smuMsg(mDramLow, (uint32_t)mc, "SetDriverDramAddrLow", NULL, NULL)) return 1;
 		const int bad = smuMsg(mEnableAll, 0, "EnableAllSmuFeatures", NULL, &resp);
 		if (bad && resp == 0xFD) { printf("EnableAllSmuFeatures answered 0xFD (bad prerequisite): S3 is next, a separate go\n"); return 1; }
 		if (bad) return 1;
@@ -732,27 +733,12 @@ static int doSmu(int argc, char **argv) {
 	}
 	if (!strcmp(sub, "s3") && argc == 3) {
 		if (st[1] != 1 || st[2] != 0xFD) { printf("refusing: S3 runs only after S2's enable answered 0xFD\n"); smuPrintState(st); return 1; }
-		const uint64_t mc = s[1] + kSmuTableOff;
-		uint64_t lv = 3, o[1] = {0};
-		if (call(aSmuArm, &lv, 1, o, 1)) { printf("arm S3 REFUSED (driver table page not writable?)\n"); return 1; }
-		printf("armed S3: driver table page VRAM %#llx (MC %#llx) zeroed and protected\n", kSmuTableOff, mc);
-		if (smuMsg(mDramHigh, (uint32_t)(mc >> 32), "SetDriverDramAddrHigh", NULL, NULL) ||
-		    smuMsg(mDramLow, (uint32_t)mc, "SetDriverDramAddrLow", NULL, NULL) ||
-		    smuMsg(mSmu2Dram, 1, "TransferTableSmu2Dram COMBO", NULL, NULL)) return 1;
-		uint32_t nz = 0;
-		for (uint64_t off = 0; off < 0x4000; off += 4) {
-			uint64_t a = kSmuTableOff + off, v = 0;
-			if (call(aBar0Read, &a, 1, &v, 1)) return 1;
-			if (v) nz++;
-			if (off < 32) printf("table +%#06llx %#010llx\n", off, v);
-		}
-		printf("S3 done: %u of 4096 dwords non-zero. The re-sent enable is `smu enable`, a separate go.\n", nz);
-		return nz ? 0 : 1;
-	}
-	if (!strcmp(sub, "enable") && argc == 3) {
-		if (!(st[0] >> 6 & 1) || st[1] != 1) { printf("refusing: needs a completed S3 and exactly one earlier enable\n"); smuPrintState(st); return 1; }
-		uint32_t resp = 0; uint64_t mask = 0;
-		if (smuMsg(mEnableAll, 0, "EnableAllSmuFeatures (again)", NULL, &resp)) return 1;
+		uint64_t lv = 3, o[1] = {0}, mask = 0;
+		if (call(aSmuArm, &lv, 1, o, 1)) { printf("arm S3 REFUSED\n"); return 1; }
+		printf("armed S3. Watch the monitor.\n");
+		if (smuMsg(mMaskHigh, kSmuMaskHigh, "SetAllowedFeaturesMaskHigh", NULL, NULL) ||
+		    smuMsg(mMaskLow, kSmuMaskLow, "SetAllowedFeaturesMaskLow", NULL, NULL) ||
+		    smuMsg(mEnableAll, 0, "EnableAllSmuFeatures (again)", NULL, NULL)) return 1;
 		smuFeatures(&mask);
 		return !smuAutoloadDone();
 	}

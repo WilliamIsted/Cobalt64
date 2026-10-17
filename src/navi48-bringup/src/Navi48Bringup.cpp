@@ -9345,7 +9345,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	case kN33SmuState: {          // out: flags, enables, last enable answer, C2PMSG_90, _66, _82
 		const auto &m = n33Smu;
 		put(0, (uint64_t)m.hung | (uint64_t)m.stopped << 1 | (uint64_t)m.maskHigh << 2 | (uint64_t)m.maskLow << 3 |
-		       (uint64_t)m.dramHigh << 4 | (uint64_t)m.dramLow << 5 | (uint64_t)m.xfer << 6 | (uint64_t)m.pageOwned << 7 |
+		       (uint64_t)m.dramHigh << 4 | (uint64_t)m.dramLow << 5 | (uint64_t)m.pageOwned << 7 |
 		       (uint64_t)m.armed << 8);
 		put(1, m.enables); put(2, m.enableResp);
 		put(3, rmmio[n33smu::kResp]); put(4, rmmio[n33smu::kMsg]); put(5, rmmio[n33smu::kArg]);
@@ -9661,25 +9661,25 @@ uint32_t Navi48Bringup::n33SmuSend(uint32_t msg, uint32_t arg, uint64_t *out, ui
 	return 0;
 }
 
-// The visible go for a state-changing rung. S3 also takes the driver table page: it must be writable (not
+// The visible go for a state-changing rung. S2 also takes the driver table page: it must be writable (not
 // a live DMCUB window, the GOP scanout or another protected range), is zeroed, and then joins the
 // protected list (kind 13) for the rest of the kext load.
 uint32_t Navi48Bringup::n33SmuArm(uint32_t level) {
 	using namespace n33smu;
 	const uint32_t w = may_arm(n33Smu, level);
 	if (w) return w;
-	if (level == 3) {
+	if (level == 2) {
 		uint64_t why = 0;
 		if (n33P2.failed) return n33psp2::kWhyFailed;   // as every BAR0 write after a PSP failure
 		if (!n33WriteAllowed(kTableOff, kTableLen, &why)) {
-			N48LOG("n33 smu: refused S3: table page VRAM %#llx not writable (why %llu)", kTableOff, why);
+			N48LOG("n33 smu: refused S2: table page VRAM %#llx not writable (why %llu)", kTableOff, why);
 			return kWhyPage;
 		}
 		for (uint64_t o = 0; o < kTableLen; o += 4) *reinterpret_cast<volatile uint32_t *>(n33Bar0 + kTableOff + o) = 0;
 		n33Smu.pageOwned = true;
 	}
 	n33Smu.armed = (uint8_t)level;
-	N48LOG("n33 smu: armed S%u%s", level, level == 3 ? ", driver table page VRAM 0x8600000 zeroed and protected" : "");
+	N48LOG("n33 smu: armed S%u%s", level, level == 2 ? ", driver table page VRAM 0x8600000 zeroed and protected" : "");
 	return 0;
 }
 

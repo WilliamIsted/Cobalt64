@@ -22,10 +22,8 @@ inline bool known_resp(uint32_t r) {
 // Messages (smu_v13_0_7_ppsmc.h). Only these are ever written; D4 refuses the rest.
 constexpr uint32_t kGetSmuVersion = 0x2, kGetDriverIfVersion = 0x3, kSetAllowedMaskLow = 0x4,
                    kSetAllowedMaskHigh = 0x5, kEnableAllFeatures = 0x6, kGetRunningLow = 0xC,
-                   kGetRunningHigh = 0xD, kSetDramAddrHigh = 0xE, kSetDramAddrLow = 0xF,
-                   kTransferSmu2Dram = 0x12;
+                   kGetRunningHigh = 0xD, kSetDramAddrHigh = 0xE, kSetDramAddrLow = 0xF;
 constexpr uint32_t kMaskHigh = 0x0001a3a4u, kMaskLow = 0x71fe7f7fu;   // D4, from Linux on this card
-constexpr uint32_t kTableCombo = 0x1;                                  // TABLE_COMBO_PPTABLE
 
 // D6: the driver table page, 16 KiB at VRAM 0x8600000 (MC = FB base + offset).
 constexpr uint64_t kTableOff = 0x8600000;
@@ -49,7 +47,7 @@ struct State {
 	bool maskHigh, maskLow;   // 0x5 and 0x4 answered OK
 	uint32_t enables;         // 0x6 sent this many times (at most 2)
 	uint32_t enableResp;      // the last 0x6 answer
-	bool dramHigh, dramLow, xfer;
+	bool dramHigh, dramLow;
 	bool pageOwned;           // the table page is ours and protected
 };
 
@@ -68,29 +66,27 @@ inline uint32_t may_send(const State &s, uint32_t msg, uint32_t arg, uint64_t ta
 	case kSetAllowedMaskLow: want = kMaskLow; break;
 	case kSetDramAddrHigh: want = (uint32_t)(tableMc >> 32); break;
 	case kSetDramAddrLow: want = (uint32_t)tableMc; break;
-	case kTransferSmu2Dram: want = kTableCombo; break;
 	default: return kWhyMsg;
 	}
 	if (arg != want) return kWhyArg;
 	if (s.hung) return kWhyHung;
 	if (query(msg)) return kWhyOk;
 	if (s.stopped) return kWhyStopped;
+	// S2 is the tinygrad AM order measured on this card (2026-10-17): driver table address, then the enable,
+	// with no masks. S3, only after that enable answered 0xFD, sends the masks and the enable again.
 	switch (msg) {
-	case kSetAllowedMaskHigh:
-		return (s.armed >= 2 && !s.maskHigh && !s.enables) ? kWhyOk : kWhyOrder;
-	case kSetAllowedMaskLow:
-		return (s.maskHigh && !s.maskLow) ? kWhyOk : kWhyOrder;
-	case kEnableAllFeatures:
-		if (s.enables == 0) return s.maskLow ? kWhyOk : kWhyOrder;
-		// The re-sent enable of the hardware gate's step 7: only after 0xFD and a successful S3.
-		return (s.enables == 1 && s.enableResp == kRespPrereq && s.xfer) ? kWhyOk : kWhyOrder;
 	case kSetDramAddrHigh:
 		if (!s.pageOwned) return kWhyPage;
-		return (s.armed == 3 && !s.dramHigh) ? kWhyOk : kWhyOrder;
+		return (s.armed == 2 && !s.dramHigh) ? kWhyOk : kWhyOrder;
 	case kSetDramAddrLow:
 		return (s.dramHigh && !s.dramLow) ? kWhyOk : kWhyOrder;
-	case kTransferSmu2Dram:
-		return (s.dramLow && !s.xfer) ? kWhyOk : kWhyOrder;
+	case kEnableAllFeatures:
+		if (s.enables == 0) return s.dramLow ? kWhyOk : kWhyOrder;
+		return (s.enables == 1 && s.enableResp == kRespPrereq && s.maskLow) ? kWhyOk : kWhyOrder;
+	case kSetAllowedMaskHigh:
+		return (s.armed == 3 && !s.maskHigh) ? kWhyOk : kWhyOrder;
+	case kSetAllowedMaskLow:
+		return (s.maskHigh && !s.maskLow) ? kWhyOk : kWhyOrder;
 	}
 	return kWhyMsg;
 }
@@ -121,7 +117,6 @@ inline void record(State &s, uint32_t msg, bool answered, uint32_t resp) {
 	case kSetAllowedMaskLow: s.maskLow = true; break;
 	case kSetDramAddrHigh: s.dramHigh = true; break;
 	case kSetDramAddrLow: s.dramLow = true; break;
-	case kTransferSmu2Dram: s.xfer = true; break;
 	}
 }
 
