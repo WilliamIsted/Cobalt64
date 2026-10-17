@@ -149,6 +149,8 @@ struct PlanOut {
 // C1: gfx_v11_0_config_gfx_rs64 (gfx_v11_0.c:3019-3102) with the pinned PFP, ME and MEC headers (lo 0x3000, hi
 // 0x70000, all three). Each start register is read back right after its write, under its GRBM_GFX_CNTL selection;
 // the deselect follows each start loop, before its reset pulse. The set half of a pulse is recorded, not compared.
+// GRBM_GFX_CNTL is recorded too: on the 7600 XT it reads back 0 after every select (2026-10-17), although the
+// per-pipe start values show each select took effect. Linux (soc21_grbm_select) and AM only write it.
 constexpr uint32_t kUcodeLo = 0x3000, kUcodeHi = 0x70000;
 constexpr uint32_t kStartLo = (uint32_t)((kUcodeHi << 30) | (kUcodeLo >> 2));   // 32-bit, as Linux: 0x00000C00
 constexpr uint32_t kStartHi = kUcodeHi >> 2;                                   // 0x0001C000
@@ -157,22 +159,22 @@ inline uint32_t c1_plan(Entry *out, uint32_t max, uint32_t *count) {
 	PlanOut p = { out, max, 0, false };
 	*count = 0;
 	for (uint32_t pipe = 0; pipe < 2; pipe++) {
-		p.w(kGrbmGfxCntl, grbm_select(0, pipe), kGrbmFields);
+		p.w(kGrbmGfxCntl, grbm_select(0, pipe), 0);
 		p.w(kPfpStart, kStartLo, 0xFFFFFFFFu); p.w(kPfpStartHi, kStartHi, kStartHiMask);
 	}
-	p.w(kGrbmGfxCntl, 0, kGrbmFields);
+	p.w(kGrbmGfxCntl, 0, 0);
 	p.add(kOpW, kCpMeCntl, kPfpReset, kPfpReset, 0); p.rmw(kCpMeCntl, kPfpReset, 0);
 	for (uint32_t pipe = 0; pipe < 2; pipe++) {
-		p.w(kGrbmGfxCntl, grbm_select(0, pipe), kGrbmFields);
+		p.w(kGrbmGfxCntl, grbm_select(0, pipe), 0);
 		p.w(kMeStart, kStartLo, 0xFFFFFFFFu); p.w(kMeStartHi, kStartHi, kStartHiMask);
 	}
-	p.w(kGrbmGfxCntl, 0, kGrbmFields);
+	p.w(kGrbmGfxCntl, 0, 0);
 	p.add(kOpW, kCpMeCntl, kMeReset, kMeReset, 0); p.rmw(kCpMeCntl, kMeReset, 0);
 	for (uint32_t pipe = 0; pipe < 4; pipe++) {
-		p.w(kGrbmGfxCntl, grbm_select(1, pipe), kGrbmFields);
+		p.w(kGrbmGfxCntl, grbm_select(1, pipe), 0);
 		p.w(kMecStart, kStartLo, 0xFFFFFFFFu); p.w(kMecStartHi, kStartHi, kStartHiMask);
 	}
-	p.w(kGrbmGfxCntl, 0, kGrbmFields);
+	p.w(kGrbmGfxCntl, 0, 0);
 	p.add(kOpW, kCpMecRs64Cntl, kMecReset, kMecReset, 0); p.rmw(kCpMecRs64Cntl, kMecReset, 0);
 	if (p.over) return kWhyOrder;
 	*count = p.n;

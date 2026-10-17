@@ -178,7 +178,7 @@ static void c1_cases() {
 	uint32_t k = 0;
 	for (uint32_t i = 0; i < n; i++) {
 		if (e[i].reg != kGrbmGfxCntl) continue;
-		CHECK(k < 11 && e[i].value == sel[k] && e[i].mask == 0xFFFFFFFFu);
+		CHECK(k < 11 && e[i].value == sel[k] && e[i].mask == 0xFFFFFFFFu && e[i].cmp == 0);   // recorded: reads back 0 on the card
 		k++;
 	}
 	CHECK(k == 11);
