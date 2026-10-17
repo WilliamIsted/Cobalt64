@@ -10,7 +10,8 @@
 #include <CommonCrypto/CommonDigest.h>
 #include "n33_fw.h"
 
-enum { kSelRegRead = 7, kSelN33 = 0x4e33 };
+enum { kSelRegRead = 7, kSelReadLog = 10, kSelN33 = 0x4e33 };
+enum { kLogBytes = 2048 * 1024 };   // NAVI48_LOG_BYTES: the kext's log stops appending when full
 enum { aStatus = 0, aRegWrite = 1, aBar0Read = 2, aBar0Write = 3, aCopy = 4, aFill = 5, aProtected = 6, aFbPublish = 7 };
 enum { kHubp0Pitch = 0x3AC7, kHubp0Addr = 0x3ACA, kHubp0AddrHigh = 0x3ACB, kHubp0FlipCtl = 0x3ADB };
 
@@ -111,7 +112,7 @@ static int call(uint64_t action, const uint64_t *args, uint32_t n, uint64_t *out
 	if (kr == kIOReturnNotPermitted) {
 		// IOKit copies no scalar output back on an error return, so out[0] is not the kext's reason.
 		fprintf(stderr, "refused; the kext logs the reason: "
-		        "log show --last 2m --predicate 'process == \"kernel\"' | grep 'n33: refused', then n33ctl why <code>\n");
+		        "n33ctl log | grep 'n33: refused' | tail -1, then n33ctl why <code>\n");
 		return 1;
 	}
 	if (kr != kIOReturnSuccess) { fprintf(stderr, "call failed: 0x%x\n", kr); return 1; }
@@ -163,7 +164,8 @@ static void usage(void) {
 	    "  gfx rs64                     C1: CP RS64 start addresses and pipe resets (after psp2 2c, before gmc g6)\n"
 	    "  sdma state | start mmio|db | test 1|2|3 | stop   SDMA0 queue 0 and the first GART DMA (state is C0, read-only)\n"
 	    "                               sdma flags | journal <i> | start <n>: raw, for sdma-negative.sh only (flags reads no register)\n"
-	    "  why <code>                   explain a refusal code from the kernel log (no kext needed)\n"
+	    "  log                          print the kext's own log (holds every refusal line, unlike the unified log)\n"
+	    "  why <code>                   explain a refusal code from n33ctl log (no kext needed)\n"
 	    "all offsets/dwords accept 0x.. ; writes are re-checked in the kext\n");
 }
 
@@ -1274,6 +1276,20 @@ int main(int argc, char **argv) {
 		rc = gfxRs64();
 	} else if (!strcmp(cmd, "sdma") && argc >= 3) {
 		rc = doSdma(argc, argv);
+	} else if (!strcmp(cmd, "log") && argc == 2) {
+		// The negative tests read refusals here: logd can quarantine the kernel and drop IOLog lines.
+		char chunk[4097];
+		uint64_t off = 0, total = 0;
+		do {
+			size_t sz = sizeof chunk - 1; uint32_t n = 1;
+			kr = IOConnectCallMethod(conn, kSelReadLog, &off, 1, NULL, 0, &total, &n, chunk, &sz);
+			if (kr != kIOReturnSuccess) { fprintf(stderr, "log: ReadLog failed 0x%x\n", kr); rc = 1; break; }
+			if (sz == 0) break;
+			chunk[sz] = 0;
+			fputs(chunk, stdout);
+			off += sz;
+		} while (off < total);
+		if (total >= kLogBytes - 1024) fprintf(stderr, "log: %llu bytes, at capacity: new lines are being dropped\n", total);
 	} else if (!strcmp(cmd, "fbpublish") && argc == 2) {
 		static const char *why[] = { "published", "not ready (no BAR0 or not observing)", "already published",
 		                             "HUBP0 is not on the GOP scanout", "layout gate refused", "snapshot refused",

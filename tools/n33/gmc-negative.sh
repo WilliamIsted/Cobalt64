@@ -28,7 +28,9 @@ else
 	want "done G1 1 G2 1 G3 0 G4 0 G6 0 "; want "table 1 "; want "stopped 0 "; want "GC up 0"
 fi
 
-START="$(date '+%Y-%m-%d %H:%M:%S')"
+# Refusal lines already in the kext's own log; this run's are the ones after them. The unified log is not used:
+# it held none of the kext's lines from the 2026-10-16 and -17 boots (logd quarantined the kernel on 10-16).
+BEFORE="$("$N33CTL" log | grep -c 'n33: refused action')"
 EXPECT=()          # "action why" per test, in order
 FAIL=0
 
@@ -74,9 +76,8 @@ fi
 sleep 2
 GOT=()
 while IFS= read -r line; do GOT+=("$line"); done < <(
-	log show --start "$START" --predicate 'process == "kernel"' 2>/dev/null |
-	sed -n 's/.*n33: refused action \([0-9]*\) (why \([0-9]*\)).*/\1 \2/p')
-echo "== kernel log: ${#GOT[@]} refusal line(s), ${#EXPECT[@]} expected"
+	"$N33CTL" log | sed -n 's/.*n33: refused action \([0-9]*\) (why \([0-9]*\)).*/\1 \2/p' | tail -n +$((BEFORE + 1)))
+echo "== kext log: ${#GOT[@]} refusal line(s), ${#EXPECT[@]} expected"
 for i in "${!EXPECT[@]}"; do
 	g="${GOT[$i]:-none}"
 	if [ "$g" = "${EXPECT[$i]}" ]; then r=ok; else r=MISMATCH; FAIL=1; fi
