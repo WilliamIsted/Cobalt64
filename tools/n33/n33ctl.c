@@ -28,7 +28,7 @@ static uint64_t num(const char *s) { return strtoull(s, NULL, 0); }
 
 // The kext's protected-range kinds (n33_protected): 0 is the GOP scanout, 1-8 are DMCUB
 // windows CW0-CW7, 9-11 are REGION4-REGION6, 12 the PSP ring pages (milestone 2), 13 the SMU driver table
-// page (S3), 14 the GART table and mem_scratch (GMC G2), 15 the step-5 SDMA pages (E1). Names match the kext's comments.
+// page (S3), 14 the GART table and mem_scratch (GMC G2), 15 the step-5 SDMA pages (E1), 16 the step-6 compute pages (K1). Names match the kext's comments.
 static const char *kindName(uint64_t k) {
 	static char b[16];
 	if (k == 0) return "GOP scanout";
@@ -38,6 +38,7 @@ static const char *kindName(uint64_t k) {
 	if (k == 13) return "SMU driver table";
 	if (k == 14) return "GART table and mem_scratch";
 	if (k == 15) return "step-5 SDMA ring, wb and test pages";
+	if (k == 16) return "step-6 compute queue pages";
 	return "?";
 }
 
@@ -100,6 +101,15 @@ static const char *whyName(uint64_t why) {
 	case 51:  return "step 5: start in the other mode while the queue runs; sdma stop first";
 	case 52:  return "step 5: db mode: BAR2 not mapped or too small, or the NBIO doorbell aperture not enabled";
 	case 53:  return "step 5: not a test number (1 to 3) or a mode (mmio, db)";
+	case 54:  return "step 6: out of order (cp start before C1 or G6, while SDMA0 runs, or twice in one mode; cp test before start, "
+	                 "after stop or before the previous test; cp stop with no queue; plan or journal full)";
+	case 55:  return "step 6: MEC or HQD not as expected before start (CP_MEC_RS64_CNTL not as C1 left it, CP_HQD_ACTIVE 1 or CP_HQD_ERROR set)";
+	case 56:  return "step 6: latched failure (or this mode already timed out); cp stop, then reload or the other mode";
+	case 57:  return "step 6: GART slot 1 not bound to host page B, or a hub flush did not acknowledge";
+	case 58:  return "step 6: cp start in the other mode while the queue runs; cp stop first";
+	case 59:  return "step 6: db mode: BAR2 not mapped or smaller than 0x20 bytes, or the NBIO doorbell aperture not enabled";
+	case 60:  return "step 6: not a test number (1 to 5) or a mode (mmio, db)";
+	case 61:  return "step 6: the embedded gfx11 shader blob is not the pinned one (size or sha256)";
 	default:
 		if (why >= 100) { static char b[48]; snprintf(b, sizeof b, "overlaps protected %s", kindName(why - 100)); return b; }
 		return "?";
@@ -164,6 +174,8 @@ static void usage(void) {
 	    "  gfx rs64                     C1: CP RS64 start addresses and pipe resets (after psp2 2c, before gmc g6)\n"
 	    "  sdma state | start mmio|db | test 1|2|3 | stop   SDMA0 queue 0 and the first GART DMA (state is C0, read-only)\n"
 	    "                               sdma flags | journal <i> | start <n>: raw, for sdma-negative.sh only (flags reads no register)\n"
+	    "  cp state | hqd | start db|mmio | test 1..5 | stop   step 6: one MEC compute queue, K2 to K5b (state, hqd read-only)\n"
+	    "                               cp flags | journal <i> | start <n>: raw, for cp-negative.sh only (flags reads no register)\n"
 	    "  log                          print the kext's own log (holds every refusal line, unlike the unified log)\n"
 	    "  why <code>                   explain a refusal code from n33ctl log (no kext needed)\n"
 	    "all offsets/dwords accept 0x.. ; writes are re-checked in the kext\n");
@@ -866,13 +878,13 @@ static int gmcJournal(uint64_t first, uint64_t count) {
 }
 
 // The display check's register half: HUBP0, DCN_VM and the protected ranges (the live DMCUB windows).
-struct gmcDisp { uint64_t hubp, pitch, n, prot[16][3]; uint32_t dcn[7]; };
+struct gmcDisp { uint64_t hubp, pitch, n, prot[20][3]; uint32_t dcn[7]; };   // the kext lists up to 20 ranges (kN33Ranges)
 static int gmcDisplay(struct gmcDisp *d) {
 	static const uint32_t dcn[7] = { 0x3935, 0x3936, 0x3937, 0x3938, 0x3939, 0x393A, 0x3A19 };
 	uint64_t s[11] = {0};
 	memset(d, 0, sizeof *d);
 	if (call(aStatus, NULL, 0, s, 11)) return 1;
-	d->hubp = s[5]; d->pitch = s[6]; d->n = s[8] > 16 ? 16 : s[8];
+	d->hubp = s[5]; d->pitch = s[6]; d->n = s[8] > 20 ? 20 : s[8];
 	for (uint64_t i = 0; i < d->n; i++) { uint64_t a = i; if (call(aProtected, &a, 1, d->prot[i], 3)) return 1; }
 	for (int i = 0; i < 7; i++) if (pspRd(dcn[i], &d->dcn[i])) return 1;
 	return 0;
@@ -1188,6 +1200,196 @@ static int doSdma(int argc, char **argv) {
 	return 2;
 }
 
+// ---- cp: stage 3 step 6, one MEC compute queue (overview repo stage3-step6-compute-design.md) ---------------------
+// n33ctl cp state            K0, read-only: the kext's step-6 state and the global CP registers (refused before autoload)
+// n33ctl cp hqd              K0, read-only: the 56 HQD registers of ME 1 pipe 0 queue 0 (writes only the GRBM select)
+// n33ctl cp start db|mmio    K1: MEC pipe 0, the HQD, the doorbell (db) or MMIO write pointer (mmio) kick; after C1 and G6
+// n33ctl cp test 1..5        K2 SET_UCONFIG_REG to SCRATCH_REG0, K3 WRITE_DATA via GART slot 1, K4 the store_magic
+//                            dispatch, K5a the dispatch to the VRAM page without GL2_WB, K5b a RELEASE_MEM with GL2_WB
+// n33ctl cp stop             K6: drain (the reset stage if needed), pointers and doorbell off, MEC halted
+// The kext computes every value and builds every packet; this tool keeps the order and stops after each step for the
+// display check. Each step is William's go. If K2 times out in db mode: cp stop, cp start mmio, cp test 1 (D4).
+enum { aCpState = 29, aCpHqd = 30, aCpStart = 31, aCpTest = 32, aCpStop = 33, aCpRecord = 34 };
+static const struct { uint32_t reg; const char *name; } kCpNames[] = {
+	{ 0xC904, "CP_MEC_RS64_CNTL" }, { 0xC908, "CP_MEC_RS64_INSTR_PNTR" }, { 0x3083, "CP_PQ_WPTR_POLL_CNTL" },
+	{ 0x30B8, "CP_PQ_STATUS" }, { 0x305C, "CP_MEC_DOORBELL_RANGE_LOWER" }, { 0x305D, "CP_MEC_DOORBELL_RANGE_UPPER" },
+	{ 0xA98A, "RLC_CP_SCHEDULERS" }, { 0xC807, "CP_MES_CNTL" }, { 0x21A0, "CP_STAT" }, { 0x2004, "GRBM_STATUS" },
+	{ 0x2084, "CP_CPC_STATUS" }, { 0xC040, "SCRATCH_REG0" }, { 0x2828, "GCVM_L2_PROTECTION_FAULT_STATUS" },
+	{ 0x2829, "GCVM_L2_PROTECTION_FAULT_ADDR_LO32" }, { 0x282A, "GCVM_L2_PROTECTION_FAULT_ADDR_HI32" },
+	{ 0xF84C, "CP_CPC_IC_BASE_LO" }, { 0xA900, "GRBM_GFX_CNTL" }, { 0xA9E4, "SH_MEM_CONFIG" },
+	{ 0x31D3, "SPI_COMPUTE_QUEUE_RESET" }, { 0x507A40, "NBIO S2A_DOORBELL_ENTRY_0_CTRL (RSMU)" },
+	{ 0x3209, "CP_MQD_BASE_ADDR" }, { 0x320A, "CP_MQD_BASE_ADDR_HI" }, { 0x320B, "CP_HQD_ACTIVE" }, { 0x320C, "CP_HQD_VMID" },
+	{ 0x320D, "CP_HQD_PERSISTENT_STATE" }, { 0x320E, "CP_HQD_PIPE_PRIORITY" }, { 0x320F, "CP_HQD_QUEUE_PRIORITY" },
+	{ 0x3210, "CP_HQD_QUANTUM" }, { 0x3211, "CP_HQD_PQ_BASE" }, { 0x3212, "CP_HQD_PQ_BASE_HI" }, { 0x3213, "CP_HQD_PQ_RPTR" },
+	{ 0x3214, "CP_HQD_PQ_RPTR_REPORT_ADDR" }, { 0x3215, "CP_HQD_PQ_RPTR_REPORT_ADDR_HI" },
+	{ 0x3216, "CP_HQD_PQ_WPTR_POLL_ADDR" }, { 0x3217, "CP_HQD_PQ_WPTR_POLL_ADDR_HI" }, { 0x3218, "CP_HQD_PQ_DOORBELL_CONTROL" },
+	{ 0x3219, "(unnamed 0x1FB9, MQD reserved_144)" }, { 0x321A, "CP_HQD_PQ_CONTROL" }, { 0x321B, "CP_HQD_IB_BASE_ADDR" },
+	{ 0x321C, "CP_HQD_IB_BASE_ADDR_HI" }, { 0x321D, "CP_HQD_IB_RPTR" }, { 0x321E, "CP_HQD_IB_CONTROL" },
+	{ 0x321F, "CP_HQD_IQ_TIMER" }, { 0x3220, "CP_HQD_IQ_RPTR" }, { 0x3221, "CP_HQD_DEQUEUE_REQUEST" },
+	{ 0x3222, "CP_HQD_DMA_OFFLOAD" }, { 0x3223, "CP_HQD_SEMA_CMD" }, { 0x3224, "CP_HQD_MSG_TYPE" },
+	{ 0x3225, "CP_HQD_ATOMIC0_PREOP_LO" }, { 0x3226, "CP_HQD_ATOMIC0_PREOP_HI" }, { 0x3227, "CP_HQD_ATOMIC1_PREOP_LO" },
+	{ 0x3228, "CP_HQD_ATOMIC1_PREOP_HI" }, { 0x3229, "CP_HQD_HQ_SCHEDULER0" }, { 0x322A, "CP_HQD_HQ_CONTROL0" },
+	{ 0x322B, "CP_MQD_CONTROL" }, { 0x322C, "CP_HQD_HQ_STATUS1" }, { 0x322D, "CP_HQD_HQ_CONTROL1" },
+	{ 0x322E, "CP_HQD_EOP_BASE_ADDR" }, { 0x322F, "CP_HQD_EOP_BASE_ADDR_HI" }, { 0x3230, "CP_HQD_EOP_CONTROL" },
+	{ 0x3231, "CP_HQD_EOP_RPTR" }, { 0x3232, "CP_HQD_EOP_WPTR" }, { 0x3233, "CP_HQD_EOP_EVENTS" },
+	{ 0x3234, "CP_HQD_CTX_SAVE_BASE_ADDR_LO" }, { 0x3235, "CP_HQD_CTX_SAVE_BASE_ADDR_HI" }, { 0x3236, "CP_HQD_CTX_SAVE_CONTROL" },
+	{ 0x3237, "CP_HQD_CNTL_STACK_OFFSET" }, { 0x3238, "CP_HQD_CNTL_STACK_SIZE" }, { 0x3239, "CP_HQD_WG_STATE_OFFSET" },
+	{ 0x323A, "CP_HQD_CTX_SAVE_SIZE" }, { 0x323B, "CP_HQD_GDS_RESOURCE_STATE" }, { 0x323C, "CP_HQD_ERROR" },
+	{ 0x323D, "CP_HQD_EOP_WPTR_MEM" }, { 0x323E, "CP_HQD_AQL_CONTROL" }, { 0x323F, "CP_HQD_PQ_WPTR_LO" },
+	{ 0x3240, "CP_HQD_PQ_WPTR_HI" },
+};
+static const char *cpName(uint32_t reg) {
+	static char b[24];
+	for (unsigned i = 0; i < sizeof kCpNames / sizeof kCpNames[0]; i++) if (kCpNames[i].reg == reg) return kCpNames[i].name;
+	snprintf(b, sizeof b, "dword %#x", reg);
+	return b;
+}
+
+static int cpFlags(uint64_t st[15]) {
+	uint64_t a = 0;
+	memset(st, 0, 15 * sizeof st[0]);
+	return call(aCpState, &a, 1, st, 15);
+}
+static void cpPrintFlags(const uint64_t *st) {
+	static const char *mode[] = { "none", "mmio", "db" }, *latch[] = { "none", "timeout", "hard" };
+	printf("kext: pages %llu running %llu mode %s latch %s timed-out modes %#llx  blob pinned %llu (%llu bytes)  BAR2 %llu "
+	       "(%llu bytes)  engine holds GART %llu  C1 %llu G6 %llu  SDMA running %llu  GC up %llu\n", st[0] & 1, st[0] >> 1 & 1,
+	       st[1] < 3 ? mode[st[1]] : "?", st[2] < 3 ? latch[st[2]] : "?", st[3], st[0] >> 2 & 1, st[13], st[0] >> 3 & 1, st[12],
+	       st[0] >> 4 & 1, st[0] >> 5 & 1, st[0] >> 6 & 1, st[0] >> 7 & 1, st[11]);
+	printf("      wptr %llu dwords, fence seq %llu, tests ok %#llx, starts %llu, journal %llu, K5a data all %llu, "
+	       "S2A entry 0 as found %#llx, MEC doorbell range as found %#llx/%#llx, GRBM_STATUS at K1 %#llx\n", st[4], st[5], st[6],
+	       st[7], st[8], st[0] >> 8 & 1, st[9], st[10] & 0xFFFFFFFFull, st[10] >> 32, st[14]);
+}
+static int cpJournal(uint64_t first, uint64_t count) {
+	static const char *phase[] = { "?", "K1", "K6" };
+	for (uint64_t i = first; i < first + count; i++) {
+		uint64_t a = i, o[7] = {0};
+		if (call(aCpRecord, &a, 1, o, 7)) return 1;
+		const char *ph = o[0] < 3 ? phase[o[0]] : "?";
+		if (o[1] == 4) printf("  %s %-40s poll       %#010llx  last  %#010llx\n", ph, cpName((uint32_t)o[2]), o[3], o[4]);
+		else printf("  %s %-40s before %#010llx  after %#010llx  target %#010llx  %s%s\n", ph, cpName((uint32_t)o[2]), o[3], o[4],
+		            o[5], ((o[4] ^ o[5]) & o[6]) ? "MISMATCH" : o[6] ? "ok" : "recorded", o[1] == 5 ? " (reset stage)" : "");
+	}
+	return 0;
+}
+
+// K0, read-only. The kext refuses before autoload (no GC register is read then).
+static int cpState(void) {
+	uint64_t st[15], a = 1, o[3] = {0};
+	int ffff = 0;
+	if (cpFlags(st)) return 1;
+	cpPrintFlags(st);
+	if (call(aCpState, &a, 1, o, 3)) { printf("cp state: REFUSED by the kext (GC not up?)\n"); return 1; }
+	const uint64_t n = o[2];
+	for (uint64_t i = 1; i <= n; i++) {
+		a = i;
+		if (call(aCpState, &a, 1, o, 3)) return 1;
+		if (o[1] == 0xFFFFFFFFull) ffff++;
+		printf("  %-40s %#010llx%s\n", cpName((uint32_t)o[0]), o[1], o[1] == 0xFFFFFFFFull ? "  (0xffffffff)" : "");
+	}
+	if (ffff) printf("%d register(s) read 0xffffffff\n", ffff);
+	return ffff ? 1 : 0;
+}
+static int cpHqd(void) {
+	uint64_t a = 0, o[3] = {0};
+	int ffff = 0;
+	if (call(aCpHqd, &a, 1, o, 3)) { printf("cp hqd: REFUSED by the kext (GC not up?)\n"); return 1; }
+	const uint64_t n = o[2];
+	printf("HQD block, ME 1 pipe 0 queue 0 (selected, then deselected):\n");
+	for (uint64_t i = 0; i < n; i++) {
+		a = i;
+		if (call(aCpHqd, &a, 1, o, 3)) return 1;
+		if (o[1] == 0xFFFFFFFFull) ffff++;
+		printf("  %-40s %#010llx%s\n", cpName((uint32_t)o[0]), o[1], o[1] == 0xFFFFFFFFull ? "  (0xffffffff)" : "");
+	}
+	if (ffff) printf("%d register(s) read 0xffffffff: K0 not done\n", ffff);
+	else printf("K0: no HQD register reads 0xffffffff. Want CP_HQD_ACTIVE 0, CP_HQD_ERROR 0, CP_HQD_PQ_CONTROL 0x00308509, "
+	            "and CP_MEC_RS64_CNTL 0x40000000 in cp state\n");
+	return ffff ? 1 : 0;
+}
+
+static int cpStart(uint64_t mode) {
+	uint64_t st[15], o[16] = {0};
+	struct gmcDisp before, after;
+	if (cpFlags(st)) return 1;
+	cpPrintFlags(st);
+	if (gmcDisplay(&before)) return 1;
+	if (call(aCpStart, &mode, 1, o, 16)) { printf("K1 (%s): REFUSED by the kext\n", mode == 2 ? "db" : "mmio"); return 1; }
+	printf("K1 (%s): %s, %llu writes, %llu mismatches\n", mode == 2 ? "db" : "mmio", o[1] ? "done" : "FAILED (latched: cp stop)", o[3], o[4]);
+	if (cpJournal(o[2], o[3]) || gmcDisplay(&after)) return 1;
+	printf("CP_MEC_RS64_CNTL %#llx (want 0x04000000), INSTR_PNTR %#llx -> %#llx (recorded), CP_HQD_ACTIVE %#llx (want 1), "
+	       "PQ_BASE %#llx (want 0x8008a050), EOP_CONTROL %#llx (want 0x9), PQ_RPTR %#llx (want 0), HQD_ERROR %#llx (want 0), "
+	       "GC fault status %#llx\n", o[5], o[6], o[7], o[8], o[9], o[10], o[11], o[12], o[13]);
+	printf("DOORBELL_CONTROL %#llx (want %s), CP_PQ_STATUS %#llx", o[14] & 0xFFFFFFFFull, mode == 2 ? "0x40000018" : "0", o[14] >> 32);
+	if (mode == 2) printf(" (want bit 1), S2A entry 0 %#llx (want fields 0x30000007 under 0xf1ffffbf), doorbell at BAR2 + 0x18",
+	                      o[15] & 0xFFFFFFFFull);
+	printf("\ncode page %s, shader blob %s\n", o[15] >> 32 & 1 ? "reads back" : "MISMATCH", o[15] >> 33 & 1 ? "pinned" : "NOT pinned (K4 refused)");
+	const int same = gmcDisplaySame(&before, &after);
+	printf("display check: confirm the desktop is still on the monitor 60 s from now. cp test 1 is the next go.\n");
+	return !(o[1] == 1 && same);
+}
+
+static int cpTest(uint64_t n) {
+	static const char *what[] = { "", "SET_UCONFIG_REG to SCRATCH_REG0 (K2)", "WRITE_DATA to host page B + 0x100 via GART slot 1 (K3)",
+	                              "store_magic dispatch to host page B, fence + 0x180 (K4)",
+	                              "dispatch to the VRAM page, fence without GL2_WB + 0x188 (K5a)", "RELEASE_MEM with GL2_WB + 0x190 (K5b)" };
+	uint64_t st[15], o[16] = {0};
+	struct gmcDisp before, after;
+	if (cpFlags(st)) return 1;
+	cpPrintFlags(st);
+	if (gmcDisplay(&before)) return 1;
+	if (call(aCpTest, &n, 1, o, 16)) { printf("test %llu: REFUSED by the kext\n", n); return 1; }
+	printf("test %llu, %s, %s mode: %s after %llu us\n", n, n <= 5 ? what[n] : "?", st[1] == 2 ? "db" : "mmio",
+	       o[1] ? "DONE" : o[14] == 1 ? "TIMEOUT (timeout only)" : "FAILED (latched)", o[15]);
+	if (n <= 2) printf("  target %#llx reads %#llx (want 0xdeadbeef)", o[12], o[2]);
+	else printf("  result MC %#llx: %llu of 32 dwords 0xca11ed47 + i; fence reads %#llx; first data / fence at %lld / %lld us",
+	            o[12], o[2], o[3], (long long)(int32_t)(o[11] >> 32), (long long)(int32_t)(o[11] & 0xFFFFFFFFull));
+	printf("\n  PQ_RPTR %#llx, wptr %llu dwords, rptr slot %#llx, ACTIVE %#llx, HQD_ERROR %#llx, GRBM_STATUS %#llx, GC fault status %#llx",
+	       o[4], o[5], o[6], o[9], o[8], o[10], o[7]);
+	if (n >= 2) printf(", slot 1 PTE %#llx", o[13]);
+	printf("\n");
+	if (n == 4 && o[1]) printf("  K5a: %s\n", o[2] == 32 ? "all 32 in VRAM without GL2_WB: the question is answered, K5b is not run"
+	                                                    : "data short with the fence landed: K5b (cp test 5) is the next go");
+	if (gmcDisplay(&after)) return 1;
+	const int same = gmcDisplaySame(&before, &after);
+	if (n == 1 && !o[1]) { cpHqd(); cpState(); }   // the design's K2 failure print
+	if (!o[1] && o[14] == 1 && st[1] == 2)
+		printf("db timed out with nothing else wrong. Same-boot fallback, each its own go: cp stop, cp start mmio, cp test 1.\n");
+	else if (!o[1]) printf("record the lines above, then cp stop. Nothing more until the kext is reloaded.\n");
+	printf("display check: confirm the desktop is still on the monitor 60 s from now.\n");
+	return !(o[1] == 1 && same);
+}
+
+static int doCp(int argc, char **argv) {
+	const char *sub = argv[2];
+	uint64_t st[15], o[10] = {0};
+	if (!strcmp(sub, "flags") && argc == 3) { if (cpFlags(st)) return 1; cpPrintFlags(st); return 0; }
+	if (!strcmp(sub, "state") && argc == 3) return cpState();
+	if (!strcmp(sub, "hqd") && argc == 3) return cpHqd();
+	if (!strcmp(sub, "start") && argc == 4) {
+		if (!strcmp(argv[3], "mmio")) return cpStart(1);
+		if (!strcmp(argv[3], "db")) return cpStart(2);
+		uint64_t m = num(argv[3]);   // raw number (0 for a word), for cp-negative.sh only
+		if (call(aCpStart, &m, 1, o, 10)) return 1;
+		printf("start %llu: ok %llu\n", m, o[1]);
+		return o[1] == 1 ? 0 : 1;
+	}
+	if (!strcmp(sub, "test") && argc == 4) return cpTest(num(argv[3]));
+	if (!strcmp(sub, "stop") && argc == 3) {
+		if (call(aCpStop, NULL, 0, o, 10)) { printf("K6: REFUSED by the kext\n"); return 1; }
+		printf("K6: %s, %llu writes, %llu mismatches, drain %s%s, ACTIVE %#llx (want 0), PQ_RPTR %#llx (want 0), "
+		       "DOORBELL_CONTROL %#llx (want 0), CP_MEC_RS64_CNTL %#llx (want MEC_HALT)\n", o[1] ? "done" : "FAILED (latched)", o[3],
+		       o[4], o[9] & 1 ? "TIMED OUT" : "done", o[9] & 2 ? " after the reset stage" : "", o[5], o[6], o[7], o[8]);
+		if (cpJournal(o[2], o[3])) return 1;
+		if (cpFlags(st)) return 1;
+		cpPrintFlags(st);
+		return o[1] == 1 ? 0 : 1;
+	}
+	if (!strcmp(sub, "journal") && argc == 4) return cpJournal(num(argv[3]), 1);
+	usage();
+	return 2;
+}
+
 int main(int argc, char **argv) {
 	if (argc < 2) { usage(); return 2; }
 	if (!strcmp(argv[1], "why") && argc == 3) { printf("%s\n", whyName(num(argv[2]))); return 0; }
@@ -1262,6 +1464,8 @@ int main(int argc, char **argv) {
 		rc = gfxRs64();
 	} else if (!strcmp(cmd, "sdma") && argc >= 3) {
 		rc = doSdma(argc, argv);
+	} else if (!strcmp(cmd, "cp") && argc >= 3) {
+		rc = doCp(argc, argv);
 	} else if (!strcmp(cmd, "log") && argc == 2) {
 		// The negative tests read refusals here: logd can quarantine the kernel and drop IOLog lines.
 		char chunk[4097];

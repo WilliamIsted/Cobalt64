@@ -33,7 +33,7 @@ FW_REQUIRED := gc_12_0_1_imu gc_12_0_1_me gc_12_0_1_mec gc_12_0_1_pfp gc_12_0_1_
 FW_MISSING  := $(filter-out $(patsubst firmware/%.bin,%,$(FW_BINS)),$(FW_REQUIRED))
 # Our own compute test shaders, assembled from shaders/*.s (tools/build-shader.sh) and tracked as
 # shaders/*.bin so no LLVM is needed to build the kext.
-SHADER_FW      := shader_store_magic shader_store_magic_hsa
+SHADER_FW      := shader_store_magic shader_store_magic_hsa shader_store_magic_gfx11
 SHADER_FW_SRCS := $(patsubst %,src/fw/fw_%.c,$(SHADER_FW))
 FW_SRCS        := $(sort $(FW_SRCS) $(SHADER_FW_SRCS))
 $(SHADER_FW_SRCS): src/fw/fw_shader_%.c: shaders/%.bin tools/embed-firmware.py

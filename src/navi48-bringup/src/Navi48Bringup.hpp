@@ -36,6 +36,7 @@
 #include "amd/n33_smu_pure.h"       // N33 SMU mailbox: n33smu::State (pure, no kernel types)
 #include "amd/n33_gmc_pure.h"       // N33 GMC 11 / GART: n33gmc::State, Snap, Inputs, Rec (pure, no kernel types)
 #include "amd/n33_sdma_pure.h"      // N33 step 5, CP RS64 and SDMA 6.0.2: n33sdma::State, Entry, Rec (pure, no kernel types)
+#include "amd/n33_cp_pure.h"        // N33 step 6, one MEC compute queue: n33cp::State (pure, no kernel types)
 #include "amd/n48log.h"
 #include "amd/rebar_pure.h"   // 0.0.663: Resizable BAR planning (pure)
 #include "amd/amdgpu_init.h"
@@ -188,6 +189,18 @@ private:
 	uint32_t n33SdmaStart(uint32_t mode, uint64_t *out, uint32_t outCount);
 	uint32_t n33SdmaTest(uint32_t n, uint64_t *out, uint32_t outCount);
 	uint32_t n33SdmaStop(bool unload, uint64_t *out, uint32_t outCount);
+	// N33 stage 3 step 6: MEC pipe 0 and one compute HQD, db or mmio kick, K1 to K6 (n33cp::, Navi48Bringup.cpp).
+	n33cp::State   n33Cp {};
+	n33sdma::Rec   n33CpJournal[n33cp::kJournalMax] {};
+	uint32_t       n33CpJournalN { 0 };
+	n33sdma::Entry n33CpPlanBuf[n33cp::kPlanMax] {};
+	uint32_t n33CpRun(uint32_t phase, uint32_t n, uint32_t *bad, bool *busy, bool *resetRan);
+	uint32_t n33CpHqdRd(uint32_t reg);
+	bool     n33CpBlobOk() const;
+	uint32_t n33CpPagesClear() const;
+	uint32_t n33CpStart(uint32_t mode, uint64_t *out, uint32_t outCount);
+	uint32_t n33CpTest(uint32_t n, uint64_t *out, uint32_t outCount);
+	uint32_t n33CpStop(bool unload, uint64_t *out, uint32_t outCount);
 #endif
 	// --- stages ---
 	bool probeMemSize();
