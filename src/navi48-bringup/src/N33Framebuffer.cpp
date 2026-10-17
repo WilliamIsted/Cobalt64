@@ -146,7 +146,7 @@ IOReturn N33Framebuffer::getDisplayModes(IODisplayModeID *all) {
 }
 IOReturn N33Framebuffer::getInformationForDisplayMode(IODisplayModeID mode, IODisplayModeInformation *info) {
 	n33fb::ModeInfo m;
-	if (!info || !n33fb::mode_info((uint32_t)mode, &m)) return kIOReturnBadArgument;
+	if (!info || !n33fb::mode_info((uint32_t)mode, snap, &m)) return kIOReturnBadArgument;
 	bzero(info, sizeof(*info));
 	info->nominalWidth = m.w; info->nominalHeight = m.h; info->refreshRate = m.refresh1616;
 	info->maxDepthIndex = (IOIndex)m.maxDepthIndex;
@@ -156,7 +156,7 @@ IOReturn N33Framebuffer::getInformationForDisplayMode(IODisplayModeID mode, IODi
 UInt64 N33Framebuffer::getPixelFormatsForDisplayMode(IODisplayModeID, IOIndex) { return 0; }   // obsolete: must return 0
 IOReturn N33Framebuffer::getPixelInformation(IODisplayModeID mode, IOIndex depth, IOPixelAperture aperture, IOPixelInformation *pi) {
 	n33fb::PixelInfo p;
-	if (!pi || aperture != kIOFBSystemAperture || !n33fb::pixel_info((uint32_t)mode, (int32_t)depth, &p)) return kIOReturnBadArgument;
+	if (!pi || aperture != kIOFBSystemAperture || !n33fb::pixel_info((uint32_t)mode, (int32_t)depth, snap, &p)) return kIOReturnBadArgument;
 	bzero(pi, sizeof(*pi));
 	pi->bytesPerRow = p.bytesPerRow; pi->bitsPerPixel = p.bitsPerPixel; pi->pixelType = kIORGBDirectPixels;
 	pi->componentCount = p.componentCount; pi->bitsPerComponent = p.bitsPerComponent;

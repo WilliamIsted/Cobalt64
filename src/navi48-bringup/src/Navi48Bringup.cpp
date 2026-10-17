@@ -9028,6 +9028,15 @@ bool Navi48Bringup::startN33Observe() {
 	N48LOG("n33: TTL hook %s (%s)", hook.installed ? "installed" : "NOT installed", hook.why);
 	setProperty("N33,TtlHook", hook.why);
 	setProperty("N33,TtlHookInstalled", hook.installed);
+	// B0: publish the framebuffer nub at boot, behind navi48-boot-fb, so WindowServer sees it at its
+	// first enumeration and no post-login verb / WindowServer restart is needed. Default off: with the
+	// arm absent or 0 the box boots exactly as before (no publish, no register write). The one hardware
+	// write (the HUBP0 self-flip) still happens only later, through enableController on a published nub.
+	uint32_t bootFb = 0;
+	if (PE_parse_boot_argn("navi48-boot-fb", &bootFb, sizeof(bootFb)) && bootFb != 0) {
+		const N33PublishResult r = n33PublishFbNub();
+		N48LOG("n33: boot-fb publish: status %u (%u, %u)", r.status, r.v1, r.v2);
+	}
 	registerService();
 	return true;
 }
@@ -10823,29 +10832,39 @@ uint32_t Navi48Bringup::n33CpIb(uint64_t *out, uint32_t outCount) {
 // scalar output back on an error return. out[0] status: 0 ok, 1 not ready, 2 already published, 3 HUBP0 not on the GOP
 // scanout, 4 layout gate (out[1] verdict, out[2] slot), 5 snapshot (out[1] verdict), 6 protected
 // range (out[1] why), 7 publish failed.
-IOReturn Navi48Bringup::n33FbPublish(uint64_t *out, uint32_t outCount) {
-	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
-	if (!n33Observing || !n33Bar0 || n33Bar0Phys == 0) { put(0, 1); return kIOReturnSuccess; }
-	if (N33DisplayNub::published()) { put(0, 2); return kIOReturnSuccess; }
+// B0: the publish body, run by both the fbpublish verb and the boot-time publish. Writes no register.
+// Width/height are the active size from the viewport register (authoritative; a padded pitch cannot
+// distort width); pitchBytes is the real stride from the pitch register. Mode is accepted for any sane
+// size, not fixed at 2560x1440 (n33_fb_pure.h snap_valid).
+Navi48Bringup::N33PublishResult Navi48Bringup::n33PublishFbNub() {
+	if (!n33Observing || !n33Bar0 || n33Bar0Phys == 0) return { 1, 0, 0 };
+	if (N33DisplayNub::published()) return { 2, 0, 0 };
 	const uint64_t cur = (((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]) - n33FbBase;
-	if (cur != n33GopOff) { put(0, 3); return kIOReturnSuccess; }          // HUBP0 must be on the GOP scanout
+	if (cur != n33GopOff) return { 3, 0, 0 };                              // HUBP0 must be on the GOP scanout
 	uint32_t slot = 0;
 	const uint32_t gv = n33_fb_gate(&slot);
-	if (gv != n33fb::kGateOk) { put(0, 4); put(1, gv); put(2, slot); return kIOReturnSuccess; }
+	if (gv != n33fb::kGateOk) return { 4, gv, slot };
 	n33fb::Snap s = {};
 	s.bar0Phys = n33Bar0Phys; s.bar0Size = n33Bar0Size; s.surfOff = n33fb::kSurfOff;
 	s.gopOff = n33GopOff; s.gopLen = n33GopLen;
-	s.w = (rmmio[kN33Hubp0Pitch] & 0x3FFF) + 1;                                  // pixels, as n33SnapshotScanout reads it
-	s.h = rmmio[kN33Hubp0Viewport] >> 16;
-	s.pitchBytes = s.w * 4;
+	s.w = rmmio[kN33Hubp0Viewport] & 0xFFFF;                               // active width, low 16 (authoritative)
+	s.h = rmmio[kN33Hubp0Viewport] >> 16;                                  // active height, high 16
+	s.pitchBytes = ((rmmio[kN33Hubp0Pitch] & 0x3FFF) + 1) * 4;            // real stride in bytes (pixels-1 + 1) * 4
 	s.surfCfg = n33SurfCfg;
 	const uint32_t sv = n33fb::snap_valid(s);
-	if (sv != n33fb::kSnapOk) { put(0, 5); put(1, sv); return kIOReturnSuccess; }
+	if (sv != n33fb::kSnapOk) return { 5, sv, 0 };
 	uint64_t why = 0;
-	if (!n33WriteAllowed(s.surfOff, n33fb::kBytes, &why)) { put(0, 6); put(1, why); return kIOReturnSuccess; }
-	if (!N33DisplayNub::publish(pciDevice, s)) { put(0, 7); return kIOReturnSuccess; }
-	N48LOG("n33: framebuffer nub published (surface VRAM %#llx, BAR0 phys %#llx)", s.surfOff, s.bar0Phys);
-	put(0, 0);
+	if (!n33WriteAllowed(s.surfOff, n33fb::kBytes, &why)) return { 6, (uint32_t)why, 0 };
+	if (!N33DisplayNub::publish(pciDevice, s)) return { 7, 0, 0 };
+	N48LOG("n33: framebuffer nub published (%ux%u pitch %u, surface VRAM %#llx, BAR0 phys %#llx)",
+	       s.w, s.h, s.pitchBytes, s.surfOff, s.bar0Phys);
+	return { 0, 0, 0 };
+}
+
+IOReturn Navi48Bringup::n33FbPublish(uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const N33PublishResult r = n33PublishFbNub();
+	put(0, r.status); put(1, r.v1); put(2, r.v2);
 	return kIOReturnSuccess;
 }
 #endif

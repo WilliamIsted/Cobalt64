@@ -12,11 +12,16 @@ constexpr uint32_t kModeId      = 1;
 constexpr uint32_t kW           = 2560;
 constexpr uint32_t kH           = 1440;
 constexpr uint32_t kPitchBytes  = 10240;              // 2560 * 4
-constexpr uint64_t kBytes       = 14745600ull;        // 2560 * 1440 * 4
-constexpr uint32_t kRefresh1616 = 75u << 16;          // the GOP's 75 Hz
+constexpr uint64_t kBytes       = 14745600ull;        // 2560 * 1440 * 4: the reserved surface window at kSurfOff (the
+                                                      // largest mode we honour); the self-flip and publish write-allow
+                                                      // guard this whole window, a smaller mode draws into its front
+constexpr uint32_t kRefresh1616 = 75u << 16;          // reported for every mode; cosmetic for a fixed mode (design 3)
 constexpr uint64_t kSurfOff     = 0x2000000ull;       // 32 MiB: above the kext's 16 MiB write floor
 constexpr uint64_t kWriteFloor  = 16ull << 20;
 constexpr uint64_t kAlign       = 0x10000ull;         // 64 KiB
+// B0: the snapshot mode is taken from the live GOP/OTG timing, not fixed at 2560x1440. Accept any sane
+// active size (the iGPU-boot case is 1024x768); the surface still must fit BAR0 above the write floor.
+constexpr uint32_t kWmin = 320, kWmax = 7680, kHmin = 200, kHmax = 4320;
 constexpr uint32_t kFbSlots     = 350;                // IOFramebuffer vtable slots (Tahoe 26.6.2, measured by the aux kext)
 constexpr uint32_t kFbClassSize = 0x1d0;              // IOFramebuffer class size (same source)
 
@@ -33,35 +38,42 @@ struct Snap {
 
 enum SnapVerdict : uint32_t { kSnapOk = 0, kSnapBar0, kSnapAlign, kSnapRange, kSnapGeom, kSnapOverlap };
 
+// The surface's real footprint: height times the real stride (pitch may exceed w*4 if padded).
+inline uint64_t snap_bytes(const Snap &s) { return (uint64_t)s.h * s.pitchBytes; }
+
 inline uint32_t snap_valid(const Snap &s) {
 	if (s.bar0Phys == 0 || (s.bar0Phys & (kAlign - 1)) != 0 || s.bar0Size == 0) return kSnapBar0;
 	if ((s.surfOff & (kAlign - 1)) != 0) return kSnapAlign;
-	if (s.surfOff < kWriteFloor || s.surfOff > s.bar0Size || kBytes > s.bar0Size - s.surfOff) return kSnapRange;
-	if (s.w != kW || s.h != kH || s.pitchBytes != kPitchBytes) return kSnapGeom;
+	if (s.w < kWmin || s.w > kWmax || s.h < kHmin || s.h > kHmax) return kSnapGeom;
+	if (s.pitchBytes < (uint64_t)s.w * 4 || (s.pitchBytes & 3) != 0) return kSnapGeom;
+	const uint64_t bytes = snap_bytes(s);
+	if (s.surfOff < kWriteFloor || s.surfOff > s.bar0Size || bytes > s.bar0Size - s.surfOff) return kSnapRange;
 	if (s.gopLen > ~0ull - s.gopOff) return kSnapOverlap;
-	if (s.surfOff < s.gopOff + s.gopLen && s.gopOff < s.surfOff + kBytes) return kSnapOverlap;
+	if (s.surfOff < s.gopOff + s.gopLen && s.gopOff < s.surfOff + bytes) return kSnapOverlap;
 	return kSnapOk;
 }
 
 // ---- answers --------------------------------------------------------------------------------------------
+// B0: the mode is the snapshot's live geometry, not the kW/kH constants. Refresh stays the GOP's
+// nominal (cosmetic for a single fixed mode).
 struct ModeInfo { uint32_t w, h, refresh1616, maxDepthIndex; bool valid, safe, isDefault; };
-inline bool mode_info(uint32_t mode, ModeInfo *m) {
+inline bool mode_info(uint32_t mode, const Snap &s, ModeInfo *m) {
 	if (mode != kModeId || !m) return false;
-	*m = ModeInfo{ kW, kH, kRefresh1616, 0, true, true, true };
+	*m = ModeInfo{ s.w, s.h, kRefresh1616, 0, true, true, true };
 	return true;
 }
 
 struct PixelInfo { uint32_t bytesPerRow, bitsPerPixel, componentCount, bitsPerComponent, w, h; uint32_t masks[3]; };
-inline bool pixel_info(uint32_t mode, int32_t depth, PixelInfo *p) {
+inline bool pixel_info(uint32_t mode, int32_t depth, const Snap &s, PixelInfo *p) {
 	if (mode != kModeId || depth != 0 || !p) return false;
-	*p = PixelInfo{ kPitchBytes, 32, 3, 8, kW, kH, { 0x00FF0000u, 0x0000FF00u, 0x000000FFu } };
+	*p = PixelInfo{ s.pitchBytes, 32, 3, 8, s.w, s.h, { 0x00FF0000u, 0x0000FF00u, 0x000000FFu } };
 	return true;
 }
 
 inline bool aperture(const Snap &s, uint64_t *phys, uint64_t *len) {
 	if (!phys || !len || snap_valid(s) != kSnapOk) return false;
 	*phys = s.bar0Phys + s.surfOff;
-	*len = kBytes;
+	*len = snap_bytes(s);
 	return true;
 }
 

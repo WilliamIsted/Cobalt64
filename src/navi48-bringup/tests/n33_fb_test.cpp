@@ -19,17 +19,33 @@ static n33fb::Snap good() {
 	return s;
 }
 
+// B0: the iGPU-as-boot-display case, the card's GOP pipe at 1024x768 pitch 1024 px (measured 2026-10-17).
+static n33fb::Snap good768() {
+	n33fb::Snap s = {};
+	s.bar0Phys = 0x4000000000ull; s.bar0Size = 256ull << 20; s.surfOff = n33fb::kSurfOff;
+	s.gopOff = 0; s.gopLen = 0x300000;
+	s.w = 1024; s.h = 768; s.pitchBytes = 4096; s.surfCfg = 0;
+	return s;
+}
+
 static void snapshot_cases() {
 	using namespace n33fb;
 	CHECK(snap_valid(good()) == kSnapOk);
+	CHECK(snap_valid(good768()) == kSnapOk);        // B0: 1024x768 now accepted, not refused as non-2560x1440
 	Snap s = good(); s.bar0Phys = 0;               CHECK(snap_valid(s) == kSnapBar0);       // snap_bar0
 	s = good(); s.bar0Phys = 0x4000001000ull;      CHECK(snap_valid(s) == kSnapBar0);       // not 64 KiB aligned
 	s = good(); s.surfOff = 0x2001000;             CHECK(snap_valid(s) == kSnapAlign);
 	s = good(); s.surfOff = 0x800000;              CHECK(snap_valid(s) == kSnapRange);      // below the 16 MiB floor
 	s = good(); s.surfOff = (256ull << 20) - 0x10000; CHECK(snap_valid(s) == kSnapRange);    // runs past the aperture (snap_range)
 	s = good(); s.surfOff = ~0ull & ~0xffffull;    CHECK(snap_valid(s) == kSnapRange);      // no wraparound
-	s = good(); s.w = 1920;                        CHECK(snap_valid(s) == kSnapGeom);
-	s = good(); s.pitchBytes = 7680;               CHECK(snap_valid(s) == kSnapGeom);
+	s = good(); s.w = 1920; s.pitchBytes = 7680;   CHECK(snap_valid(s) == kSnapOk);         // B0: an in-bounds mode is valid
+	s = good(); s.w = 200;                         CHECK(snap_valid(s) == kSnapGeom);       // width below kWmin
+	s = good(); s.w = 8000;                        CHECK(snap_valid(s) == kSnapGeom);       // width above kWmax
+	s = good(); s.h = 100;                         CHECK(snap_valid(s) == kSnapGeom);       // height below kHmin
+	s = good(); s.h = 5000;                        CHECK(snap_valid(s) == kSnapGeom);       // height above kHmax
+	s = good(); s.pitchBytes = 7680;               CHECK(snap_valid(s) == kSnapGeom);       // pitch below w*4 (2560*4)
+	s = good(); s.pitchBytes = 10242;              CHECK(snap_valid(s) == kSnapGeom);       // stride not a multiple of 4
+	s = good(); s.pitchBytes = 12288;              CHECK(snap_valid(s) == kSnapOk);         // a padded pitch (> w*4) is allowed
 	s = good(); s.gopOff = 0x2000000; s.gopLen = 0x10000; CHECK(snap_valid(s) == kSnapOverlap);   // snap_overlap
 	s = good(); s.gopOff = 0x2e00000; s.gopLen = 0x20000; CHECK(snap_valid(s) == kSnapOverlap);   // GOP inside the surface tail
 	s = good(); s.gopOff = ~0ull; s.gopLen = 2;    CHECK(snap_valid(s) == kSnapOverlap);          // length overflow
@@ -39,12 +55,15 @@ static void snapshot_cases() {
 static void answer_cases() {
 	using namespace n33fb;
 	ModeInfo m; PixelInfo p; uint64_t phys = 1, len = 1;
-	CHECK(mode_info(1, &m) && m.w == 2560 && m.h == 1440 && m.refresh1616 == (75u << 16) && m.valid && m.isDefault);
-	CHECK(!mode_info(2, &m));
-	CHECK(pixel_info(1, 0, &p) && p.bytesPerRow == 10240 && p.bitsPerPixel == 32 && p.masks[0] == 0x00FF0000u && p.masks[2] == 0xFFu);
-	CHECK(!pixel_info(1, 1, &p));
-	CHECK(!pixel_info(2, 0, &p));
+	CHECK(mode_info(1, good(), &m) && m.w == 2560 && m.h == 1440 && m.refresh1616 == (75u << 16) && m.valid && m.isDefault);
+	CHECK(mode_info(1, good768(), &m) && m.w == 1024 && m.h == 768);                              // B0: mode from the snapshot
+	CHECK(!mode_info(2, good(), &m));
+	CHECK(pixel_info(1, 0, good(), &p) && p.bytesPerRow == 10240 && p.w == 2560 && p.h == 1440 && p.bitsPerPixel == 32 && p.masks[0] == 0x00FF0000u && p.masks[2] == 0xFFu);
+	CHECK(pixel_info(1, 0, good768(), &p) && p.bytesPerRow == 4096 && p.w == 1024 && p.h == 768); // B0: pitch/size from the snapshot
+	CHECK(!pixel_info(1, 1, good(), &p));
+	CHECK(!pixel_info(2, 0, good(), &p));
 	CHECK(aperture(good(), &phys, &len) && phys == 0x4002000000ull && len == 14745600ull);
+	CHECK(aperture(good768(), &phys, &len) && phys == 0x4002000000ull && len == 3145728ull);      // B0: 768 * 4096
 	n33fb::Snap bad = good(); bad.bar0Phys = 0;
 	CHECK(!aperture(bad, &phys, &len));                                                           // aperture_null_when_invalid
 	CHECK(fb_attr(kAttrCursor).rc == kRcValue && fb_attr(kAttrCursor).value == 0);               // software cursor
