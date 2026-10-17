@@ -32,6 +32,7 @@ static void snapshot_cases() {
 	using namespace n33fb;
 	CHECK(snap_valid(good()) == kSnapOk);
 	CHECK(snap_valid(good768()) == kSnapOk);        // B0: 1024x768 now accepted, not refused as non-2560x1440
+	{ Snap w = good(); w.pitchBytes = 0x10000; CHECK(snap_valid(w) == kSnapRange); }  // h * pitch past the guarded window
 	Snap s = good(); s.bar0Phys = 0;               CHECK(snap_valid(s) == kSnapBar0);       // snap_bar0
 	s = good(); s.bar0Phys = 0x4000001000ull;      CHECK(snap_valid(s) == kSnapBar0);       // not 64 KiB aligned
 	s = good(); s.surfOff = 0x2001000;             CHECK(snap_valid(s) == kSnapAlign);
@@ -45,7 +46,8 @@ static void snapshot_cases() {
 	s = good(); s.h = 5000;                        CHECK(snap_valid(s) == kSnapGeom);       // height above kHmax
 	s = good(); s.pitchBytes = 7680;               CHECK(snap_valid(s) == kSnapGeom);       // pitch below w*4 (2560*4)
 	s = good(); s.pitchBytes = 10242;              CHECK(snap_valid(s) == kSnapGeom);       // stride not a multiple of 4
-	s = good(); s.pitchBytes = 12288;              CHECK(snap_valid(s) == kSnapOk);         // a padded pitch (> w*4) is allowed
+	s = good768(); s.pitchBytes = 4352;           CHECK(snap_valid(s) == kSnapOk);         // a padded pitch (> w*4) is allowed while h * pitch fits kBytes
+	s = good(); s.pitchBytes = 12288;              CHECK(snap_valid(s) == kSnapRange);      // padded past the guarded window: refused
 	s = good(); s.gopOff = 0x2000000; s.gopLen = 0x10000; CHECK(snap_valid(s) == kSnapOverlap);   // snap_overlap
 	s = good(); s.gopOff = 0x2e00000; s.gopLen = 0x20000; CHECK(snap_valid(s) == kSnapOverlap);   // GOP inside the surface tail
 	s = good(); s.gopOff = ~0ull; s.gopLen = 2;    CHECK(snap_valid(s) == kSnapOverlap);          // length overflow

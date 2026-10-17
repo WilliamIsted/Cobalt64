@@ -47,6 +47,7 @@ inline uint32_t snap_valid(const Snap &s) {
 	if (s.w < kWmin || s.w > kWmax || s.h < kHmin || s.h > kHmax) return kSnapGeom;
 	if (s.pitchBytes < (uint64_t)s.w * 4 || (s.pitchBytes & 3) != 0) return kSnapGeom;
 	const uint64_t bytes = snap_bytes(s);
+	if (bytes > kBytes) return kSnapRange;   // the aperture must stay inside the window the write guard checks
 	if (s.surfOff < kWriteFloor || s.surfOff > s.bar0Size || bytes > s.bar0Size - s.surfOff) return kSnapRange;
 	if (s.gopLen > ~0ull - s.gopOff) return kSnapOverlap;
 	if (s.surfOff < s.gopOff + s.gopLen && s.gopOff < s.surfOff + bytes) return kSnapOverlap;
