@@ -135,6 +135,11 @@ private:
 	uint32_t          n33PspWinReg { 0 };      // C2PMSG_36 value of the validated PSP fw_pri window; 0 = none set
 	uint64_t          n33Bar0Phys { 0 };   // config-space BAR0 physical address (stage 2 step 3)
 	uint32_t          n33SurfCfg  { 0 };   // HUBP0 SURFACE_CONFIG at start: logged, never judged
+	// B0: the publish body, shared by the fbpublish verb and the boot-time publish. status matches the
+	// verb's out[0] (0 ok, 1 not ready, 2 already published, 3 HUBP0 not on GOP, 4 gate, 5 snapshot,
+	// 6 protected range, 7 publish failed); v1/v2 are the per-status detail (verdict, slot/why).
+	struct N33PublishResult { uint32_t status, v1, v2; };
+	N33PublishResult n33PublishFbNub();
 	IOReturn n33FbPublish(uint64_t *out, uint32_t outCount);
 	void n33RestoreScanout();
 	void n33FbAttach();
