@@ -19,7 +19,7 @@ namespace n33n {
 // ---- build and identity ------------------------------------------------------------------------------------------
 // The build word Hello / QueryInfo report. It is the CFBundleVersion patch number; the host test parses Info.plist and
 // fails unless they are equal, so the two can never drift apart silently (bump this and Info.plist together).
-constexpr uint32_t kKextBuild = 678;                 // 0.0.678
+constexpr uint32_t kKextBuild = 679;                 // 0.0.679
 constexpr uint32_t kVmid      = n33vm::kVmid;         // 8: the Darwin backend's and W2V's static VMID
 constexpr uint32_t kGcMajor = 11, kGcMinor = 0, kGcRev = 2;   // gfx11.0.2 (Navi 33); (maj<<16)|(min<<8)|rev
 constexpr uint32_t kGcVersion = (kGcMajor << 16) | (kGcMinor << 8) | kGcRev;   // 0x0B0002
@@ -67,6 +67,13 @@ inline Code may_open(bool cpQueueReady, bool vmLive, bool alreadyOpen, bool lega
 // ---- BoCreate domain -> n33bo kind (item 2 / W4) -----------------------------------------------------------------
 // RADV passes GEM domains; VRAM is preferred when both VRAM and GTT are set (a VRAM-with-GTT-fallback BO). A CPU-only
 // or unsupported domain is refused. The kext gives VRAM BOs CPU access for the map path.
+// BoCreate's size, rounded up to whole pages as gfx12's place_decide does: RADV asks for sub-page BOs (a 48-byte
+// descriptor pool, an 864-byte device buffer; W4 on hardware, 2026-10-18), which the page-exact legacy check refuses.
+// 0 means "refuse" (a zero size, or one that would overflow when rounded).
+inline uint64_t bo_size_rounded(uint64_t size) {
+	if (size == 0u || size > ~0ull - (n33gmc::kPage - 1u)) return 0u;
+	return (size + n33gmc::kPage - 1u) & ~(uint64_t)(n33gmc::kPage - 1u);
+}
 inline Code domain_to_kind(uint64_t domains, uint32_t *kindOut) {
 	if (domains & N48N_GEM_DOMAIN_VRAM) { *kindOut = n33bo::kVram; return kOk; }
 	if (domains & N48N_GEM_DOMAIN_GTT)  { *kindOut = n33bo::kGtt;  return kOk; }

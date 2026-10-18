@@ -177,9 +177,15 @@ IOReturn Navi48Bringup::n33nBoCreate(const n48n_gem_create_in *in, uint64_t out[
 	uint32_t kind = 0;
 	const n33n::Code c = n33n::domain_to_kind(in->domains, &kind);
 	if (c != n33n::kOk) return n33n_io(c);
+	const uint64_t bytes = n33n::bo_size_rounded(in->bo_size);   // whole pages, as gfx12 (the legacy check is page-exact)
+	if (!bytes) { N33NLOG("bo create refused: size %#llx", (unsigned long long)in->bo_size); return kIOReturnBadArgument; }
 	uint64_t bo[8] = {};
-	const uint32_t w = n33BoCreate(kind, in->bo_size, bo, 8);   // bo[1] handle, bo[2] pages
-	if (w) return why_io(w);
+	const uint32_t w = n33BoCreate(kind, bytes, bo, 8);   // bo[1] handle, bo[2] pages
+	if (w) {
+		N33NLOG("bo create refused: domains %#llx size %#llx (%#llx rounded) why %u", (unsigned long long)in->domains,
+		        (unsigned long long)in->bo_size, (unsigned long long)bytes, w);
+		return why_io(w);
+	}
 	const uint32_t h = (uint32_t)bo[1];
 	out[0] = h;
 	out[1] = (uint64_t)n33Bo.bo[h - 1].pages * n33gmc::kPage;

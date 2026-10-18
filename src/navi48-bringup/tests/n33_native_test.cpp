@@ -226,6 +226,9 @@ static void gate_cases() {
 static void domain_cases() {
 	uint32_t k = 0xFF;
 	CHECK(domain_to_kind(N48N_GEM_DOMAIN_VRAM, &k) == kOk && k == n33bo::kVram);
+	// BoCreate rounds sub-page sizes up to whole pages (RADV's 48 B descriptor pool, 864 B device buffer; W4 on hardware)
+	CHECK(bo_size_rounded(48u) == 4096u && bo_size_rounded(864u) == 4096u && bo_size_rounded(4096u) == 4096u);
+	CHECK(bo_size_rounded(4097u) == 8192u && bo_size_rounded(0u) == 0u && bo_size_rounded(~0ull) == 0u);
 	CHECK(domain_to_kind(N48N_GEM_DOMAIN_GTT, &k) == kOk && k == n33bo::kGtt);
 	CHECK(domain_to_kind(N48N_GEM_DOMAIN_VRAM | N48N_GEM_DOMAIN_GTT, &k) == kOk && k == n33bo::kVram);   // VRAM preferred
 	CHECK(domain_to_kind(N48N_GEM_DOMAIN_CPU, &k) == kBadArg);
