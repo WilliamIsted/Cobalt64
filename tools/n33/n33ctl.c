@@ -40,6 +40,7 @@ static const char *kindName(uint64_t k) {
 	if (k == 15) return "step-5 SDMA ring, wb and test pages";
 	if (k == 16) return "step-6 compute queue pages";
 	if (k == 17) return "step-7 T1 IB page";
+	if (k == 18) return "DMCUB proof DMUB windows";
 	return "?";
 }
 
@@ -114,8 +115,20 @@ static const char *whyName(uint64_t why) {
 	case 62:  return "step 7 T1: cp ib before cp start, or before a plain ring packet (cp test 1/K2 or test 2/K3) succeeded since the start";
 	case 63:  return "step 7 T1: the IB page overlaps a live DMCUB window or another protected range";
 	case 64:  return "step 7 W1: cp waitseq with no outstanding cp submit in this load, or a seqno that is not the outstanding one";
+	case 200: return "dmub: a DMCUB write before dmub snapshot armed the gate";
+	case 201: return "dmub: HUBP0 is not on the GOP scanout surface";
+	case 202: return "dmub: the N33 framebuffer nub is published";
+	case 203: return "dmub: the step-6/7 compute queue is running";
+	case 204: return "dmub: out of order (load before snapshot/autoload, reset before load, init before reset)";
+	case 205: return "dmub: STOP_FW not acked (logged; the kext proceeds to soft reset as Linux does)";
+	case 206: return "dmub: DMCUB did not reach dal_fw + mailbox_rdy in 100 ms";
+	case 207: return "dmub: inbox1 ring busy, wrong size, or the next slot would wrap";
+	case 208: return "dmub: command template not on the allowlist (only QUERY_FEATURE_CAPS)";
+	case 209: return "dmub: a DMUB window overlaps a live protected range";
+	case 210: return "dmub: VBIOS image missing or wrong size";
+	case 211: return "dmub: the PSP refused the type-51 DMUB load at this point";
 	default:
-		if (why >= 100) { static char b[48]; snprintf(b, sizeof b, "overlaps protected %s", kindName(why - 100)); return b; }
+		if (why >= 100 && why < 200) { static char b[48]; snprintf(b, sizeof b, "overlaps protected %s", kindName(why - 100)); return b; }
 		return "?";
 	}
 }
@@ -182,6 +195,8 @@ static void usage(void) {
 	    "  cp ib                        step 7 T1: K4's store_magic dispatch run from a VRAM IB through INDIRECT_BUFFER (after cp test 2/K3)\n"
 	    "  cp submit | waitseq <seq>    step 7 W1: the winsys submit->wait split of cp ib (submit returns a seqno, waitseq polls its fence)\n"
 	    "                               cp flags | journal <i> | start <n>: raw, for cp-negative.sh only (flags reads no register)\n"
+	    "  dmub snapshot|reset|init|query|check | load <dcn_3_2_1_dmcub.bin>   stage 3 DMCUB proof (snapshot is read-only)\n"
+	    "                               order: snapshot, load, reset, init, query (QUERY_FEATURE_CAPS = the proof), check\n"
 	    "  fbsum [bytes]                sha256 of the GOP scanout in VRAM (read-only; default length from status)\n"
 	    "  log                          print the kext's own log (holds every refusal line, unlike the unified log)\n"
 	    "  why <code>                   explain a refusal code from n33ctl log (no kext needed)\n"
@@ -1459,6 +1474,63 @@ static int doCp(int argc, char **argv) {
 	return 2;
 }
 
+// ---- dmub: the stage 3 DMCUB bring-up proof (actions 60-65) ----------------------------------------
+// snapshot (read-only, arms the gate) -> load <dcn_3_2_1_dmcub.bin> (PSP type 51) -> reset -> init ->
+// query (QUERY_FEATURE_CAPS, the proof) -> check (hold/revert). The firmware is staged into fw_buf first,
+// its sha256 pinned, exactly as psp2 stages the GC firmware. The kext re-checks the order and every write.
+enum { aDmubSnap = 60, aDmubReset = 61, aDmubLoad = 62, aDmubInit = 63, aDmubCmd = 64, aDmubCheck = 65 };
+static const char *kDmubSha256 = "3aa486a0ce8fe477151f462ed162106c4ed520ceb006bc0791a1c2f7daf77371";
+static int doDmub(int argc, char **argv) {
+	const char *sub = argv[2];
+	uint64_t o[9] = {0};
+	if (!strcmp(sub, "snapshot") && argc == 3) {
+		if (call(aDmubSnap, NULL, 0, o, 7)) { printf("dmub snapshot: REFUSED (why %llu: %s)\n", o[0], whyName(o[0])); return 1; }
+		printf("dmub snapshot: DMCUB_CNTL %#llx SCRATCH0 %#llx inbox1(wptr<<32|rptr) %#llx size %#llx\n", o[0], o[1], o[2], o[3]);
+		printf("  VBIOS %#llx bytes; DMUB block %#llx; HUBP0 on GOP %llu\n", o[4], o[5], o[6]);
+		return 0;
+	}
+	if (!strcmp(sub, "load") && argc == 4) {
+		FILE *f = fopen(argv[3], "rb");
+		if (!f) { perror(argv[3]); return 1; }
+		static uint8_t buf[0x40000];
+		size_t n = fread(buf, 1, sizeof buf, f);
+		fclose(f);
+		char hex[65];
+		sha256hex(buf, n, hex);
+		if (strcmp(hex, kDmubSha256)) { fprintf(stderr, "refusing %s: sha256 %s (want %s)\n", argv[3], hex, kDmubSha256); return 1; }
+		printf("dmub load: %s staged (%zu bytes, sha256 ok) at fw_buf %#llx\n", argv[3], n, kP2FwBuf);
+		if (p2stage(kP2FwBuf, buf, (uint32_t)n, "dmub firmware")) return 1;
+		uint64_t a[2] = { kP2FwBuf, n };
+		if (call(aDmubLoad, a, 2, o, 7)) { printf("dmub load: REFUSED (why %llu: %s)\n", o[0], whyName(o[0])); return 1; }
+		printf("dmub load: PSP type-51 accepted  index %llu  %s  status %#llx\n", o[5], o[1] ? "fenced" : "TIMEOUT", o[2]);
+		return 0;
+	}
+	if (!strcmp(sub, "reset") && argc == 3) {
+		if (call(aDmubReset, NULL, 0, o, 3)) { printf("dmub reset: REFUSED (why %llu: %s)\n", o[0], whyName(o[0])); return 1; }
+		printf("dmub reset: done  STOP_FW ack %llu  DMCUB_CNTL %#llx\n", o[0], o[1]);
+		return 0;
+	}
+	if (!strcmp(sub, "init") && argc == 3) {
+		if (call(aDmubInit, NULL, 0, o, 3)) { printf("dmub init: REFUSED (why %llu: %s)\n", o[0], whyName(o[0])); return 1; }
+		printf("dmub init: auto-load %llu  SCRATCH0 %#llx  DMCUB_CNTL %#llx\n", o[0], o[1], o[2]);
+		return o[0] == 1 ? 0 : 1;
+	}
+	if ((!strcmp(sub, "query") || !strcmp(sub, "cmd")) && argc == 3) {
+		uint64_t a = 0;   // template 0 = QUERY_FEATURE_CAPS
+		if (call(aDmubCmd, &a, 1, o, 5)) { printf("dmub %s: REFUSED (why %llu: %s)\n", sub, o[0], whyName(o[0])); return 1; }
+		printf("dmub query: QUERY_FEATURE_CAPS %s  reply header %#llx  ret_status-ok %llu  wptr %#llx\n",
+		       o[0] ? "returned" : "TIMED OUT", o[1], o[2], o[3]);
+		return (o[0] == 1 && o[2] == 1) ? 0 : 1;   // pass = reply received and ret_status cleared to 0
+	}
+	if (!strcmp(sub, "check") && argc == 3) {
+		if (call(aDmubCheck, NULL, 0, o, 5)) { printf("dmub check: REFUSED (why %llu: %s)\n", o[0], whyName(o[0])); return 1; }
+		printf("dmub check: HUBP0 %#llx on GOP %llu  SCRATCH0 %#llx  DMCUB_CNTL %#llx  proof %llu\n", o[0], o[1], o[2], o[3], o[4]);
+		return 0;
+	}
+	usage();
+	return 2;
+}
+
 // fbsum: SHA-256 of the GOP scanout in VRAM, read through action 2 (one BAR0 dword per call, read-only).
 // The region is the kext's GOP range from status: HUBP0 address at kext start, pitch px * 4 * height, page rounded.
 // Run before and after card work and compare: a change means something wrote the scanout.
@@ -1558,6 +1630,8 @@ int main(int argc, char **argv) {
 		rc = doSdma(argc, argv);
 	} else if (!strcmp(cmd, "cp") && argc >= 3) {
 		rc = doCp(argc, argv);
+	} else if (!strcmp(cmd, "dmub") && argc >= 3) {
+		rc = doDmub(argc, argv);
 	} else if (!strcmp(cmd, "fbsum") && argc <= 3) {
 		rc = fbSum(argc == 3 ? num(argv[2]) : 0);
 	} else if (!strcmp(cmd, "log") && argc == 2) {

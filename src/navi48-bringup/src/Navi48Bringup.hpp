@@ -37,6 +37,7 @@
 #include "amd/n33_gmc_pure.h"       // N33 GMC 11 / GART: n33gmc::State, Snap, Inputs, Rec (pure, no kernel types)
 #include "amd/n33_sdma_pure.h"      // N33 step 5, CP RS64 and SDMA 6.0.2: n33sdma::State, Entry, Rec (pure, no kernel types)
 #include "amd/n33_cp_pure.h"        // N33 step 6, one MEC compute queue: n33cp::State (pure, no kernel types)
+#include "amd/n33_dmub_pure.h"      // N33 stage 3 DMCUB proof: n33dmub::State, RegionInfo (pure, no kernel types)
 #include "amd/n48log.h"
 #include "amd/rebar_pure.h"   // 0.0.663: Resizable BAR planning (pure)
 #include "amd/amdgpu_init.h"
@@ -212,6 +213,21 @@ private:
 	uint32_t n33CpIb(uint64_t *out, uint32_t outCount);
 	uint32_t n33CpSubmit(uint64_t *out, uint32_t outCount);        // W1 (step 7): the winsys submit half of cp ib
 	uint32_t n33CpWait(uint32_t seq, uint64_t *out, uint32_t outCount);   // W1 (step 7): the winsys waitseq half
+	// N33 stage 3 DMCUB bring-up proof (n33dmub::, Navi48Bringup.cpp): snapshot, PSP type-51 load, reset, init,
+	// QUERY_FEATURE_CAPS, and the hold/revert check. No writes until snapshot arms the gate.
+	n33dmub::State     n33Dmub {};
+	n33dmub::RegionInfo n33DmubRgn {};
+	IOMemoryMap       *n33RomMap { nullptr };    // the expansion-ROM BAR, mapped lazily by the snapshot (smallest ROM read)
+	volatile uint8_t  *n33Rom { nullptr };
+	uint64_t           n33RomLen { 0 };
+	bool     n33DmubRomMap();                    // map the expansion ROM once; false if the card exposes none
+	bool     n33DmubHubpOnGop() const;           // HUBP0 is on the GOP scanout surface (the gate's display precondition)
+	uint32_t n33DmubSnap(uint64_t *out, uint32_t outCount);   // action 60
+	uint32_t n33DmubReset(uint64_t *out, uint32_t outCount);  // action 61
+	uint32_t n33DmubLoad(uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount);   // action 62 (PSP type 51)
+	uint32_t n33DmubInit(uint64_t *out, uint32_t outCount);   // action 63
+	uint32_t n33DmubCmd(uint32_t tpl, uint64_t *out, uint32_t outCount);   // action 64 (QUERY_FEATURE_CAPS)
+	uint32_t n33DmubCheck(uint64_t *out, uint32_t outCount);  // action 65
 #endif
 	// --- stages ---
 	bool probeMemSize();

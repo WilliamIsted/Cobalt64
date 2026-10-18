@@ -9065,8 +9065,10 @@ enum : uint32_t { kN33Status = 0, kN33RegWrite = 1, kN33Bar0Read = 2, kN33Bar0Wr
                   kN33GfxRs64 = 23, kN33SdmaState = 24, kN33SdmaStart = 25, kN33SdmaTest = 26, kN33SdmaStop = 27,
                   kN33SdmaRecord = 28,
                   kN33CpState = 29, kN33CpHqd = 30, kN33CpStart = 31, kN33CpTest = 32, kN33CpStop = 33, kN33CpRecord = 34,
-                  kN33CpIb = 35, kN33CpSubmit = 36, kN33CpWait = 37 };
-struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch, 15 step-5 SDMA pages, 16 step-6 compute pages, 17 step-7 T1 IB page
+                  kN33CpIb = 35, kN33CpSubmit = 36, kN33CpWait = 37,
+                  kN33DmubSnap = 60, kN33DmubReset = 61, kN33DmubLoad = 62, kN33DmubInit = 63,
+                  kN33DmubCmd = 64, kN33DmubCheck = 65 };
+struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch, 15 step-5 SDMA pages, 16 step-6 compute pages, 17 step-7 T1 IB page, 18 our DMUB windows (stage 3 DMCUB proof)
 constexpr unsigned kN33Ranges = 21;   // 18 kinds can be live at once
 }
 extern "C" {
@@ -9159,7 +9161,7 @@ bool Navi48Bringup::n33MapBar0() {
 // enabled DMCUB window, read live so a window DMCUB moves is still covered.
 static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uint64_t gopOff, uint64_t gopLen,
                               N33Range *out, unsigned max, bool pspPages, bool smuPage, bool gmcPages, bool sdmaPages,
-                              bool cpPages, bool cpIbPage) {
+                              bool cpPages, bool cpIbPage, bool dmubWindows = false) {
 	unsigned n = 0;
 	auto add = [&](uint64_t gpu, uint64_t len, uint32_t kind) {
 		if (n >= max || gpu < fbOffset || len == 0) return;   // below fbOffset: not VRAM
@@ -9187,6 +9189,7 @@ static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uin
 	if (sdmaPages && n < max) out[n++] = { n33sdma::kOwnedOff, n33sdma::kOwnedLen, 15 };   // step 5 D2: SDMA0 fetches and writes them
 	if (cpPages && n < max) out[n++] = { n33cp::kOwnedOff, n33cp::kOwnedLen, 16 };         // step 6 D2: the MEC fetches and writes them
 	if (cpIbPage && n < max) out[n++] = { n33cp::kIbOff, n33cp::kIbLen, 17 };              // step 7 T1 D4: the MEC fetches the IB page
+	if (dmubWindows && n < max) out[n++] = { n33dmub::kDmubOff, n33dmub::kDmubMax, 18 };   // stage 3 DMCUB proof: our owned DMUB window slab
 	return n;
 }
 
@@ -9195,10 +9198,211 @@ bool Navi48Bringup::n33WriteAllowed(uint64_t off, uint64_t len, uint64_t *why) c
 	if (!n33Bar0 || len == 0 || (off & 3) || (len & 3) || len > kN33MaxXfer) { *why = 1; return false; }
 	if (off < kN33WriteFloor || off > n33Bar0Size || len > n33Bar0Size - off) { *why = 2; return false; }
 	N33Range rs[kN33Ranges];
-	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned);
+	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
 	for (unsigned i = 0; i < n; i++)
 		if (off < rs[i].off + rs[i].len && rs[i].off < off + len) { *why = 100 + rs[i].kind; return false; }   // off + len <= n33Bar0Size here
 	return true;
+}
+
+// ---- Stage 3 DMCUB bring-up proof (n33dmub::; design stage3-dmcub-proof-design.md + -design-pass.md) ---------------
+// Re-init DMCUB from reset with the open dcn_3_2_1_dmcub.bin (PSP type 51 after RLC autoload), then one
+// DMUB_CMD__QUERY_FEATURE_CAPS with its reply. Mailbox proof only. Every register write mirrors
+// dmub/src/dmub_dcn32.c on the pinned Linux tree 3857c2fe; the pure half (gates, layout, command) is n33_dmub_pure.h.
+// Not run on hardware in this task: implemented, host-tested and built only.
+
+// The expansion-ROM BAR, mapped once (the smallest ROM read; the fork already latches this BAR's physical range at
+// start, latchPciBars). Returns false if the card exposes no ROM BAR — the VBIOS then comes from a staged file.
+bool Navi48Bringup::n33DmubRomMap() {
+	if (n33Rom) return true;
+	if (!pciDevice) return false;
+	IODeviceMemory *m = pciDevice->getDeviceMemoryWithRegister(kIOPCIConfigExpansionROMBase);
+	if (!m || m->getLength() == 0) return false;
+	n33RomMap = m->map(kIOMapInhibitCache);
+	if (!n33RomMap) return false;
+	n33Rom = reinterpret_cast<volatile uint8_t *>(n33RomMap->getVirtualAddress());
+	n33RomLen = n33RomMap->getLength();
+	return n33Rom != nullptr && n33RomLen != 0;
+}
+
+bool Navi48Bringup::n33DmubHubpOnGop() const {
+	if (!rmmio) return false;
+	const uint64_t addr = ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr];
+	return addr == n33FbBase + n33GopOff;
+}
+
+// Action 60: read-only snapshot of the DMCUB and display registers before any write; arms the gate. The firmware is
+// pinned (7.0.53.0), so the meta sizes are the host-tested constants; the VBIOS size comes from the ROM BAR if present.
+uint32_t Navi48Bringup::n33DmubSnap(uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const uint32_t vbiosSize = n33DmubRomMap() ? (uint32_t)(n33RomLen < 0x20000 ? n33RomLen : 0x20000) : 0x10000;
+	n33DmubRgn = n33dmub::region_info(vbiosSize, n33dmub::kMetaFwRegionSize, n33dmub::kMetaTraceSize);
+	n33dmub::record_snap(n33Dmub, vbiosSize);
+	put(0, rmmio[n33dmub::kCntl]); put(1, rmmio[n33dmub::kScratch0]);
+	put(2, ((uint64_t)rmmio[n33dmub::kInbox1Wptr] << 32) | rmmio[n33dmub::kInbox1Rptr]);
+	put(3, rmmio[n33dmub::kInbox1Size]); put(4, vbiosSize); put(5, n33DmubRgn.total);
+	put(6, n33DmubHubpOnGop() ? 1 : 0);
+	N48LOG("n33 dmub: snapshot — DMCUB_CNTL %#x SCRATCH0 %#x inbox1 size %#x; VBIOS %#x; DMUB block %#x at %#llx; HUBP0 on GOP %d",
+	       rmmio[n33dmub::kCntl], rmmio[n33dmub::kScratch0], rmmio[n33dmub::kInbox1Size], vbiosSize, n33DmubRgn.total,
+	       (unsigned long long)n33dmub::kDmubOff, n33DmubHubpOnGop());
+	return n33dmub::kWhyOk;
+}
+
+// Action 62: the PSP type-51 DMUB load (Linux's order: after RLC autoload). n33ctl has placed the signed blob in
+// fw_buf; this submits one LOAD_IP_FW. off/size name it inside fw_buf (the psp2 guard checks the range and type 51).
+uint32_t Navi48Bringup::n33DmubLoad(uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount) {
+	const uint32_t w = n33dmub::may_load(n33Dmub, n33P2.autoload, false);
+	if (w) return w;
+	const uint32_t pw = n33PspSubmit(n33psp2::kIpFw, n33psp2::kFwDmub, off, size, out, outCount);
+	const bool ok = pw == n33psp2::kWhyOk && !n33P2.failed;
+	n33dmub::record_load(n33Dmub, ok);
+	if (!ok) { N48LOG("n33 dmub: PSP type-51 load refused (psp why %u)", pw); return n33dmub::kWhyPspType51; }
+	N48LOG("n33 dmub: PSP type-51 DMUB load accepted");
+	return n33dmub::kWhyOk;
+}
+
+// Action 61: dmub_dcn32_reset (dmub_dcn32.c:89-155). If DMCUB is enabled, request STOP_FW and wait for 0xDEADDEAD in
+// SCRATCH7; then CNTL2 soft-reset, clear ENABLE, zero the inbox/outbox pointers and SCRATCH0. CW0/CW1 are left alone.
+// William's choice: proceed to soft reset even if STOP_FW is not acked (as Linux does), and log it.
+uint32_t Navi48Bringup::n33DmubReset(uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const uint32_t w = n33dmub::may_reset(n33Dmub, n33DmubHubpOnGop(),
+	                                      N33DisplayNub::published() != nullptr, n33Cp.running);
+	if (w) return w;
+	bool acked = true;
+	if (rmmio[n33dmub::kCntl] & n33dmub::kCntlEnable) {
+		rmmio[n33dmub::kGpintIn1] = (1u << 31) | (n33dmub::kGpintStopFw << 28);   // GPINT STOP_FW (dmub_dcn32.c:102-112)
+		acked = false;
+		for (uint32_t i = 0; i < n33dmub::kStopFwPollUs / n33dmub::kPollStepUs; i++) {
+			if (rmmio[n33dmub::kScratch7] == n33dmub::kDeadDead) { acked = true; break; }
+			IODelay(n33dmub::kPollStepUs);
+		}
+		if (!acked) N48LOG("n33 dmub: STOP_FW not acked in 1 s; proceeding to soft reset as Linux does (why 205 not raised)");
+	}
+	rmmio[n33dmub::kCntl2] = rmmio[n33dmub::kCntl2] | n33dmub::kCntlSoftReset;   // DMCUB_SOFT_RESET = 1 (dmub_dcn32.c:126-130)
+	rmmio[n33dmub::kCntl] = rmmio[n33dmub::kCntl] & ~n33dmub::kCntlEnable;       // DMCUB_ENABLE = 0
+	rmmio[n33dmub::kInbox1Wptr] = 0; rmmio[n33dmub::kInbox1Rptr] = 0; rmmio[n33dmub::kScratch0] = 0;   // :144-150
+	rmmio[n33dmub::kGpintIn1] = 0;                                              // clear GPINT (:153-154)
+	n33dmub::record_reset(n33Dmub);
+	put(0, acked ? 1 : 0); put(1, rmmio[n33dmub::kCntl]);
+	N48LOG("n33 dmub: reset done (STOP_FW ack %d)", acked);
+	return n33dmub::kWhyOk;
+}
+
+// Is the owned DMUB slab clear of every live protected range? (item 3: overlaps nothing already owned.)
+static bool n33_dmub_windows_clear(const volatile uint32_t *rmmio, uint64_t fbOffset, uint64_t gopOff, uint64_t gopLen,
+                                   bool psp, bool smu, bool gmc, bool sdma, bool cp, bool cpIb) {
+	N33Range rs[kN33Ranges];
+	const unsigned n = n33_protected(rmmio, fbOffset, gopOff, gopLen, rs, kN33Ranges, psp, smu, gmc, sdma, cp, cpIb);
+	for (unsigned i = 0; i < n; i++)
+		if (n33dmub::kDmubOff < rs[i].off + rs[i].len && rs[i].off < n33dmub::kDmubOff + n33dmub::kDmubMax)
+			return false;
+	return true;
+}
+
+// Action 63: program the windows and mailbox and release DMCUB (dmub_srv.c:802-969, dmub_dcn32.c:157-293). VBIOS into
+// the CW3 window, zero the mailbox/trace/fw-state windows, CW3..CW6 + REGION5, outbox0, inbox1, outbox1, SCRATCH14,
+// reset_release, then poll auto-load (dal_fw + mailbox_rdy) for 100 ms.
+uint32_t Navi48Bringup::n33DmubInit(uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const bool windowsClear = n33_dmub_windows_clear(rmmio, n33FbOffset, n33GopOff, n33GopLen, n33PspPagesOwned(),
+	                              n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned);
+	const bool vbiosOk = (n33Rom && n33RomLen >= n33Dmub.vbiosSize) || n33Dmub.vbiosSize == 0;
+	const uint32_t w = n33dmub::may_init(n33Dmub, n33DmubRgn, windowsClear, vbiosOk);
+	if (w) return w;
+	const uint64_t base = n33dmub::kDmubOff;
+	// VBIOS copy into the CW3 (vbios) window (dmub_srv.c:876-878; amdgpu_dm_dmub.c:218-220).
+	if (n33Rom && n33Dmub.vbiosSize) {
+		const uint64_t voff = base + n33DmubRgn.w[n33dmub::kWinVbios].base;
+		for (uint64_t i = 0; i < n33Dmub.vbiosSize; i += 4) {
+			uint32_t d = (uint32_t)n33Rom[i] | ((uint32_t)n33Rom[i+1] << 8) | ((uint32_t)n33Rom[i+2] << 16) | ((uint32_t)n33Rom[i+3] << 24);
+			n33PspW(voff + i, d);
+		}
+	}
+	// Zero the mailbox, trace and fw-state windows (amdgpu_dm_dmub.c:222-233).
+	const uint32_t zeroWins[3] = { n33dmub::kWinMailbox, n33dmub::kWinTracebuff, n33dmub::kWinFwState };
+	for (uint32_t wi = 0; wi < 3; wi++) {
+		const uint32_t win = zeroWins[wi];
+		const uint64_t o = base + n33DmubRgn.w[win].base, len = n33DmubRgn.w[win].top - n33DmubRgn.w[win].base;
+		for (uint64_t i = 0; i < len; i += 4) n33PspW(o + i, 0);
+	}
+	// Program the cache windows CW3..CW6 and REGION5 (= CW5's range). Offset registers are VRAM-relative on this card
+	// (fb_offset 0): the window's MC low/high. base/top are the GPU addresses (dmub_dcn32.c:232-286).
+	auto progCw = [&](uint32_t cw, uint32_t win) {
+		const uint64_t gpu = n33FbBase + base + n33DmubRgn.w[win].base;
+		const uint64_t top = gpu + (n33DmubRgn.w[win].top - n33DmubRgn.w[win].base) - 1;
+		rmmio[kN33CwBase + cw] = (uint32_t)gpu;
+		rmmio[kN33CwTop + cw] = (uint32_t)(top & 0x1FFFFFFF) | 0x80000000u;   // enable bit
+		rmmio[kN33CwOffset + 2 * cw] = (uint32_t)gpu;
+		rmmio[kN33CwOffset + 2 * cw + 1] = (uint32_t)(gpu >> 32);
+	};
+	progCw(3, n33dmub::kWinVbios); progCw(4, n33dmub::kWinMailbox);
+	progCw(5, n33dmub::kWinTracebuff); progCw(6, n33dmub::kWinFwState);
+	// Mailbox: inbox1 base/size, outbox1 base/size (dmub_dcn32.c:288-315; dmub_srv.c:891-894).
+	const uint64_t inbox = n33FbBase + base + n33DmubRgn.w[n33dmub::kWinMailbox].base;
+	rmmio[n33dmub::kInbox1Base] = (uint32_t)inbox;
+	rmmio[n33dmub::kInbox1Size] = n33dmub::kInbox1RingSize;
+	rmmio[n33dmub::kInbox1Wptr] = 0; rmmio[n33dmub::kInbox1Rptr] = 0;
+	// Boot options then release (dmub_dcn32.c:400-407, :157-163): SCRATCH14 = 0 (z10_disable off), SCRATCH15 psp
+	// version, ENABLE + TRACEPORT_EN, SOFT_RESET 0.
+	rmmio[n33dmub::kScratch14] = 0;
+	rmmio[n33dmub::kScratch15] = 0;
+	rmmio[n33dmub::kCntl2] = rmmio[n33dmub::kCntl2] & ~n33dmub::kCntlSoftReset;
+	rmmio[n33dmub::kCntl] = n33dmub::kCntlEnable | n33dmub::kCntlTraceportEn;
+	// Poll auto-load: dal_fw + mailbox_rdy in SCRATCH0 (dmub_srv.c:1075-1098; amdgpu_dm_dmub.c:280, 100 ms).
+	bool autoLoaded = false;
+	for (uint32_t i = 0; i < n33dmub::kAutoLoadPollUs / n33dmub::kPollStepUs; i++) {
+		if (n33dmub::auto_loaded(rmmio[n33dmub::kScratch0])) { autoLoaded = true; break; }
+		IODelay(n33dmub::kPollStepUs);
+	}
+	n33dmub::record_init(n33Dmub, autoLoaded);
+	put(0, autoLoaded ? 1 : 0); put(1, rmmio[n33dmub::kScratch0]); put(2, rmmio[n33dmub::kCntl]);
+	N48LOG("n33 dmub: init done; auto-load %d, SCRATCH0 %#x", autoLoaded, rmmio[n33dmub::kScratch0]);
+	return autoLoaded ? n33dmub::kWhyOk : n33dmub::kWhyAutoLoadTimeout;
+}
+
+// Action 64: push one allowlisted inbox1 command (T0 = QUERY_FEATURE_CAPS) and wait for the reply (dmub_srv.c ring
+// push + RPTR poll; dc_dmub_srv.c:517-536). Pass = RPTR reaches the new WPTR and the reply header's ret_status is 0.
+uint32_t Navi48Bringup::n33DmubCmd(uint32_t tpl, uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const uint32_t size = rmmio[n33dmub::kInbox1Size], wptr = rmmio[n33dmub::kInbox1Wptr], rptr = rmmio[n33dmub::kInbox1Rptr];
+	const uint32_t w = n33dmub::may_cmd(n33Dmub, tpl, size, wptr, rptr);
+	if (w) return w;
+	const uint64_t inbox = n33FbBase + n33dmub::kDmubOff + n33DmubRgn.w[n33dmub::kWinMailbox].base;   // == inbox1 base
+	const uint64_t ringOff = n33dmub::kDmubOff + n33DmubRgn.w[n33dmub::kWinMailbox].base;
+	(void)inbox;
+	uint32_t slot[n33dmub::kSlotDwords];
+	n33dmub::build_slot(slot, n33dmub::template_header(tpl));
+	for (uint32_t i = 0; i < n33dmub::kSlotDwords; i++) n33PspW(ringOff + wptr + 4ull * i, slot[i]);
+	const uint32_t newWptr = n33dmub::next_wptr(wptr);
+	rmmio[n33dmub::kInbox1Wptr] = newWptr;
+	bool done = false;
+	for (uint32_t i = 0; i < n33dmub::kCmdPollUs / n33dmub::kPollStepUs; i++) {
+		if (rmmio[n33dmub::kInbox1Rptr] == newWptr) { done = true; break; }
+		IODelay(n33dmub::kPollStepUs);
+	}
+	// Reply slot is the one just consumed: ring byte (newWptr - slot) (dmub_srv.c:1423-1435).
+	const uint64_t replyOff = ringOff + wptr;
+	const uint32_t replyHdr = *reinterpret_cast<volatile uint32_t *>(n33Bar0 + replyOff);
+	const bool replyOk = done && n33dmub::reply_ret_status(replyHdr) == 0;
+	n33dmub::record_proof(n33Dmub, replyOk);
+	put(0, done ? 1 : 0); put(1, replyHdr); put(2, replyOk ? 1 : 0); put(3, newWptr);
+	N48LOG("n33 dmub: QUERY_FEATURE_CAPS %s; reply header %#x ret_status %u", done ? "returned" : "TIMED OUT",
+	       replyHdr, n33dmub::reply_ret_status(replyHdr));
+	return done ? n33dmub::kWhyOk : n33dmub::kWhyRing;
+}
+
+// Action 65: the hold/revert check — re-read the display state and compare with the snapshot (fbsum is the separate
+// read-only action 2). Returns the live HUBP0 address, whether it is still the GOP surface, and SCRATCH0 / DMCUB_CNTL.
+uint32_t Navi48Bringup::n33DmubCheck(uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const uint32_t w = n33dmub::may_check(n33Dmub);
+	if (w) return w;
+	put(0, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
+	put(1, n33DmubHubpOnGop() ? 1 : 0);
+	put(2, rmmio[n33dmub::kScratch0]); put(3, rmmio[n33dmub::kCntl]);
+	put(4, n33Dmub.proofDone ? 1 : 0);
+	N48LOG("n33 dmub: check — HUBP0 on GOP %d, SCRATCH0 %#x, proof %d", n33DmubHubpOnGop(), rmmio[n33dmub::kScratch0], n33Dmub.proofDone);
+	return n33dmub::kWhyOk;
 }
 
 IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount) {
@@ -9220,7 +9424,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		put(0, n33Bar0Size); put(1, n33FbBase); put(2, n33FbOffset); put(3, n33GopOff); put(4, n33GopLen);
 		put(5, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
 		put(6, rmmio[kN33Hubp0Pitch]); put(7, rmmio[kN33Hubp0FlipCtl]);
-		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned));
+		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited));
 		put(9, n33SurfCfg); put(10, n33Bar0Phys);
 		return kIOReturnSuccess;
 	}
@@ -9229,7 +9433,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	case kN33Protected: {
 		if (!need(1)) return kIOReturnBadArgument;
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned);
+		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
 		if (in[0] >= n) return kIOReturnNotFound;
 		put(0, rs[in[0]].off); put(1, rs[in[0]].len); put(2, rs[in[0]].kind);
 		return kIOReturnSuccess;
@@ -9592,6 +9796,38 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		if (w) { put(0, w); return kIOReturnNotPermitted; }
 		return kIOReturnSuccess;
 	}
+	case kN33DmubSnap: {          // stage 3 DMCUB proof: read-only snapshot, arms the gate. out: see n33DmubSnap
+		const uint32_t w = n33DmubSnap(out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33DmubReset: {         // dmub_dcn32_reset. out: 0 STOP_FW ack, 1 DMCUB_CNTL
+		const uint32_t w = n33DmubReset(out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33DmubLoad: {          // in: fw_buf offset, size. PSP type-51 DMUB load. out: see n33PspSubmit
+		if (!need(2)) return kIOReturnBadArgument;
+		const uint32_t w = n33DmubLoad(in[0], in[1], out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33DmubInit: {          // windows, mailbox, release, auto-load poll. out: 0 auto-load, 1 SCRATCH0, 2 CNTL
+		const uint32_t w = n33DmubInit(out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33DmubCmd: {           // in: template id (0 = QUERY_FEATURE_CAPS). out: 0 returned, 1 reply hdr, 2 ok, 3 wptr
+		if (!need(1)) return kIOReturnBadArgument;
+		const uint32_t w = n33DmubCmd((uint32_t)in[0], out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33DmubCheck: {         // hold/revert check: out 0 HUBP0 addr, 1 on-GOP, 2 SCRATCH0, 3 CNTL, 4 proof
+		const uint32_t w = n33DmubCheck(out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
 	default:
 		return kIOReturnUnsupported;
 	}
@@ -9677,7 +9913,7 @@ uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off
 		if (mc + sz > fbEnd) { N48LOG("n33 psp2: refused SETUP_TMR: MC %#llx +%#llx ends past FB_LOCATION_TOP (%#llx)", mc, sz, fbEnd); return kWhyTmrSize; }
 		pa = kTmrOff + ((uint64_t)(rmmio[n33psp::kMmhubFbOffset] & 0x00FFFFFFu) << 24);   // amdgpu_gmc_vram_pa
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned);
+		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
 		for (unsigned i = 0; i < n; i++)
 			if (n33psp::overlaps(kTmrOff, sz, rs[i].off, rs[i].len)) {
 				N48LOG("n33 psp2: refused SETUP_TMR: VRAM %#llx +%#llx overlaps protected kind %u at %#llx", kTmrOff, sz, rs[i].kind, rs[i].off);
@@ -10153,7 +10389,7 @@ uint32_t Navi48Bringup::n33SdmaPagesClear() const {
 	if (!n33Bar0 || kOwnedOff < kN33WriteFloor || kOwnedOff + kOwnedLen > n33Bar0Size) return kWhyOverlap;
 	N33Range rs[kN33Ranges];
 	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
-	                                 n33Gmc.tableOwned, false, n33Cp.pagesOwned, n33Cp.ibOwned);
+	                                 n33Gmc.tableOwned, false, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
 	for (unsigned i = 0; i < n; i++)
 		if (kOwnedOff < rs[i].off + rs[i].len && rs[i].off < kOwnedOff + kOwnedLen) {
 			N48LOG("n33 sdma: step-5 pages VRAM %#llx +%#llx overlap protected kind %u at %#llx", kOwnedOff, kOwnedLen, rs[i].kind, rs[i].off);
