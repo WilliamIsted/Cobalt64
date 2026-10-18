@@ -115,7 +115,7 @@ static void lifecycle_cases() {
 	for (uint32_t i = 0; i < 4; i++) { CHECK(may_create(t, kGtt, kBoMaxBytes, true) == kWhyOk); record_create(t, kGtt, kBoMaxPages, 0); }
 	CHECK(may_create(t, kGtt, kPage, true) == kWhyFull && may_import(t, 0x10000000, kPage, true) == kWhyFull);
 	CHECK(may_create(t, kVram, kPage, true) == kWhyOk);
-	for (uint32_t i = 0; i < 4; i++) record_create(t, kVram, 1, i * kPage);
+	for (uint32_t i = 0; i < kBoMax - 4; i++) record_create(t, kVram, 1, i * kPage);   // 4 GTT + (kBoMax-4) VRAM = every handle
 	CHECK(may_create(t, kVram, kPage, true) == kWhyFull && record_create(t, kVram, 1, 0) == 0);
 	// a full slab
 	State u = {};

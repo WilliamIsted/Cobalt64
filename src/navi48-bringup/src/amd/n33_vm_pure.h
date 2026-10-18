@@ -180,7 +180,7 @@ constexpr uint64_t kApertureLo = 0x8000000000ull, kApertureHi = 0x8500000000ull;
 constexpr bool va_in_apertures(uint64_t va) { const uint64_t s = va_strip(va); return s >= kApertureLo && s < kApertureHi; }
 
 // ---- State: one VM, up to kMapMax mappings ------------------------------------------------------------------------
-constexpr uint32_t kMapMax = 16;
+constexpr uint32_t kMapMax = 64;   // W3: RADV maps each of its BOs (peak ~11); 64 is headroom. Only the map array grows; the arena (2048 pages) holds the extra page tables.
 struct Map { bool used; uint32_t handle; uint32_t vmFlags; uint64_t va; uint64_t bytes; uint64_t off; };   // off: the BO byte offset the mapping starts at
 struct State {
 	bool live;             // vm create done, not destroyed

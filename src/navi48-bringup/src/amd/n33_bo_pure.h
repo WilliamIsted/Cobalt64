@@ -22,8 +22,8 @@ constexpr uint64_t kVaEnd = kVaBase + (uint64_t)kVaSlots * kPage;              /
 static_assert(kVaSlot0 + kVaSlots <= n33gmc::kGartPages, "window inside the GART");
 static_assert(kSlabOff >= n33cp::kIbOff + n33cp::kIbLen && kSlabOff + kSlabLen <= 0x10000000ull, "slab above the owned pages, inside BAR0");
 
-constexpr uint32_t kBoMax = 8;                       // handles 1..8
-constexpr uint64_t kBoMaxBytes = 1ull << 20;         // 256 pages per BO
+constexpr uint32_t kBoMax = 64;                      // handles 1..64 (W3: RADV's device + one dispatch peaks at 11 live BOs; 64 is headroom. Raising it only grows the handle arrays, no VRAM-layout change)
+constexpr uint64_t kBoMaxBytes = 1ull << 20;         // 256 pages per BO (W3's measured max single BO is exactly 1 MiB; a larger single BO needs the slab resized, which moves the W2V arena offset and needs a hardware re-test)
 constexpr uint32_t kBoMaxPages = (uint32_t)(kBoMaxBytes / kPage);
 constexpr uint64_t kHostCap = 4ull << 20;            // GTT + import, all BOs
 constexpr uint64_t kUserMax = 1ull << 47;            // an import must end in the x86-64 user half
