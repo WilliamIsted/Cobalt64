@@ -317,10 +317,12 @@ private:
 	// W3 (step 7): the N48N native client's own state (one client at a time) and the caller-IB submit kick.
 	n33n::Client n33NativeClient {};
 	bool         n33NativeOpen { false };
+	uint32_t     n33NativeFenceHandle { 0 };   // the GTT BO whose page the GART fence slot holds (0: slot parked on the dummy page)
 	uint32_t     n33NativeId { 0 };
 	IOUserClient *n33NativeUc { nullptr };                     // the open client, for removeMappingForDescriptor at BoFree / close
 	IOMemoryDescriptor *n33BoUserMd[n33bo::kBoMax] {};         // the ONE descriptor handed to userspace per BO (VRAM: an IODeviceMemory we own; GTT/import: the BO's own, retained)
 	uint32_t n33VmSubmitUser(const n33n::SubmitReq &req, uint64_t *out, uint32_t outCount);   // the caller's IBs, VMID 8, fence = kernel seqno in host page B (as W2V)
+	void     n33NativeFenceRelease();                         // park the GART fence slot on the dummy page and forget its BO
 	void     n33NativeUnmapAndRelease(uint32_t h);            // remove the user CPU mappings of BO h and drop our descriptor reference (BoFree / close)
 #endif
 	// --- stages ---

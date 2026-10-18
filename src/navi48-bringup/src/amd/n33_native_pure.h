@@ -19,7 +19,7 @@ namespace n33n {
 // ---- build and identity ------------------------------------------------------------------------------------------
 // The build word Hello / QueryInfo report. It is the CFBundleVersion patch number; the host test parses Info.plist and
 // fails unless they are equal, so the two can never drift apart silently (bump this and Info.plist together).
-constexpr uint32_t kKextBuild = 677;                 // 0.0.677
+constexpr uint32_t kKextBuild = 678;                 // 0.0.678
 constexpr uint32_t kVmid      = n33vm::kVmid;         // 8: the Darwin backend's and W2V's static VMID
 constexpr uint32_t kGcMajor = 11, kGcMinor = 0, kGcRev = 2;   // gfx11.0.2 (Navi 33); (maj<<16)|(min<<8)|rev
 constexpr uint32_t kGcVersion = (kGcMajor << 16) | (kGcMinor << 8) | kGcRev;   // 0x0B0002

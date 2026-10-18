@@ -109,8 +109,10 @@ constexpr uint32_t kRingDw = 1024, kSubmitDw = 256;               // commit pads
 // three fences.
 constexpr uint32_t kSlotB = 1, kHostB = 1;
 // W4: a dedicated GART slot (VMID 0) the submit binds to a caller GTT fence BO's page, so the ring's user-fence
-// RELEASE_MEM can reach it. Slots 0 (host A) and 1 (host B) are the only others used; slot 2 is free.
-constexpr uint32_t kSlotFence = 2;
+// RELEASE_MEM can reach it. Fixed slots in use: 0 (host A), 1 (host B), 2 (IH host C, n33_ih_pure.h), the last slot, and
+// the BO window from n33bo::kVaSlot0; slot 3 is free (the collision is asserted in n33_native.cpp).
+constexpr uint32_t kSlotFence = 3;
+static_assert(kSlotFence != 0u && kSlotFence != kSlotB, "the fence slot must not alias host A or B");
 constexpr uint32_t kHostK3 = 0x100, kHostFence4 = 0x180, kHostFence5a = 0x188, kHostFence5b = 0x190;
 constexpr uint32_t kResultDw = 32;
 constexpr uint32_t kMagic = 0xCA11ED47u;

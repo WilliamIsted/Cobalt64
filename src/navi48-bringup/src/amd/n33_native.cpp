@@ -22,6 +22,11 @@
 #if defined(N33_OBSERVE)
 #include "Navi48Bringup.hpp"
 #include "amd/n33_native_pure.h"
+#include "amd/n33_ih_pure.h"
+
+static_assert(n33cp::kSlotFence != n33ih::kSlotC, "the fence slot must not alias the IH host page");
+static_assert(n33cp::kSlotFence < n33bo::kVaSlot0, "the fence slot must sit below the BO window");
+static_assert(n33cp::kSlotFence != n33gmc::kGartPages - 1u, "the fence slot must not alias the last GART slot");
 #include <IOKit/IODeviceMemory.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>   // n33GmcHost[] is IOBufferMemoryDescriptor* (getBytesNoCopy)
 #include <IOKit/IOUserClient.h>                // removeMappingForDescriptor (revoke CPU maps at BoFree / close)
@@ -97,10 +102,21 @@ void Navi48Bringup::n33NativeUnmapAndRelease(uint32_t h) {
 	md->release();
 }
 
+// Park the GART fence slot on the dummy page (as an unbound GART PTE) and flush, so no later GPU write can reach a page
+// the caller has freed. Called once the submit that used it has retired, at BoFree of that BO and at close.
+void Navi48Bringup::n33NativeFenceRelease() {
+	if (!n33NativeFenceHandle) return;
+	*reinterpret_cast<volatile uint64_t *>(n33Bar0 + n33gmc::slot_off(n33cp::kSlotFence)) = n33gmc::pte_unbound(n33GmcDummyPa);
+	n33GmcHdpFlush();
+	(void)n33GmcFlush(false); (void)n33GmcFlush(true);
+	n33NativeFenceHandle = 0;
+}
+
 void Navi48Bringup::n33nClose() {
 	IOLock *lk0 = n33NativeLock();
 	N33Lock lk(lk0);
 	if (!n33NativeOpen) return;
+	n33NativeFenceRelease();   // park the fence slot BEFORE any BO page is freed (a pending RELEASE_MEM then lands on the dummy page)
 	// Item 3 teardown: unmap every VMID-8 mapping FIRST (so BoFree's code-84 guard passes), revoke CPU maps, free BOs.
 	uint64_t tmp[4];
 	for (uint32_t i = 0; i < n33vm::kMapMax; i++)
@@ -176,6 +192,10 @@ IOReturn Navi48Bringup::n33nBoFree(uint32_t handle) {
 	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
 	if (!n33bo::handle_ok(n33Bo, handle)) return kIOReturnBadArgument;
+	if (handle == n33NativeFenceHandle) {
+		if (n33Cp.submitPending) return kIOReturnBusy;   // its page is still the target of an outstanding RELEASE_MEM
+		n33NativeFenceRelease();                          // retired: unbind the slot before the page can be reused
+	}
 	n33NativeUnmapAndRelease(handle);   // revoke the user CPU mappings before the memory is freed / reused
 	return why_io(n33BoFree(handle));
 }
@@ -241,12 +261,16 @@ IOReturn Navi48Bringup::n33nWait(uint64_t target, uint64_t timeoutNs, uint64_t o
 	const n33n::WaitPlan pl = n33n::wait_plan(target, n33Cp.seq, n33Cp.submitPending);
 	out[0] = 0; out[1] = pl.retired; out[2] = pl.emitted;
 	if (pl.action == n33n::kWaitBadArg) return kIOReturnBadArgument;   // a seqno never emitted
-	if (pl.action == n33n::kWaitDone)  return kIOReturnSuccess;        // already retired (incl. target 0, a repeat wait): busy 0
+	if (pl.action == n33n::kWaitDone) {                                 // already retired (incl. target 0, a repeat wait): busy 0
+		if (!n33Cp.submitPending) n33NativeFenceRelease();
+		return kIOReturnSuccess;
+	}
 	// Poll the outstanding submit's fence (host page B) through n33CpWait; pl.pollSeq is this submit's seqno.
 	uint64_t w[16] = {};
 	const uint32_t rc = n33CpWait(pl.pollSeq, w, 16);   // may_waitseq accepts it (it is the outstanding seqno)
 	if (rc) { out[0] = 1; out[2] = n33Cp.seq; return why_io(rc); }   // timeout / fault: still busy (out[1] stays the last retired)
 	const bool retired = (w[1] != 0);   // n33CpIbWait put(1, latch == kLatchNone ? 1 : 0)
+	if (retired) n33NativeFenceRelease();   // the user fence has landed: the slot no longer points at the caller's page
 	out[0] = retired ? 0ull : 1ull;     // busy
 	out[1] = retired ? (uint64_t)n33Cp.seq : (n33Cp.seq ? (uint64_t)n33Cp.seq - 1u : 0ull);   // the last RETIRED seqno
 	out[2] = n33Cp.seq;                 // last emitted
@@ -322,6 +346,7 @@ uint32_t Navi48Bringup::n33VmSubmitUser(const n33n::SubmitReq &req, uint64_t *ou
 			*reinterpret_cast<volatile uint64_t *>(n33Bar0 + n33gmc::slot_off(n33cp::kSlotFence)) = n33gmc::pte_sys(pa);
 			n33GmcHdpFlush();   // the GART PTE is in VRAM through BAR0: make it visible before the TLB flush below
 			userFenceMc = n33gmc::slot_mc(n33cp::kSlotFence) + (req.fenceOffset & (uint64_t)(n33gmc::kPage - 1));
+			n33NativeFenceHandle = req.fenceHandle;
 		}
 	}
 	const uint32_t mm = n33GmcFlush(false), gc = n33GmcFlush(true);
