@@ -9234,7 +9234,7 @@ bool Navi48Bringup::n33DmubHubpOnGop() const {
 // pinned (7.0.53.0), so the meta sizes are the host-tested constants; the VBIOS size comes from the ROM BAR if present.
 uint32_t Navi48Bringup::n33DmubSnap(uint64_t *out, uint32_t outCount) {
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
-	const uint32_t vbiosSize = n33DmubRomMap() ? (uint32_t)(n33RomLen < 0x20000 ? n33RomLen : 0x20000) : 0x10000;
+	const uint32_t vbiosSize = (n33DmubRomMap() ? (uint32_t)(n33RomLen < 0x20000 ? n33RomLen : 0x20000) : 0x10000) & ~3u;   // dword copy
 	n33DmubRgn = n33dmub::region_info(vbiosSize, n33dmub::kMetaFwRegionSize, n33dmub::kMetaTraceSize);
 	n33dmub::record_snap(n33Dmub, vbiosSize);
 	put(0, rmmio[n33dmub::kCntl]); put(1, rmmio[n33dmub::kScratch0]);
@@ -9270,7 +9270,7 @@ uint32_t Navi48Bringup::n33DmubReset(uint64_t *out, uint32_t outCount) {
 	if (w) return w;
 	bool acked = true;
 	if (rmmio[n33dmub::kCntl] & n33dmub::kCntlEnable) {
-		rmmio[n33dmub::kGpintIn1] = (1u << 31) | (n33dmub::kGpintStopFw << 28);   // GPINT STOP_FW (dmub_dcn32.c:102-112)
+		rmmio[n33dmub::kGpintIn1] = n33dmub::gpint(n33dmub::kGpintStopFw);   // GPINT STOP_FW, 0x10020000 (dmub_dcn32.c:102-112)
 		acked = false;
 		for (uint32_t i = 0; i < n33dmub::kStopFwPollUs / n33dmub::kPollStepUs; i++) {
 			if (rmmio[n33dmub::kScratch7] == n33dmub::kDeadDead) { acked = true; break; }
@@ -9325,21 +9325,28 @@ uint32_t Navi48Bringup::n33DmubInit(uint64_t *out, uint32_t outCount) {
 		const uint64_t o = base + n33DmubRgn.w[win].base, len = n33DmubRgn.w[win].top - n33DmubRgn.w[win].base;
 		for (uint64_t i = 0; i < len; i += 4) n33PspW(o + i, 0);
 	}
-	// Program the cache windows CW3..CW6 and REGION5 (= CW5's range). Offset registers are VRAM-relative on this card
-	// (fb_offset 0): the window's MC low/high. base/top are the GPU addresses (dmub_dcn32.c:232-286).
-	auto progCw = [&](uint32_t cw, uint32_t win) {
+	// Program the cache windows CW3..CW6 and REGION5 (= CW5's range), as dmub_dcn32_setup_windows: OFFSET takes the
+	// window's MC address, BASE the fixed DMCUB-side base, TOP base + size with ENABLE (dmub_srv.c:876-905).
+	auto progCw = [&](uint32_t cw, uint32_t win, uint32_t vbase) {
 		const uint64_t gpu = n33FbBase + base + n33DmubRgn.w[win].base;
-		const uint64_t top = gpu + (n33DmubRgn.w[win].top - n33DmubRgn.w[win].base) - 1;
-		rmmio[kN33CwBase + cw] = (uint32_t)gpu;
-		rmmio[kN33CwTop + cw] = (uint32_t)(top & 0x1FFFFFFF) | 0x80000000u;   // enable bit
+		const uint32_t size = (uint32_t)(n33DmubRgn.w[win].top - n33DmubRgn.w[win].base);
 		rmmio[kN33CwOffset + 2 * cw] = (uint32_t)gpu;
 		rmmio[kN33CwOffset + 2 * cw + 1] = (uint32_t)(gpu >> 32);
+		rmmio[kN33CwBase + cw] = vbase;
+		rmmio[kN33CwTop + cw] = ((vbase + size) & 0x1FFFFFFF) | 0x80000000u;   // enable bit
+		return size;
 	};
-	progCw(3, n33dmub::kWinVbios); progCw(4, n33dmub::kWinMailbox);
-	progCw(5, n33dmub::kWinTracebuff); progCw(6, n33dmub::kWinFwState);
-	// Mailbox: inbox1 base/size, outbox1 base/size (dmub_dcn32.c:288-315; dmub_srv.c:891-894).
-	const uint64_t inbox = n33FbBase + base + n33DmubRgn.w[n33dmub::kWinMailbox].base;
-	rmmio[n33dmub::kInbox1Base] = (uint32_t)inbox;
+	progCw(3, n33dmub::kWinVbios, n33dmub::kCw3Base); progCw(4, n33dmub::kWinMailbox, n33dmub::kCw4Base);
+	const uint32_t traceSize = progCw(5, n33dmub::kWinTracebuff, n33dmub::kCw5Base);
+	{	// REGION5 = CW5's range; TOP is (top - base - 1) with ENABLE (dmub_dcn32.c:264-271).
+		const uint64_t gpu = n33FbBase + base + n33DmubRgn.w[n33dmub::kWinTracebuff].base;
+		rmmio[n33dmub::kRegion5Offset] = (uint32_t)gpu;
+		rmmio[n33dmub::kRegion5OffsetHigh] = (uint32_t)(gpu >> 32);
+		rmmio[n33dmub::kRegion5Top] = ((traceSize - 1) & 0x1FFFFFFF) | 0x80000000u;
+	}
+	progCw(6, n33dmub::kWinFwState, n33dmub::kCw6Base);
+	// Mailbox: inbox1 base is CW4's DMCUB-side base, size the ring (dmub_dcn32.c setup_mailbox; dmub_srv.c:891-892).
+	rmmio[n33dmub::kInbox1Base] = n33dmub::kCw4Base;
 	rmmio[n33dmub::kInbox1Size] = n33dmub::kInbox1RingSize;
 	rmmio[n33dmub::kInbox1Wptr] = 0; rmmio[n33dmub::kInbox1Rptr] = 0;
 	// Boot options then release (dmub_dcn32.c:400-407, :157-163): SCRATCH14 = 0 (z10_disable off), SCRATCH15 psp
@@ -9367,9 +9374,7 @@ uint32_t Navi48Bringup::n33DmubCmd(uint32_t tpl, uint64_t *out, uint32_t outCoun
 	const uint32_t size = rmmio[n33dmub::kInbox1Size], wptr = rmmio[n33dmub::kInbox1Wptr], rptr = rmmio[n33dmub::kInbox1Rptr];
 	const uint32_t w = n33dmub::may_cmd(n33Dmub, tpl, size, wptr, rptr);
 	if (w) return w;
-	const uint64_t inbox = n33FbBase + n33dmub::kDmubOff + n33DmubRgn.w[n33dmub::kWinMailbox].base;   // == inbox1 base
-	const uint64_t ringOff = n33dmub::kDmubOff + n33DmubRgn.w[n33dmub::kWinMailbox].base;
-	(void)inbox;
+	const uint64_t ringOff = n33dmub::kDmubOff + n33DmubRgn.w[n33dmub::kWinMailbox].base;   // inbox1 ring in VRAM (CW4)
 	uint32_t slot[n33dmub::kSlotDwords];
 	n33dmub::build_slot(slot, n33dmub::template_header(tpl));
 	for (uint32_t i = 0; i < n33dmub::kSlotDwords; i++) n33PspW(ringOff + wptr + 4ull * i, slot[i]);

@@ -81,6 +81,10 @@ static void region_math() {
 }
 
 static void command_and_ring() {
+	// GPINT STOP_FW as Linux encodes it (dmub_cmd.h:1474-1481, :1503): command_code 2 at bits 16-27, status 1.
+	CHECK(gpint(kGpintStopFw) == 0x10020000u);
+	// DMCUB-side window bases (dmub_srv.c:83-86); the hardware keeps the low 29 bits (snapshot 05:37: CW3 base 0x3000000).
+	CHECK(kCw3Base == 0x63000000u && kCw4Base == 0x64000000u && kCw5Base == 0x65000000u && kCw6Base == 0x66000000u);
 	CHECK(kHdrQueryFeatureCaps == 0x10010006u);
 	CHECK(cmd_header(6, 0, 1, 16) == 0x10010006u);
 	CHECK(template_ok(kTplQueryFeatureCaps));

@@ -52,6 +52,12 @@ inline bool auto_loaded(uint32_t scratch0) { return dal_fw(scratch0) && mailbox_
 // reset's STOP_FW handshake (dmub_dcn32.c:102-124): GPINT STOP_FW, poll DMCUB_SCRATCH7 for 0xDEADDEAD.
 constexpr uint32_t kDeadDead = 0xDEADDEADu;
 constexpr uint32_t kGpintStopFw = 2;              // DMUB_GPINT__STOP_FW (dmub/inc/dmub_cmd.h:1503)
+// GPINT_DATAIN1 layout: param 0-15, command_code 16-27, status 28-31 (dmub_cmd.h:1474-1481); status 1 = new command.
+constexpr uint32_t gpint(uint32_t cmd, uint32_t param = 0) { return (param & 0xFFFFu) | ((cmd & 0xFFFu) << 16) | (1u << 28); }
+// DMCUB-side (virtual) window bases: BASE/TOP registers take these, only OFFSET takes the VRAM address
+// (dmub_srv.c:83-88, :876-911; dmub_dcn32.c setup_windows).
+constexpr uint32_t kCw3Base = 0x63000000, kCw4Base = 0x64000000, kCw5Base = 0x65000000, kCw6Base = 0x66000000;
+constexpr uint32_t kRegion5Offset = reg(0x198), kRegion5OffsetHigh = reg(0x199), kRegion5Top = reg(0x1a2);   // dcn_3_2_1_offset.h:476-496
 
 // ---- Firmware blob (dcn_3_2_1_dmcub.bin, measured 2026-10-18; rules from amdgpu_ucode.h, dmub_srv.c) ----------------
 // common_firmware_header (32 bytes): ucode_version @0x10, ucode_size_bytes @0x14, ucode_array_offset_bytes @0x18.
