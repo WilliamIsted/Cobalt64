@@ -11,7 +11,7 @@ SAN     := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-fram
 CSTD    := -std=c11
 LIBSRC  := xlat12.c
 HDRS    := xlat12.h xlat12_tables.h xlat12_reused.h xlat12_repack.h xlat12_provenance.h xlat12_shader_desc.h xlat12_abi_ptrs.h xlat12_readset.h xlat12_shader_ids.h xlat12_shader_ids_candidates.h xlat12_desc.h xlat12_scissor.h \
-           xlat12_dtable_rows.inc
+           xlat12_dtable_rows.inc xlat12_tables_gfx11.h xlat12_repack_gfx11.h
 # build 0.0.513: xlat12_dtable_rows.inc is kDTableAbi's GENERATED body (tools/auto-ws/emit_ws.py --policy adopt).
 # Reviewer item 6 (0.0.442, review of 0.0.441, BUILD DEPENDENCIES): every fixture test_xlat12_ib.c #includes,
 # by name, so `make -n` plans a rebuild when any ONE of them changes - not just the ones this build happened to add.
@@ -29,7 +29,7 @@ TEST_IB_FIXTURES := tests/fixture_r30_blit_ib.h tests/fixture_r44_drawinj.h test
 # stage-3 step 7 X1: the generated gfx10.3 -> gfx11 table and its headers.
 GFX11_HDRS := xlat12.h xlat12_tables_gfx11.h xlat12_repack_gfx11.h xlat12_provenance_gfx11.h
 
-all: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11
+all: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11 $(BUILD)/test_xlat12_gfx11
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -60,6 +60,10 @@ $(BUILD)/test_xlat12_b7b: tests/test_xlat12_b7b.c xlat12_ib.c xlat12_ib.h $(LIBS
 # stage-3 step 7 X1: compile the gfx11 table in its XLAT12_GFX11 build mode (proves every
 # generated repack_* is referenced, so none trips -Wunused-function) and check its shape. Single
 # file: the test includes the table header and calls no xlat12 API, so it links nothing else.
+# stage-3 step 7 X2: the gfx11 translate path against gen/gen_golden_gfx11.py's oracle.
+$(BUILD)/test_xlat12_gfx11: tests/test_xlat12_gfx11.c tests/golden_vectors_gfx11.h $(LIBSRC) $(HDRS) $(GFX11_HDRS) | $(BUILD)
+	$(CC) $(CSTD) -O1 -g $(WARN) $(SAN) -I. tests/test_xlat12_gfx11.c $(LIBSRC) -o $@
+
 $(BUILD)/test_tables_gfx11: tests/test_tables_gfx11.c $(GFX11_HDRS) | $(BUILD)
 	$(CC) $(CSTD) -O1 -g $(WARN) $(SAN) -DXLAT12_GFX11 -I. tests/test_tables_gfx11.c -o $@
 
@@ -77,14 +81,16 @@ $(BUILD)/scissorcap: tests/scissorcap.c xlat12_ib.c xlat12_ib.h $(LIBSRC) $(HDRS
 
 scissorcap: $(BUILD)/scissorcap
 
-test: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11
+test: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11 $(BUILD)/test_xlat12_gfx11
 	$(BUILD)/test_xlat12
 	$(BUILD)/fuzz_xlat12 200000
+	$(BUILD)/fuzz_xlat12 200000 11
 	$(BUILD)/test_xlat12_ib 100000
 	$(BUILD)/test_headless
 	$(BUILD)/test_xlat12_b7b
 	@# stage-3 step 7 X1: the gfx11 table's shape, and its source cross-check against gfx11.json + gc_11_0_0_offset.h.
 	$(BUILD)/test_tables_gfx11
+	$(BUILD)/test_xlat12_gfx11
 	python3 tests/test_xlat12_tables_gfx11.py
 	@# an internal design note item 2: tools/gfx-readset.py's generator + xlat12_readset.h regeneration and proof tests.
 	python3 tests/test_xlat12_readset.py

@@ -34,7 +34,7 @@ int main(void)
     unsigned cnt[XLAT12_CLS_MAX + 1] = {0};
     uint32_t prev = 0;
     for (uint32_t i = 0; i < n; i++) {
-        const Xlat12Entry *e = &kXlat12TableGfx11[i];
+        const Xlat12EntryGfx11 *e = &kXlat12TableGfx11[i];
 
         CHECK(in_setstar_space(e->g10), "row %u g10 0x%05x outside the SET_* spaces", i, e->g10);
         if (i) CHECK(e->g10 > prev, "row %u g10 0x%05x not strictly after 0x%05x (binary search needs sorted)",

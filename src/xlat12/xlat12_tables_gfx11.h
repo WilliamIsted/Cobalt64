@@ -23,8 +23,10 @@
  */
 
 /* Xlat12Class values are defined in xlat12.h. This header defines the gfx11
- * table and its row struct; include it INSTEAD OF xlat12_tables.h (never both
- * in one translation unit). The XLAT12_GFX11 build mode selects it. */
+ * table and its row struct. Its names (Xlat12EntryGfx11, repack11_*) do not
+ * collide with xlat12_tables.h, so xlat12.c includes both and selects one per
+ * call by gfx_level (X2); the typedef and the two XLAT12_G10_* macros are
+ * identical redefinitions. */
 
 typedef uint32_t (*Xlat12Repack)(uint32_t);
 
@@ -35,18 +37,18 @@ typedef struct {
     uint8_t      cls;     /* Xlat12Class */
     const char  *name;
     const char  *reason;  /* absent/legacy_vs/unknown: why */
-} Xlat12Entry;
+} Xlat12EntryGfx11;
 
 #define XLAT12_G10_VGT_SHADER_STAGES_EN 0x28b54u /* gfx103.json:15066 */
 #define XLAT12_G10_PRIMGEN_EN_BIT       13u      /* NGG: radeonsi si_state_shaders.cpp:1352 */
 
-static const Xlat12Entry kXlat12TableGfx11[] = {
+static const Xlat12EntryGfx11 kXlat12TableGfx11[] = {
     /* g10 gfx103.json:1417, g12 gfx11.json:1305, gc_10_3_0_offset.h:3814, gc_11_0_0_offset.h:3638 */
-    { 0x0b004u, 0x0b004u, repack_SPI_SHADER_PGM_RSRC4_PS, XLAT12_CLS_FIELD_REPACK, "SPI_SHADER_PGM_RSRC4_PS", "" },
+    { 0x0b004u, 0x0b004u, repack11_SPI_SHADER_PGM_RSRC4_PS, XLAT12_CLS_FIELD_REPACK, "SPI_SHADER_PGM_RSRC4_PS", "" },
     /* g10 gfx103.json:1423, g12 gfx11.json:1311, gc_10_3_0_offset.h:3816, gc_11_0_0_offset.h:3640 */
     { 0x0b018u, 0x0b018u, 0, XLAT12_CLS_IDENTICAL, "SPI_SHADER_PGM_CHKSUM_PS", "" },
     /* g10 gfx103.json:1428, g12 gfx11.json:1316, gc_10_3_0_offset.h:3818, gc_11_0_0_offset.h:3642 */
-    { 0x0b01cu, 0x0b01cu, repack_SPI_SHADER_PGM_RSRC3_PS, XLAT12_CLS_FIELD_REPACK, "SPI_SHADER_PGM_RSRC3_PS", "" },
+    { 0x0b01cu, 0x0b01cu, repack11_SPI_SHADER_PGM_RSRC3_PS, XLAT12_CLS_FIELD_REPACK, "SPI_SHADER_PGM_RSRC3_PS", "" },
     /* g10 gfx103.json:1434, g12 gfx11.json:1322, gc_10_3_0_offset.h:3820, gc_11_0_0_offset.h:3644 */
     { 0x0b020u, 0x0b020u, 0, XLAT12_CLS_IDENTICAL, "SPI_SHADER_PGM_LO_PS", "" },
     /* g10 gfx103.json:1439, g12 gfx11.json:1327, gc_10_3_0_offset.h:3822, gc_11_0_0_offset.h:3646 */
@@ -224,7 +226,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:1889, g12 gfx11.json:1535, gc_10_3_0_offset.h:3994, gc_11_0_0_offset.h:3726 */
     { 0x0b200u, 0x0b200u, 0, XLAT12_CLS_IDENTICAL, "SPI_SHADER_PGM_CHKSUM_GS", "" },
     /* g10 gfx103.json:1894, g12 gfx11.json:1540, gc_10_3_0_offset.h:3996, gc_11_0_0_offset.h:3728 */
-    { 0x0b204u, 0x0b204u, repack_SPI_SHADER_PGM_RSRC4_GS, XLAT12_CLS_FIELD_REPACK, "SPI_SHADER_PGM_RSRC4_GS", "" },
+    { 0x0b204u, 0x0b204u, repack11_SPI_SHADER_PGM_RSRC4_GS, XLAT12_CLS_FIELD_REPACK, "SPI_SHADER_PGM_RSRC4_GS", "" },
     /* g10 gfx103.json:1900, g12 gfx11.json:1546, gc_10_3_0_offset.h:3998, gc_11_0_0_offset.h:3730 */
     { 0x0b208u, 0x0b208u, 0, XLAT12_CLS_IDENTICAL, "SPI_SHADER_USER_DATA_ADDR_LO_GS", "" },
     /* g10 gfx103.json:1905, g12 gfx11.json:1551, gc_10_3_0_offset.h:4000, gc_11_0_0_offset.h:3732 */
@@ -324,7 +326,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:2151, g12 gfx11.json:1808, gc_10_3_0_offset.h:4094, gc_11_0_0_offset.h:3830 */
     { 0x0b400u, 0x0b400u, 0, XLAT12_CLS_IDENTICAL, "SPI_SHADER_PGM_CHKSUM_HS", "" },
     /* g10 gfx103.json:2156, g12 gfx11.json:1813, gc_10_3_0_offset.h:4096, gc_11_0_0_offset.h:3832 */
-    { 0x0b404u, 0x0b404u, repack_SPI_SHADER_PGM_RSRC4_HS, XLAT12_CLS_FIELD_REPACK, "SPI_SHADER_PGM_RSRC4_HS", "" },
+    { 0x0b404u, 0x0b404u, repack11_SPI_SHADER_PGM_RSRC4_HS, XLAT12_CLS_FIELD_REPACK, "SPI_SHADER_PGM_RSRC4_HS", "" },
     /* g10 gfx103.json:2162, g12 gfx11.json:1819, gc_10_3_0_offset.h:4098, gc_11_0_0_offset.h:3834 */
     { 0x0b408u, 0x0b408u, 0, XLAT12_CLS_IDENTICAL, "SPI_SHADER_USER_DATA_ADDR_LO_HS", "" },
     /* g10 gfx103.json:2167, g12 gfx11.json:1824, gc_10_3_0_offset.h:4100, gc_11_0_0_offset.h:3836 */
@@ -422,7 +424,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:2407, g12 gfx11.json:2063, gc_10_3_0_offset.h:4192, gc_11_0_0_offset.h:3928 */
     { 0x0b524u, 0x0b524u, 0, XLAT12_CLS_IDENTICAL, "SPI_SHADER_PGM_HI_LS", "" },
     /* g10 gfx103.json:2413, g12 gfx11.json:2069, gc_10_3_0_offset.h:4194, gc_11_0_0_offset.h:3930 */
-    { 0x0b800u, 0x0b800u, repack_COMPUTE_DISPATCH_INITIATOR, XLAT12_CLS_FIELD_REPACK, "COMPUTE_DISPATCH_INITIATOR", "" },
+    { 0x0b800u, 0x0b800u, repack11_COMPUTE_DISPATCH_INITIATOR, XLAT12_CLS_FIELD_REPACK, "COMPUTE_DISPATCH_INITIATOR", "" },
     /* g10 gfx103.json:2419, g12 gfx11.json:2075, gc_10_3_0_offset.h:4196, gc_11_0_0_offset.h:3932 */
     { 0x0b804u, 0x0b804u, 0, XLAT12_CLS_IDENTICAL, "COMPUTE_DIM_X", "" },
     /* g10 gfx103.json:2424, g12 gfx11.json:2080, gc_10_3_0_offset.h:4198, gc_11_0_0_offset.h:3934 */
@@ -470,7 +472,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:2541, g12 gfx11.json:2197, gc_10_3_0_offset.h:4242, gc_11_0_0_offset.h:3978 */
     { 0x0b85cu, 0x0b85cu, 0, XLAT12_CLS_IDENTICAL, "COMPUTE_DESTINATION_EN_SE1", "" },
     /* g10 gfx103.json:2546, g12 gfx11.json:2202, gc_10_3_0_offset.h:4246, gc_11_0_0_offset.h:3982 */
-    { 0x0b860u, 0x0b860u, repack_COMPUTE_TMPRING_SIZE, XLAT12_CLS_FIELD_REPACK, "COMPUTE_TMPRING_SIZE", "" },
+    { 0x0b860u, 0x0b860u, repack11_COMPUTE_TMPRING_SIZE, XLAT12_CLS_FIELD_REPACK, "COMPUTE_TMPRING_SIZE", "" },
     /* g10 gfx103.json:2552, g12 gfx11.json:2208, gc_10_3_0_offset.h:4248, gc_11_0_0_offset.h:3984 */
     { 0x0b864u, 0x0b864u, 0, XLAT12_CLS_IDENTICAL, "COMPUTE_DESTINATION_EN_SE2", "" },
     /* g10 gfx103.json:2557, g12 gfx11.json:2213, gc_10_3_0_offset.h:4252, gc_11_0_0_offset.h:3988 */
@@ -484,7 +486,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:2577, g12 gfx11.json:2233, gc_10_3_0_offset.h:4262, gc_11_0_0_offset.h:3998 */
     { 0x0b878u, 0x0b878u, 0, XLAT12_CLS_IDENTICAL, "COMPUTE_THREAD_TRACE_ENABLE", "" },
     /* g10 gfx103.json:2583, g12 gfx11.json:2239, gc_10_3_0_offset.h:4264, gc_11_0_0_offset.h:4000 */
-    { 0x0b87cu, 0x0b87cu, repack_COMPUTE_MISC_RESERVED, XLAT12_CLS_FIELD_REPACK, "COMPUTE_MISC_RESERVED", "" },
+    { 0x0b87cu, 0x0b87cu, repack11_COMPUTE_MISC_RESERVED, XLAT12_CLS_FIELD_REPACK, "COMPUTE_MISC_RESERVED", "" },
     /* g10 gfx103.json:2589, g12 gfx11.json:2245, gc_10_3_0_offset.h:4266, gc_11_0_0_offset.h:4002 */
     { 0x0b880u, 0x0b880u, 0, XLAT12_CLS_IDENTICAL, "COMPUTE_DISPATCH_ID", "" },
     /* g10 gfx103.json:2594, g12 gfx11.json:2250, gc_10_3_0_offset.h:4268, gc_11_0_0_offset.h:4004 */
@@ -500,7 +502,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:2623, g12 gfx11.json:2279, gc_10_3_0_offset.h:4278, gc_11_0_0_offset.h:4014 */
     { 0x0b89cu, 0x0b89cu, 0, XLAT12_CLS_IDENTICAL, "COMPUTE_USER_ACCUM_3", "" },
     /* g10 gfx103.json:2629, g12 gfx11.json:2285, gc_10_3_0_offset.h:4280, gc_11_0_0_offset.h:4016 */
-    { 0x0b8a0u, 0x0b8a0u, repack_COMPUTE_PGM_RSRC3, XLAT12_CLS_FIELD_REPACK, "COMPUTE_PGM_RSRC3", "" },
+    { 0x0b8a0u, 0x0b8a0u, repack11_COMPUTE_PGM_RSRC3, XLAT12_CLS_FIELD_REPACK, "COMPUTE_PGM_RSRC3", "" },
     /* g10 gfx103.json:2635, g12 gfx11.json:2291, gc_10_3_0_offset.h:4282, gc_11_0_0_offset.h:4018 */
     { 0x0b8a4u, 0x0b8a4u, 0, XLAT12_CLS_IDENTICAL, "COMPUTE_DDID_INDEX", "" },
     /* g10 gfx103.json:2641, g12 gfx11.json:2297, gc_10_3_0_offset.h:4284, gc_11_0_0_offset.h:4020 */
@@ -552,15 +554,15 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:2760, g12 gfx11.json:2446, gc_10_3_0_offset.h:4330, gc_11_0_0_offset.h:4076 */
     { 0x0b9fcu, 0x0b9fcu, 0, XLAT12_CLS_IDENTICAL, "COMPUTE_NOWHERE", "" },
     /* g10 gfx103.json:2765, g12 gfx11.json:2451, gc_10_3_0_offset.h:5360, gc_11_0_0_offset.h:5150 */
-    { 0x28000u, 0x28000u, repack_DB_RENDER_CONTROL, XLAT12_CLS_FIELD_REPACK, "DB_RENDER_CONTROL", "" },
+    { 0x28000u, 0x28000u, repack11_DB_RENDER_CONTROL, XLAT12_CLS_FIELD_REPACK, "DB_RENDER_CONTROL", "" },
     /* g10 gfx103.json:2771, g12 gfx11.json:2457, gc_10_3_0_offset.h:5362, gc_11_0_0_offset.h:5152 */
-    { 0x28004u, 0x28004u, repack_DB_COUNT_CONTROL, XLAT12_CLS_FIELD_REPACK, "DB_COUNT_CONTROL", "" },
+    { 0x28004u, 0x28004u, repack11_DB_COUNT_CONTROL, XLAT12_CLS_FIELD_REPACK, "DB_COUNT_CONTROL", "" },
     /* g10 gfx103.json:2777, g12 gfx11.json:2463, gc_10_3_0_offset.h:5364, gc_11_0_0_offset.h:5154 */
     { 0x28008u, 0x28008u, 0, XLAT12_CLS_IDENTICAL, "DB_DEPTH_VIEW", "" },
     /* g10 gfx103.json:2783, g12 gfx11.json:2469, gc_10_3_0_offset.h:5366, gc_11_0_0_offset.h:5156 */
-    { 0x2800cu, 0x2800cu, repack_DB_RENDER_OVERRIDE, XLAT12_CLS_FIELD_REPACK, "DB_RENDER_OVERRIDE", "" },
+    { 0x2800cu, 0x2800cu, repack11_DB_RENDER_OVERRIDE, XLAT12_CLS_FIELD_REPACK, "DB_RENDER_OVERRIDE", "" },
     /* g10 gfx103.json:2789, g12 gfx11.json:2475, gc_10_3_0_offset.h:5368, gc_11_0_0_offset.h:5158 */
-    { 0x28010u, 0x28010u, repack_DB_RENDER_OVERRIDE2, XLAT12_CLS_FIELD_REPACK, "DB_RENDER_OVERRIDE2", "" },
+    { 0x28010u, 0x28010u, repack11_DB_RENDER_OVERRIDE2, XLAT12_CLS_FIELD_REPACK, "DB_RENDER_OVERRIDE2", "" },
     /* g10 gfx103.json:2795, g12 gfx11.json:2481, gc_10_3_0_offset.h:5370, gc_11_0_0_offset.h:5160 */
     { 0x28014u, 0x28014u, 0, XLAT12_CLS_IDENTICAL, "DB_HTILE_DATA_BASE", "" },
     /* g10 gfx103.json:2800, g12 gfx11.json:2486, gc_10_3_0_offset.h:5372, gc_11_0_0_offset.h:5162 */
@@ -580,7 +582,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:2839, absent from gfx11.json, gc_10_3_0_offset.h:5386 */
     { 0x28038u, 0x00000u, 0, XLAT12_CLS_ABSENT, "DB_DFSM_CONTROL", "feature removed on gfx11 / unused for a minimal draw" },
     /* g10 gfx103.json:2845, g12 gfx11.json:2525, gc_10_3_0_offset.h:5388, gc_11_0_0_offset.h:5176 */
-    { 0x2803cu, 0x2803cu, repack_DB_RESERVED_REG_2, XLAT12_CLS_FIELD_REPACK, "DB_RESERVED_REG_2", "" },
+    { 0x2803cu, 0x2803cu, repack11_DB_RESERVED_REG_2, XLAT12_CLS_FIELD_REPACK, "DB_RESERVED_REG_2", "" },
     /* g10 gfx103.json:2851, g12 gfx11.json:2531, gc_10_3_0_offset.h:5390, gc_11_0_0_offset.h:5178 */
     { 0x28040u, 0x28040u, 0, XLAT12_CLS_IDENTICAL, "DB_Z_INFO", "" },
     /* g10 gfx103.json:2857, g12 gfx11.json:2537, gc_10_3_0_offset.h:5392, gc_11_0_0_offset.h:5180 */
@@ -802,7 +804,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:3464, g12 gfx11.json:3138, gc_10_3_0_offset.h:5608, gc_11_0_0_offset.h:5394 */
     { 0x28358u, 0x28358u, 0, XLAT12_CLS_IDENTICAL, "PA_SC_SCREEN_EXTENT_CONTROL", "" },
     /* g10 gfx103.json:3470, g12 gfx11.json:3144, gc_10_3_0_offset.h:5610, gc_11_0_0_offset.h:5396 */
-    { 0x2835cu, 0x2835cu, repack_PA_SC_TILE_STEERING_OVERRIDE, XLAT12_CLS_FIELD_REPACK, "PA_SC_TILE_STEERING_OVERRIDE", "" },
+    { 0x2835cu, 0x2835cu, repack11_PA_SC_TILE_STEERING_OVERRIDE, XLAT12_CLS_FIELD_REPACK, "PA_SC_TILE_STEERING_OVERRIDE", "" },
     /* g10 gfx103.json:3476, g12 gfx11.json:3150, gc_10_3_0_offset.h:5612, gc_11_0_0_offset.h:5398 */
     { 0x28360u, 0x28360u, 0, XLAT12_CLS_IDENTICAL, "CP_PERFMON_CNTX_CNTL", "" },
     /* g10 gfx103.json:3482, g12 gfx11.json:3156, gc_10_3_0_offset.h:5614, gc_11_0_0_offset.h:5400 */
@@ -822,7 +824,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:3519, g12 gfx11.json:3224, gc_10_3_0_offset.h:5630, gc_11_0_0_offset.h:5426 */
     { 0x2840cu, 0x2840cu, 0, XLAT12_CLS_IDENTICAL, "VGT_MULTI_PRIM_IB_RESET_INDX", "" },
     /* g10 gfx103.json:3524, g12 gfx11.json:3229, gc_10_3_0_offset.h:5632, gc_11_0_0_offset.h:5428 */
-    { 0x28410u, 0x28410u, repack_CB_RMI_GL2_CACHE_CONTROL, XLAT12_CLS_FIELD_REPACK, "CB_RMI_GL2_CACHE_CONTROL", "" },
+    { 0x28410u, 0x28410u, repack11_CB_RMI_GL2_CACHE_CONTROL, XLAT12_CLS_FIELD_REPACK, "CB_RMI_GL2_CACHE_CONTROL", "" },
     /* g10 gfx103.json:3530, g12 gfx11.json:3235, gc_10_3_0_offset.h:5634, gc_11_0_0_offset.h:5430 */
     { 0x28414u, 0x28414u, 0, XLAT12_CLS_IDENTICAL, "CB_BLEND_RED", "" },
     /* g10 gfx103.json:3535, g12 gfx11.json:3240, gc_10_3_0_offset.h:5636, gc_11_0_0_offset.h:5432 */
@@ -1084,71 +1086,71 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:4180, g12 gfx11.json:3885, gc_10_3_0_offset.h:5892, gc_11_0_0_offset.h:5688 */
     { 0x2861cu, 0x2861cu, 0, XLAT12_CLS_IDENTICAL, "PA_CL_PROG_NEAR_CLIP_Z", "" },
     /* g10 gfx103.json:4185, g12 gfx11.json:3896, gc_10_3_0_offset.h:5894, gc_11_0_0_offset.h:5692 */
-    { 0x28644u, 0x28644u, repack_SPI_PS_INPUT_CNTL_0, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_0", "" },
+    { 0x28644u, 0x28644u, repack11_SPI_PS_INPUT_CNTL_0, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_0", "" },
     /* g10 gfx103.json:4191, g12 gfx11.json:3902, gc_10_3_0_offset.h:5896, gc_11_0_0_offset.h:5694 */
-    { 0x28648u, 0x28648u, repack_SPI_PS_INPUT_CNTL_1, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_1", "" },
+    { 0x28648u, 0x28648u, repack11_SPI_PS_INPUT_CNTL_1, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_1", "" },
     /* g10 gfx103.json:4197, g12 gfx11.json:3908, gc_10_3_0_offset.h:5898, gc_11_0_0_offset.h:5696 */
-    { 0x2864cu, 0x2864cu, repack_SPI_PS_INPUT_CNTL_2, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_2", "" },
+    { 0x2864cu, 0x2864cu, repack11_SPI_PS_INPUT_CNTL_2, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_2", "" },
     /* g10 gfx103.json:4203, g12 gfx11.json:3914, gc_10_3_0_offset.h:5900, gc_11_0_0_offset.h:5698 */
-    { 0x28650u, 0x28650u, repack_SPI_PS_INPUT_CNTL_3, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_3", "" },
+    { 0x28650u, 0x28650u, repack11_SPI_PS_INPUT_CNTL_3, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_3", "" },
     /* g10 gfx103.json:4209, g12 gfx11.json:3920, gc_10_3_0_offset.h:5902, gc_11_0_0_offset.h:5700 */
-    { 0x28654u, 0x28654u, repack_SPI_PS_INPUT_CNTL_4, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_4", "" },
+    { 0x28654u, 0x28654u, repack11_SPI_PS_INPUT_CNTL_4, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_4", "" },
     /* g10 gfx103.json:4215, g12 gfx11.json:3926, gc_10_3_0_offset.h:5904, gc_11_0_0_offset.h:5702 */
-    { 0x28658u, 0x28658u, repack_SPI_PS_INPUT_CNTL_5, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_5", "" },
+    { 0x28658u, 0x28658u, repack11_SPI_PS_INPUT_CNTL_5, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_5", "" },
     /* g10 gfx103.json:4221, g12 gfx11.json:3932, gc_10_3_0_offset.h:5906, gc_11_0_0_offset.h:5704 */
-    { 0x2865cu, 0x2865cu, repack_SPI_PS_INPUT_CNTL_6, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_6", "" },
+    { 0x2865cu, 0x2865cu, repack11_SPI_PS_INPUT_CNTL_6, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_6", "" },
     /* g10 gfx103.json:4227, g12 gfx11.json:3938, gc_10_3_0_offset.h:5908, gc_11_0_0_offset.h:5706 */
-    { 0x28660u, 0x28660u, repack_SPI_PS_INPUT_CNTL_7, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_7", "" },
+    { 0x28660u, 0x28660u, repack11_SPI_PS_INPUT_CNTL_7, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_7", "" },
     /* g10 gfx103.json:4233, g12 gfx11.json:3944, gc_10_3_0_offset.h:5910, gc_11_0_0_offset.h:5708 */
-    { 0x28664u, 0x28664u, repack_SPI_PS_INPUT_CNTL_8, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_8", "" },
+    { 0x28664u, 0x28664u, repack11_SPI_PS_INPUT_CNTL_8, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_8", "" },
     /* g10 gfx103.json:4239, g12 gfx11.json:3950, gc_10_3_0_offset.h:5912, gc_11_0_0_offset.h:5710 */
-    { 0x28668u, 0x28668u, repack_SPI_PS_INPUT_CNTL_9, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_9", "" },
+    { 0x28668u, 0x28668u, repack11_SPI_PS_INPUT_CNTL_9, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_9", "" },
     /* g10 gfx103.json:4245, g12 gfx11.json:3956, gc_10_3_0_offset.h:5914, gc_11_0_0_offset.h:5712 */
-    { 0x2866cu, 0x2866cu, repack_SPI_PS_INPUT_CNTL_10, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_10", "" },
+    { 0x2866cu, 0x2866cu, repack11_SPI_PS_INPUT_CNTL_10, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_10", "" },
     /* g10 gfx103.json:4251, g12 gfx11.json:3962, gc_10_3_0_offset.h:5916, gc_11_0_0_offset.h:5714 */
-    { 0x28670u, 0x28670u, repack_SPI_PS_INPUT_CNTL_11, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_11", "" },
+    { 0x28670u, 0x28670u, repack11_SPI_PS_INPUT_CNTL_11, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_11", "" },
     /* g10 gfx103.json:4257, g12 gfx11.json:3968, gc_10_3_0_offset.h:5918, gc_11_0_0_offset.h:5716 */
-    { 0x28674u, 0x28674u, repack_SPI_PS_INPUT_CNTL_12, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_12", "" },
+    { 0x28674u, 0x28674u, repack11_SPI_PS_INPUT_CNTL_12, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_12", "" },
     /* g10 gfx103.json:4263, g12 gfx11.json:3974, gc_10_3_0_offset.h:5920, gc_11_0_0_offset.h:5718 */
-    { 0x28678u, 0x28678u, repack_SPI_PS_INPUT_CNTL_13, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_13", "" },
+    { 0x28678u, 0x28678u, repack11_SPI_PS_INPUT_CNTL_13, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_13", "" },
     /* g10 gfx103.json:4269, g12 gfx11.json:3980, gc_10_3_0_offset.h:5922, gc_11_0_0_offset.h:5720 */
-    { 0x2867cu, 0x2867cu, repack_SPI_PS_INPUT_CNTL_14, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_14", "" },
+    { 0x2867cu, 0x2867cu, repack11_SPI_PS_INPUT_CNTL_14, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_14", "" },
     /* g10 gfx103.json:4275, g12 gfx11.json:3986, gc_10_3_0_offset.h:5924, gc_11_0_0_offset.h:5722 */
-    { 0x28680u, 0x28680u, repack_SPI_PS_INPUT_CNTL_15, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_15", "" },
+    { 0x28680u, 0x28680u, repack11_SPI_PS_INPUT_CNTL_15, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_15", "" },
     /* g10 gfx103.json:4281, g12 gfx11.json:3992, gc_10_3_0_offset.h:5926, gc_11_0_0_offset.h:5724 */
-    { 0x28684u, 0x28684u, repack_SPI_PS_INPUT_CNTL_16, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_16", "" },
+    { 0x28684u, 0x28684u, repack11_SPI_PS_INPUT_CNTL_16, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_16", "" },
     /* g10 gfx103.json:4287, g12 gfx11.json:3998, gc_10_3_0_offset.h:5928, gc_11_0_0_offset.h:5726 */
-    { 0x28688u, 0x28688u, repack_SPI_PS_INPUT_CNTL_17, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_17", "" },
+    { 0x28688u, 0x28688u, repack11_SPI_PS_INPUT_CNTL_17, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_17", "" },
     /* g10 gfx103.json:4293, g12 gfx11.json:4004, gc_10_3_0_offset.h:5930, gc_11_0_0_offset.h:5728 */
-    { 0x2868cu, 0x2868cu, repack_SPI_PS_INPUT_CNTL_18, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_18", "" },
+    { 0x2868cu, 0x2868cu, repack11_SPI_PS_INPUT_CNTL_18, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_18", "" },
     /* g10 gfx103.json:4299, g12 gfx11.json:4010, gc_10_3_0_offset.h:5932, gc_11_0_0_offset.h:5730 */
-    { 0x28690u, 0x28690u, repack_SPI_PS_INPUT_CNTL_19, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_19", "" },
+    { 0x28690u, 0x28690u, repack11_SPI_PS_INPUT_CNTL_19, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_19", "" },
     /* g10 gfx103.json:4305, g12 gfx11.json:4016, gc_10_3_0_offset.h:5934, gc_11_0_0_offset.h:5732 */
-    { 0x28694u, 0x28694u, repack_SPI_PS_INPUT_CNTL_20, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_20", "" },
+    { 0x28694u, 0x28694u, repack11_SPI_PS_INPUT_CNTL_20, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_20", "" },
     /* g10 gfx103.json:4311, g12 gfx11.json:4022, gc_10_3_0_offset.h:5936, gc_11_0_0_offset.h:5734 */
-    { 0x28698u, 0x28698u, repack_SPI_PS_INPUT_CNTL_21, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_21", "" },
+    { 0x28698u, 0x28698u, repack11_SPI_PS_INPUT_CNTL_21, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_21", "" },
     /* g10 gfx103.json:4317, g12 gfx11.json:4028, gc_10_3_0_offset.h:5938, gc_11_0_0_offset.h:5736 */
-    { 0x2869cu, 0x2869cu, repack_SPI_PS_INPUT_CNTL_22, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_22", "" },
+    { 0x2869cu, 0x2869cu, repack11_SPI_PS_INPUT_CNTL_22, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_22", "" },
     /* g10 gfx103.json:4323, g12 gfx11.json:4034, gc_10_3_0_offset.h:5940, gc_11_0_0_offset.h:5738 */
-    { 0x286a0u, 0x286a0u, repack_SPI_PS_INPUT_CNTL_23, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_23", "" },
+    { 0x286a0u, 0x286a0u, repack11_SPI_PS_INPUT_CNTL_23, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_23", "" },
     /* g10 gfx103.json:4329, g12 gfx11.json:4040, gc_10_3_0_offset.h:5942, gc_11_0_0_offset.h:5740 */
-    { 0x286a4u, 0x286a4u, repack_SPI_PS_INPUT_CNTL_24, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_24", "" },
+    { 0x286a4u, 0x286a4u, repack11_SPI_PS_INPUT_CNTL_24, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_24", "" },
     /* g10 gfx103.json:4335, g12 gfx11.json:4046, gc_10_3_0_offset.h:5944, gc_11_0_0_offset.h:5742 */
-    { 0x286a8u, 0x286a8u, repack_SPI_PS_INPUT_CNTL_25, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_25", "" },
+    { 0x286a8u, 0x286a8u, repack11_SPI_PS_INPUT_CNTL_25, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_25", "" },
     /* g10 gfx103.json:4341, g12 gfx11.json:4052, gc_10_3_0_offset.h:5946, gc_11_0_0_offset.h:5744 */
-    { 0x286acu, 0x286acu, repack_SPI_PS_INPUT_CNTL_26, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_26", "" },
+    { 0x286acu, 0x286acu, repack11_SPI_PS_INPUT_CNTL_26, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_26", "" },
     /* g10 gfx103.json:4347, g12 gfx11.json:4058, gc_10_3_0_offset.h:5948, gc_11_0_0_offset.h:5746 */
-    { 0x286b0u, 0x286b0u, repack_SPI_PS_INPUT_CNTL_27, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_27", "" },
+    { 0x286b0u, 0x286b0u, repack11_SPI_PS_INPUT_CNTL_27, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_27", "" },
     /* g10 gfx103.json:4353, g12 gfx11.json:4064, gc_10_3_0_offset.h:5950, gc_11_0_0_offset.h:5748 */
-    { 0x286b4u, 0x286b4u, repack_SPI_PS_INPUT_CNTL_28, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_28", "" },
+    { 0x286b4u, 0x286b4u, repack11_SPI_PS_INPUT_CNTL_28, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_28", "" },
     /* g10 gfx103.json:4359, g12 gfx11.json:4070, gc_10_3_0_offset.h:5952, gc_11_0_0_offset.h:5750 */
-    { 0x286b8u, 0x286b8u, repack_SPI_PS_INPUT_CNTL_29, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_29", "" },
+    { 0x286b8u, 0x286b8u, repack11_SPI_PS_INPUT_CNTL_29, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_29", "" },
     /* g10 gfx103.json:4365, g12 gfx11.json:4076, gc_10_3_0_offset.h:5954, gc_11_0_0_offset.h:5752 */
-    { 0x286bcu, 0x286bcu, repack_SPI_PS_INPUT_CNTL_30, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_30", "" },
+    { 0x286bcu, 0x286bcu, repack11_SPI_PS_INPUT_CNTL_30, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_30", "" },
     /* g10 gfx103.json:4371, g12 gfx11.json:4082, gc_10_3_0_offset.h:5956, gc_11_0_0_offset.h:5754 */
-    { 0x286c0u, 0x286c0u, repack_SPI_PS_INPUT_CNTL_31, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_31", "" },
+    { 0x286c0u, 0x286c0u, repack11_SPI_PS_INPUT_CNTL_31, XLAT12_CLS_FIELD_REPACK, "SPI_PS_INPUT_CNTL_31", "" },
     /* g10 gfx103.json:4377, g12 gfx11.json:4088, gc_10_3_0_offset.h:5958, gc_11_0_0_offset.h:5756 */
-    { 0x286c4u, 0x286c4u, repack_SPI_VS_OUT_CONFIG, XLAT12_CLS_FIELD_REPACK, "SPI_VS_OUT_CONFIG", "" },
+    { 0x286c4u, 0x286c4u, repack11_SPI_VS_OUT_CONFIG, XLAT12_CLS_FIELD_REPACK, "SPI_VS_OUT_CONFIG", "" },
     /* g10 gfx103.json:4383, g12 gfx11.json:4094, gc_10_3_0_offset.h:5960, gc_11_0_0_offset.h:5758 */
     { 0x286ccu, 0x286ccu, 0, XLAT12_CLS_IDENTICAL, "SPI_PS_INPUT_ENA", "" },
     /* g10 gfx103.json:4389, g12 gfx11.json:4100, gc_10_3_0_offset.h:5962, gc_11_0_0_offset.h:5760 */
@@ -1156,11 +1158,11 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:4395, g12 gfx11.json:4106, gc_10_3_0_offset.h:5964, gc_11_0_0_offset.h:5762 */
     { 0x286d4u, 0x286d4u, 0, XLAT12_CLS_IDENTICAL, "SPI_INTERP_CONTROL_0", "" },
     /* g10 gfx103.json:4401, g12 gfx11.json:4112, gc_10_3_0_offset.h:5966, gc_11_0_0_offset.h:5764 */
-    { 0x286d8u, 0x286d8u, repack_SPI_PS_IN_CONTROL, XLAT12_CLS_FIELD_REPACK, "SPI_PS_IN_CONTROL", "" },
+    { 0x286d8u, 0x286d8u, repack11_SPI_PS_IN_CONTROL, XLAT12_CLS_FIELD_REPACK, "SPI_PS_IN_CONTROL", "" },
     /* g10 gfx103.json:4407, g12 gfx11.json:4118, gc_10_3_0_offset.h:5968, gc_11_0_0_offset.h:5766 */
     { 0x286e0u, 0x286e0u, 0, XLAT12_CLS_IDENTICAL, "SPI_BARYC_CNTL", "" },
     /* g10 gfx103.json:4413, g12 gfx11.json:4124, gc_10_3_0_offset.h:5970, gc_11_0_0_offset.h:5768 */
-    { 0x286e8u, 0x286e8u, repack_SPI_TMPRING_SIZE, XLAT12_CLS_FIELD_REPACK, "SPI_TMPRING_SIZE", "" },
+    { 0x286e8u, 0x286e8u, repack11_SPI_TMPRING_SIZE, XLAT12_CLS_FIELD_REPACK, "SPI_TMPRING_SIZE", "" },
     /* g10 gfx103.json:4419, g12 gfx11.json:4141, gc_10_3_0_offset.h:5972, gc_11_0_0_offset.h:5774 */
     { 0x28708u, 0x28708u, 0, XLAT12_CLS_IDENTICAL, "SPI_SHADER_IDX_FORMAT", "" },
     /* g10 gfx103.json:4425, g12 gfx11.json:4147, gc_10_3_0_offset.h:5974, gc_11_0_0_offset.h:5776 */
@@ -1240,7 +1242,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:4641, g12 gfx11.json:4352, gc_10_3_0_offset.h:6048, gc_11_0_0_offset.h:5846 */
     { 0x28808u, 0x28808u, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR_CONTROL", "" },
     /* g10 gfx103.json:4647, g12 gfx11.json:4358, gc_10_3_0_offset.h:6050, gc_11_0_0_offset.h:5848 */
-    { 0x2880cu, 0x2880cu, repack_DB_SHADER_CONTROL, XLAT12_CLS_FIELD_REPACK, "DB_SHADER_CONTROL", "" },
+    { 0x2880cu, 0x2880cu, repack11_DB_SHADER_CONTROL, XLAT12_CLS_FIELD_REPACK, "DB_SHADER_CONTROL", "" },
     /* g10 gfx103.json:4653, g12 gfx11.json:4364, gc_10_3_0_offset.h:6052, gc_11_0_0_offset.h:5850 */
     { 0x28810u, 0x28810u, 0, XLAT12_CLS_IDENTICAL, "PA_CL_CLIP_CNTL", "" },
     /* g10 gfx103.json:4659, g12 gfx11.json:4370, gc_10_3_0_offset.h:6054, gc_11_0_0_offset.h:5852 */
@@ -1248,11 +1250,11 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:4665, g12 gfx11.json:4376, gc_10_3_0_offset.h:6056, gc_11_0_0_offset.h:5854 */
     { 0x28818u, 0x28818u, 0, XLAT12_CLS_IDENTICAL, "PA_CL_VTE_CNTL", "" },
     /* g10 gfx103.json:4671, g12 gfx11.json:4382, gc_10_3_0_offset.h:6058, gc_11_0_0_offset.h:5856 */
-    { 0x2881cu, 0x2881cu, repack_PA_CL_VS_OUT_CNTL, XLAT12_CLS_FIELD_REPACK, "PA_CL_VS_OUT_CNTL", "" },
+    { 0x2881cu, 0x2881cu, repack11_PA_CL_VS_OUT_CNTL, XLAT12_CLS_FIELD_REPACK, "PA_CL_VS_OUT_CNTL", "" },
     /* g10 gfx103.json:4677, g12 gfx11.json:4388, gc_10_3_0_offset.h:6060, gc_11_0_0_offset.h:5858 */
     { 0x28820u, 0x28820u, 0, XLAT12_CLS_IDENTICAL, "PA_CL_NANINF_CNTL", "" },
     /* g10 gfx103.json:4683, g12 gfx11.json:4394, gc_10_3_0_offset.h:6062, gc_11_0_0_offset.h:5860 */
-    { 0x28824u, 0x28824u, repack_PA_SU_LINE_STIPPLE_CNTL, XLAT12_CLS_FIELD_REPACK, "PA_SU_LINE_STIPPLE_CNTL", "" },
+    { 0x28824u, 0x28824u, repack11_PA_SU_LINE_STIPPLE_CNTL, XLAT12_CLS_FIELD_REPACK, "PA_SU_LINE_STIPPLE_CNTL", "" },
     /* g10 gfx103.json:4689, g12 gfx11.json:4400, gc_10_3_0_offset.h:6064, gc_11_0_0_offset.h:5862 */
     { 0x28828u, 0x28828u, 0, XLAT12_CLS_IDENTICAL, "PA_SU_LINE_STIPPLE_SCALE", "" },
     /* g10 gfx103.json:4694, g12 gfx11.json:4405, gc_10_3_0_offset.h:6066, gc_11_0_0_offset.h:5864 */
@@ -1324,7 +1326,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:4888, absent from gfx11.json, gc_10_3_0_offset.h:6132 */
     { 0x28a68u, 0x00000u, 0, XLAT12_CLS_ABSENT, "VGT_GSVS_RING_OFFSET_3", "legacy GS mode/ring: the NGG pipeline uses none" },
     /* g10 gfx103.json:4894, g12 gfx11.json:6277, gc_10_3_0_offset.h:6134, gc_11_0_0_offset.h:7216 */
-    { 0x28a6cu, 0x30998u, repack_VGT_GS_OUT_PRIM_TYPE, XLAT12_CLS_FIELD_REPACK, "VGT_GS_OUT_PRIM_TYPE", "" },
+    { 0x28a6cu, 0x30998u, repack11_VGT_GS_OUT_PRIM_TYPE, XLAT12_CLS_FIELD_REPACK, "VGT_GS_OUT_PRIM_TYPE", "" },
     /* g10 gfx103.json:4900, g12 gfx11.json:4497, gc_10_3_0_offset.h:6136, gc_11_0_0_offset.h:5896 */
     { 0x28a70u, 0x28a70u, 0, XLAT12_CLS_IDENTICAL, "IA_ENHANCE", "" },
     /* g10 gfx103.json:4905, g12 gfx11.json:4502, gc_10_3_0_offset.h:6138, gc_11_0_0_offset.h:5898 */
@@ -1362,7 +1364,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:4994, absent from gfx11.json, gc_10_3_0_offset.h:6170 */
     { 0x28ab8u, 0x00000u, 0, XLAT12_CLS_ABSENT, "VGT_VTX_CNT_EN", "feature removed on gfx11 / unused for a minimal draw" },
     /* g10 gfx103.json:5000, g12 gfx11.json:4563, gc_10_3_0_offset.h:6172, gc_11_0_0_offset.h:5920 */
-    { 0x28abcu, 0x28abcu, repack_DB_HTILE_SURFACE, XLAT12_CLS_FIELD_REPACK, "DB_HTILE_SURFACE", "" },
+    { 0x28abcu, 0x28abcu, repack11_DB_HTILE_SURFACE, XLAT12_CLS_FIELD_REPACK, "DB_HTILE_SURFACE", "" },
     /* g10 gfx103.json:5006, g12 gfx11.json:4569, gc_10_3_0_offset.h:6174, gc_11_0_0_offset.h:5922 */
     { 0x28ac0u, 0x28ac0u, 0, XLAT12_CLS_IDENTICAL, "DB_SRESULTS_COMPARE_STATE0", "" },
     /* g10 gfx103.json:5012, g12 gfx11.json:4575, gc_10_3_0_offset.h:6176, gc_11_0_0_offset.h:5924 */
@@ -1406,7 +1408,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5116, g12 gfx11.json:4615, gc_10_3_0_offset.h:6214, gc_11_0_0_offset.h:5938 */
     { 0x28b50u, 0x28b50u, 0, XLAT12_CLS_IDENTICAL, "VGT_TESS_DISTRIBUTION", "" },
     /* g10 gfx103.json:5122, g12 gfx11.json:4621, gc_10_3_0_offset.h:6216, gc_11_0_0_offset.h:5940 */
-    { 0x28b54u, 0x28b54u, repack_VGT_SHADER_STAGES_EN, XLAT12_CLS_FIELD_REPACK, "VGT_SHADER_STAGES_EN", "" },
+    { 0x28b54u, 0x28b54u, repack11_VGT_SHADER_STAGES_EN, XLAT12_CLS_FIELD_REPACK, "VGT_SHADER_STAGES_EN", "" },
     /* g10 gfx103.json:5128, g12 gfx11.json:4627, gc_10_3_0_offset.h:6218, gc_11_0_0_offset.h:5942 */
     { 0x28b58u, 0x28b58u, 0, XLAT12_CLS_IDENTICAL, "VGT_LS_HS_CONFIG", "" },
     /* g10 gfx103.json:5134, absent from gfx11.json, gc_10_3_0_offset.h:6220 */
@@ -1418,7 +1420,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5152, absent from gfx11.json, gc_10_3_0_offset.h:6226 */
     { 0x28b68u, 0x00000u, 0, XLAT12_CLS_ABSENT, "VGT_GS_VERT_ITEMSIZE_3", "legacy GS mode/ring: the NGG pipeline uses none" },
     /* g10 gfx103.json:5158, g12 gfx11.json:4633, gc_10_3_0_offset.h:6228, gc_11_0_0_offset.h:5944 */
-    { 0x28b6cu, 0x28b6cu, repack_VGT_TF_PARAM, XLAT12_CLS_FIELD_REPACK, "VGT_TF_PARAM", "" },
+    { 0x28b6cu, 0x28b6cu, repack11_VGT_TF_PARAM, XLAT12_CLS_FIELD_REPACK, "VGT_TF_PARAM", "" },
     /* g10 gfx103.json:5164, g12 gfx11.json:4639, gc_10_3_0_offset.h:6230, gc_11_0_0_offset.h:5946 */
     { 0x28b70u, 0x28b70u, 0, XLAT12_CLS_IDENTICAL, "DB_ALPHA_TO_MASK", "" },
     /* g10 gfx103.json:5170, absent from gfx11.json, gc_10_3_0_offset.h:6232 */
@@ -1498,7 +1500,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5382, g12 gfx11.json:4834, gc_10_3_0_offset.h:6306, gc_11_0_0_offset.h:6014 */
     { 0x28c3cu, 0x28c3cu, 0, XLAT12_CLS_IDENTICAL, "PA_SC_AA_MASK_X0Y1_X1Y1", "" },
     /* g10 gfx103.json:5388, g12 gfx11.json:4840, gc_10_3_0_offset.h:6308, gc_11_0_0_offset.h:6016 */
-    { 0x28c40u, 0x28c40u, repack_PA_SC_SHADER_CONTROL, XLAT12_CLS_FIELD_REPACK, "PA_SC_SHADER_CONTROL", "" },
+    { 0x28c40u, 0x28c40u, repack11_PA_SC_SHADER_CONTROL, XLAT12_CLS_FIELD_REPACK, "PA_SC_SHADER_CONTROL", "" },
     /* g10 gfx103.json:5394, g12 gfx11.json:4846, gc_10_3_0_offset.h:6310, gc_11_0_0_offset.h:6018 */
     { 0x28c44u, 0x28c44u, 0, XLAT12_CLS_IDENTICAL, "PA_SC_BINNER_CNTL_0", "" },
     /* g10 gfx103.json:5400, g12 gfx11.json:4852, gc_10_3_0_offset.h:6312, gc_11_0_0_offset.h:6020 */
@@ -1506,7 +1508,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5406, g12 gfx11.json:4858, gc_10_3_0_offset.h:6314, gc_11_0_0_offset.h:6022 */
     { 0x28c4cu, 0x28c4cu, 0, XLAT12_CLS_IDENTICAL, "PA_SC_CONSERVATIVE_RASTERIZATION_CNTL", "" },
     /* g10 gfx103.json:5412, g12 gfx11.json:4864, gc_10_3_0_offset.h:6316, gc_11_0_0_offset.h:6024 */
-    { 0x28c50u, 0x28c50u, repack_PA_SC_NGG_MODE_CNTL, XLAT12_CLS_FIELD_REPACK, "PA_SC_NGG_MODE_CNTL", "" },
+    { 0x28c50u, 0x28c50u, repack11_PA_SC_NGG_MODE_CNTL, XLAT12_CLS_FIELD_REPACK, "PA_SC_NGG_MODE_CNTL", "" },
     /* g10 gfx103.json:5418, absent from gfx11.json, gc_10_3_0_offset.h:6318 */
     { 0x28c58u, 0x00000u, 0, XLAT12_CLS_ABSENT, "VGT_VERTEX_REUSE_BLOCK_CNTL", "feature removed on gfx11 / unused for a minimal draw" },
     /* g10 gfx103.json:5424, absent from gfx11.json, gc_10_3_0_offset.h:6320 */
@@ -1520,9 +1522,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5447, g12 gfx11.json:4881, gc_10_3_0_offset.h:6328, gc_11_0_0_offset.h:6030 */
     { 0x28c6cu, 0x28c6cu, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR0_VIEW", "" },
     /* g10 gfx103.json:5453, g12 gfx11.json:4887, gc_10_3_0_offset.h:6330, gc_11_0_0_offset.h:6032 */
-    { 0x28c70u, 0x28c70u, repack_CB_COLOR0_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR0_INFO", "" },
+    { 0x28c70u, 0x28c70u, repack11_CB_COLOR0_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR0_INFO", "" },
     /* g10 gfx103.json:5459, g12 gfx11.json:4893, gc_10_3_0_offset.h:6332, gc_11_0_0_offset.h:6034 */
-    { 0x28c74u, 0x28c74u, repack_CB_COLOR0_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR0_ATTRIB", "" },
+    { 0x28c74u, 0x28c74u, repack11_CB_COLOR0_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR0_ATTRIB", "" },
     /* g10 gfx103.json:5465, absent from gfx11.json, gc_10_3_0_offset.h:6334 */
     { 0x28c78u, 0x00000u, 0, XLAT12_CLS_ABSENT, "CB_COLOR0_DCC_CONTROL", "CMASK/FMASK/DCC: a linear uncompressed color target has none" },
     /* g10 gfx103.json:5471, absent from gfx11.json, gc_10_3_0_offset.h:6336 */
@@ -1548,9 +1550,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5525, g12 gfx11.json:4915, gc_10_3_0_offset.h:6356, gc_11_0_0_offset.h:6042 */
     { 0x28ca8u, 0x28ca8u, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR1_VIEW", "" },
     /* g10 gfx103.json:5531, g12 gfx11.json:4921, gc_10_3_0_offset.h:6358, gc_11_0_0_offset.h:6044 */
-    { 0x28cacu, 0x28cacu, repack_CB_COLOR1_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR1_INFO", "" },
+    { 0x28cacu, 0x28cacu, repack11_CB_COLOR1_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR1_INFO", "" },
     /* g10 gfx103.json:5537, g12 gfx11.json:4927, gc_10_3_0_offset.h:6360, gc_11_0_0_offset.h:6046 */
-    { 0x28cb0u, 0x28cb0u, repack_CB_COLOR1_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR1_ATTRIB", "" },
+    { 0x28cb0u, 0x28cb0u, repack11_CB_COLOR1_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR1_ATTRIB", "" },
     /* g10 gfx103.json:5543, absent from gfx11.json, gc_10_3_0_offset.h:6362 */
     { 0x28cb4u, 0x00000u, 0, XLAT12_CLS_ABSENT, "CB_COLOR1_DCC_CONTROL", "CMASK/FMASK/DCC: a linear uncompressed color target has none" },
     /* g10 gfx103.json:5549, absent from gfx11.json, gc_10_3_0_offset.h:6364 */
@@ -1576,9 +1578,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5603, g12 gfx11.json:4949, gc_10_3_0_offset.h:6384, gc_11_0_0_offset.h:6054 */
     { 0x28ce4u, 0x28ce4u, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR2_VIEW", "" },
     /* g10 gfx103.json:5609, g12 gfx11.json:4955, gc_10_3_0_offset.h:6386, gc_11_0_0_offset.h:6056 */
-    { 0x28ce8u, 0x28ce8u, repack_CB_COLOR2_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR2_INFO", "" },
+    { 0x28ce8u, 0x28ce8u, repack11_CB_COLOR2_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR2_INFO", "" },
     /* g10 gfx103.json:5615, g12 gfx11.json:4961, gc_10_3_0_offset.h:6388, gc_11_0_0_offset.h:6058 */
-    { 0x28cecu, 0x28cecu, repack_CB_COLOR2_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR2_ATTRIB", "" },
+    { 0x28cecu, 0x28cecu, repack11_CB_COLOR2_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR2_ATTRIB", "" },
     /* g10 gfx103.json:5621, absent from gfx11.json, gc_10_3_0_offset.h:6390 */
     { 0x28cf0u, 0x00000u, 0, XLAT12_CLS_ABSENT, "CB_COLOR2_DCC_CONTROL", "CMASK/FMASK/DCC: a linear uncompressed color target has none" },
     /* g10 gfx103.json:5627, absent from gfx11.json, gc_10_3_0_offset.h:6392 */
@@ -1604,9 +1606,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5681, g12 gfx11.json:4983, gc_10_3_0_offset.h:6412, gc_11_0_0_offset.h:6066 */
     { 0x28d20u, 0x28d20u, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR3_VIEW", "" },
     /* g10 gfx103.json:5687, g12 gfx11.json:4989, gc_10_3_0_offset.h:6414, gc_11_0_0_offset.h:6068 */
-    { 0x28d24u, 0x28d24u, repack_CB_COLOR3_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR3_INFO", "" },
+    { 0x28d24u, 0x28d24u, repack11_CB_COLOR3_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR3_INFO", "" },
     /* g10 gfx103.json:5693, g12 gfx11.json:4995, gc_10_3_0_offset.h:6416, gc_11_0_0_offset.h:6070 */
-    { 0x28d28u, 0x28d28u, repack_CB_COLOR3_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR3_ATTRIB", "" },
+    { 0x28d28u, 0x28d28u, repack11_CB_COLOR3_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR3_ATTRIB", "" },
     /* g10 gfx103.json:5699, absent from gfx11.json, gc_10_3_0_offset.h:6418 */
     { 0x28d2cu, 0x00000u, 0, XLAT12_CLS_ABSENT, "CB_COLOR3_DCC_CONTROL", "CMASK/FMASK/DCC: a linear uncompressed color target has none" },
     /* g10 gfx103.json:5705, absent from gfx11.json, gc_10_3_0_offset.h:6420 */
@@ -1632,9 +1634,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5759, g12 gfx11.json:5017, gc_10_3_0_offset.h:6440, gc_11_0_0_offset.h:6078 */
     { 0x28d5cu, 0x28d5cu, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR4_VIEW", "" },
     /* g10 gfx103.json:5765, g12 gfx11.json:5023, gc_10_3_0_offset.h:6442, gc_11_0_0_offset.h:6080 */
-    { 0x28d60u, 0x28d60u, repack_CB_COLOR4_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR4_INFO", "" },
+    { 0x28d60u, 0x28d60u, repack11_CB_COLOR4_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR4_INFO", "" },
     /* g10 gfx103.json:5771, g12 gfx11.json:5029, gc_10_3_0_offset.h:6444, gc_11_0_0_offset.h:6082 */
-    { 0x28d64u, 0x28d64u, repack_CB_COLOR4_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR4_ATTRIB", "" },
+    { 0x28d64u, 0x28d64u, repack11_CB_COLOR4_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR4_ATTRIB", "" },
     /* g10 gfx103.json:5777, absent from gfx11.json, gc_10_3_0_offset.h:6446 */
     { 0x28d68u, 0x00000u, 0, XLAT12_CLS_ABSENT, "CB_COLOR4_DCC_CONTROL", "CMASK/FMASK/DCC: a linear uncompressed color target has none" },
     /* g10 gfx103.json:5783, absent from gfx11.json, gc_10_3_0_offset.h:6448 */
@@ -1660,9 +1662,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5837, g12 gfx11.json:5051, gc_10_3_0_offset.h:6468, gc_11_0_0_offset.h:6090 */
     { 0x28d98u, 0x28d98u, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR5_VIEW", "" },
     /* g10 gfx103.json:5843, g12 gfx11.json:5057, gc_10_3_0_offset.h:6470, gc_11_0_0_offset.h:6092 */
-    { 0x28d9cu, 0x28d9cu, repack_CB_COLOR5_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR5_INFO", "" },
+    { 0x28d9cu, 0x28d9cu, repack11_CB_COLOR5_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR5_INFO", "" },
     /* g10 gfx103.json:5849, g12 gfx11.json:5063, gc_10_3_0_offset.h:6472, gc_11_0_0_offset.h:6094 */
-    { 0x28da0u, 0x28da0u, repack_CB_COLOR5_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR5_ATTRIB", "" },
+    { 0x28da0u, 0x28da0u, repack11_CB_COLOR5_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR5_ATTRIB", "" },
     /* g10 gfx103.json:5855, absent from gfx11.json, gc_10_3_0_offset.h:6474 */
     { 0x28da4u, 0x00000u, 0, XLAT12_CLS_ABSENT, "CB_COLOR5_DCC_CONTROL", "CMASK/FMASK/DCC: a linear uncompressed color target has none" },
     /* g10 gfx103.json:5861, absent from gfx11.json, gc_10_3_0_offset.h:6476 */
@@ -1688,9 +1690,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5915, g12 gfx11.json:5085, gc_10_3_0_offset.h:6496, gc_11_0_0_offset.h:6102 */
     { 0x28dd4u, 0x28dd4u, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR6_VIEW", "" },
     /* g10 gfx103.json:5921, g12 gfx11.json:5091, gc_10_3_0_offset.h:6498, gc_11_0_0_offset.h:6104 */
-    { 0x28dd8u, 0x28dd8u, repack_CB_COLOR6_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR6_INFO", "" },
+    { 0x28dd8u, 0x28dd8u, repack11_CB_COLOR6_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR6_INFO", "" },
     /* g10 gfx103.json:5927, g12 gfx11.json:5097, gc_10_3_0_offset.h:6500, gc_11_0_0_offset.h:6106 */
-    { 0x28ddcu, 0x28ddcu, repack_CB_COLOR6_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR6_ATTRIB", "" },
+    { 0x28ddcu, 0x28ddcu, repack11_CB_COLOR6_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR6_ATTRIB", "" },
     /* g10 gfx103.json:5933, absent from gfx11.json, gc_10_3_0_offset.h:6502 */
     { 0x28de0u, 0x00000u, 0, XLAT12_CLS_ABSENT, "CB_COLOR6_DCC_CONTROL", "CMASK/FMASK/DCC: a linear uncompressed color target has none" },
     /* g10 gfx103.json:5939, absent from gfx11.json, gc_10_3_0_offset.h:6504 */
@@ -1716,9 +1718,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:5993, g12 gfx11.json:5119, gc_10_3_0_offset.h:6524, gc_11_0_0_offset.h:6114 */
     { 0x28e10u, 0x28e10u, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR7_VIEW", "" },
     /* g10 gfx103.json:5999, g12 gfx11.json:5125, gc_10_3_0_offset.h:6526, gc_11_0_0_offset.h:6116 */
-    { 0x28e14u, 0x28e14u, repack_CB_COLOR7_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR7_INFO", "" },
+    { 0x28e14u, 0x28e14u, repack11_CB_COLOR7_INFO, XLAT12_CLS_FIELD_REPACK, "CB_COLOR7_INFO", "" },
     /* g10 gfx103.json:6005, g12 gfx11.json:5131, gc_10_3_0_offset.h:6528, gc_11_0_0_offset.h:6118 */
-    { 0x28e18u, 0x28e18u, repack_CB_COLOR7_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR7_ATTRIB", "" },
+    { 0x28e18u, 0x28e18u, repack11_CB_COLOR7_ATTRIB, XLAT12_CLS_FIELD_REPACK, "CB_COLOR7_ATTRIB", "" },
     /* g10 gfx103.json:6011, absent from gfx11.json, gc_10_3_0_offset.h:6530 */
     { 0x28e1cu, 0x00000u, 0, XLAT12_CLS_ABSENT, "CB_COLOR7_DCC_CONTROL", "CMASK/FMASK/DCC: a linear uncompressed color target has none" },
     /* g10 gfx103.json:6017, absent from gfx11.json, gc_10_3_0_offset.h:6532 */
@@ -1816,21 +1818,21 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:6288, g12 gfx11.json:5286, gc_10_3_0_offset.h:6624, gc_11_0_0_offset.h:6170 */
     { 0x28edcu, 0x28edcu, 0, XLAT12_CLS_IDENTICAL, "CB_COLOR7_ATTRIB2", "" },
     /* g10 gfx103.json:6294, g12 gfx11.json:5292, gc_10_3_0_offset.h:6626, gc_11_0_0_offset.h:6172 */
-    { 0x28ee0u, 0x28ee0u, repack_CB_COLOR0_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR0_ATTRIB3", "" },
+    { 0x28ee0u, 0x28ee0u, repack11_CB_COLOR0_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR0_ATTRIB3", "" },
     /* g10 gfx103.json:6300, g12 gfx11.json:5298, gc_10_3_0_offset.h:6628, gc_11_0_0_offset.h:6174 */
-    { 0x28ee4u, 0x28ee4u, repack_CB_COLOR1_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR1_ATTRIB3", "" },
+    { 0x28ee4u, 0x28ee4u, repack11_CB_COLOR1_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR1_ATTRIB3", "" },
     /* g10 gfx103.json:6306, g12 gfx11.json:5304, gc_10_3_0_offset.h:6630, gc_11_0_0_offset.h:6176 */
-    { 0x28ee8u, 0x28ee8u, repack_CB_COLOR2_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR2_ATTRIB3", "" },
+    { 0x28ee8u, 0x28ee8u, repack11_CB_COLOR2_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR2_ATTRIB3", "" },
     /* g10 gfx103.json:6312, g12 gfx11.json:5310, gc_10_3_0_offset.h:6632, gc_11_0_0_offset.h:6178 */
-    { 0x28eecu, 0x28eecu, repack_CB_COLOR3_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR3_ATTRIB3", "" },
+    { 0x28eecu, 0x28eecu, repack11_CB_COLOR3_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR3_ATTRIB3", "" },
     /* g10 gfx103.json:6318, g12 gfx11.json:5316, gc_10_3_0_offset.h:6634, gc_11_0_0_offset.h:6180 */
-    { 0x28ef0u, 0x28ef0u, repack_CB_COLOR4_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR4_ATTRIB3", "" },
+    { 0x28ef0u, 0x28ef0u, repack11_CB_COLOR4_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR4_ATTRIB3", "" },
     /* g10 gfx103.json:6324, g12 gfx11.json:5322, gc_10_3_0_offset.h:6636, gc_11_0_0_offset.h:6182 */
-    { 0x28ef4u, 0x28ef4u, repack_CB_COLOR5_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR5_ATTRIB3", "" },
+    { 0x28ef4u, 0x28ef4u, repack11_CB_COLOR5_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR5_ATTRIB3", "" },
     /* g10 gfx103.json:6330, g12 gfx11.json:5328, gc_10_3_0_offset.h:6638, gc_11_0_0_offset.h:6184 */
-    { 0x28ef8u, 0x28ef8u, repack_CB_COLOR6_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR6_ATTRIB3", "" },
+    { 0x28ef8u, 0x28ef8u, repack11_CB_COLOR6_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR6_ATTRIB3", "" },
     /* g10 gfx103.json:6336, g12 gfx11.json:5334, gc_10_3_0_offset.h:6640, gc_11_0_0_offset.h:6186 */
-    { 0x28efcu, 0x28efcu, repack_CB_COLOR7_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR7_ATTRIB3", "" },
+    { 0x28efcu, 0x28efcu, repack11_CB_COLOR7_ATTRIB3, XLAT12_CLS_FIELD_REPACK, "CB_COLOR7_ATTRIB3", "" },
     /* g10 gfx103.json:6342, g12 gfx11.json:5340, gc_10_3_0_offset.h:6646, gc_11_0_0_offset.h:6846 */
     { 0x30000u, 0x30000u, 0, XLAT12_CLS_IDENTICAL, "CP_EOP_DONE_ADDR_LO", "" },
     /* g10 gfx103.json:6348, g12 gfx11.json:5346, gc_10_3_0_offset.h:6648, gc_11_0_0_offset.h:6848 */
@@ -1982,7 +1984,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:6724, g12 gfx11.json:5617, gc_10_3_0_offset.h:6796, gc_11_0_0_offset.h:6956 */
     { 0x30160u, 0x30160u, 0, XLAT12_CLS_IDENTICAL, "CP_APPEND_ADDR_LO", "" },
     /* g10 gfx103.json:6730, g12 gfx11.json:5623, gc_10_3_0_offset.h:6798, gc_11_0_0_offset.h:6958 */
-    { 0x30164u, 0x30164u, repack_CP_APPEND_ADDR_HI, XLAT12_CLS_FIELD_REPACK, "CP_APPEND_ADDR_HI", "" },
+    { 0x30164u, 0x30164u, repack11_CP_APPEND_ADDR_HI, XLAT12_CLS_FIELD_REPACK, "CP_APPEND_ADDR_HI", "" },
     /* g10 gfx103.json:6736, g12 gfx11.json:5629, gc_10_3_0_offset.h:6800, gc_11_0_0_offset.h:6960 */
     { 0x30168u, 0x30168u, 0, XLAT12_CLS_IDENTICAL, "CP_APPEND_DATA", "" },
     /* g10 gfx103.json:6741, g12 gfx11.json:5634, gc_10_3_0_offset.h:6804, gc_11_0_0_offset.h:6964 */
@@ -2004,7 +2006,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:6781, g12 gfx11.json:5674, gc_10_3_0_offset.h:6836, gc_11_0_0_offset.h:6996 */
     { 0x301a4u, 0x301a4u, 0, XLAT12_CLS_IDENTICAL, "CP_ME_MC_WADDR_LO", "" },
     /* g10 gfx103.json:6787, g12 gfx11.json:5680, gc_10_3_0_offset.h:6838, gc_11_0_0_offset.h:6998 */
-    { 0x301a8u, 0x301a8u, repack_CP_ME_MC_WADDR_HI, XLAT12_CLS_FIELD_REPACK, "CP_ME_MC_WADDR_HI", "" },
+    { 0x301a8u, 0x301a8u, repack11_CP_ME_MC_WADDR_HI, XLAT12_CLS_FIELD_REPACK, "CP_ME_MC_WADDR_HI", "" },
     /* g10 gfx103.json:6793, g12 gfx11.json:5686, gc_10_3_0_offset.h:6840, gc_11_0_0_offset.h:7000 */
     { 0x301acu, 0x301acu, 0, XLAT12_CLS_IDENTICAL, "CP_ME_MC_WDATA_LO", "" },
     /* g10 gfx103.json:6798, g12 gfx11.json:5691, gc_10_3_0_offset.h:6842, gc_11_0_0_offset.h:7002 */
@@ -2012,7 +2014,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:6803, g12 gfx11.json:5696, gc_10_3_0_offset.h:6844, gc_11_0_0_offset.h:7004 */
     { 0x301b4u, 0x301b4u, 0, XLAT12_CLS_IDENTICAL, "CP_ME_MC_RADDR_LO", "" },
     /* g10 gfx103.json:6809, g12 gfx11.json:5702, gc_10_3_0_offset.h:6846, gc_11_0_0_offset.h:7006 */
-    { 0x301b8u, 0x301b8u, repack_CP_ME_MC_RADDR_HI, XLAT12_CLS_FIELD_REPACK, "CP_ME_MC_RADDR_HI", "" },
+    { 0x301b8u, 0x301b8u, repack11_CP_ME_MC_RADDR_HI, XLAT12_CLS_FIELD_REPACK, "CP_ME_MC_RADDR_HI", "" },
     /* g10 gfx103.json:6815, g12 gfx11.json:5708, gc_10_3_0_offset.h:6848, gc_11_0_0_offset.h:7008 */
     { 0x301bcu, 0x301bcu, 0, XLAT12_CLS_IDENTICAL, "CP_SEM_WAIT_TIMER", "" },
     /* g10 gfx103.json:6820, g12 gfx11.json:5713, gc_10_3_0_offset.h:6850, gc_11_0_0_offset.h:7010 */
@@ -2026,9 +2028,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:6843, g12 gfx11.json:5736, gc_10_3_0_offset.h:6858, gc_11_0_0_offset.h:7018 */
     { 0x301d8u, 0x301d8u, 0, XLAT12_CLS_IDENTICAL, "CP_WAIT_SEM_ADDR_HI", "" },
     /* g10 gfx103.json:6849, g12 gfx11.json:5742, gc_10_3_0_offset.h:6860, gc_11_0_0_offset.h:7020 */
-    { 0x301dcu, 0x301dcu, repack_CP_DMA_PFP_CONTROL, XLAT12_CLS_FIELD_REPACK, "CP_DMA_PFP_CONTROL", "" },
+    { 0x301dcu, 0x301dcu, repack11_CP_DMA_PFP_CONTROL, XLAT12_CLS_FIELD_REPACK, "CP_DMA_PFP_CONTROL", "" },
     /* g10 gfx103.json:6855, g12 gfx11.json:5748, gc_10_3_0_offset.h:6862, gc_11_0_0_offset.h:7022 */
-    { 0x301e0u, 0x301e0u, repack_CP_DMA_ME_CONTROL, XLAT12_CLS_FIELD_REPACK, "CP_DMA_ME_CONTROL", "" },
+    { 0x301e0u, 0x301e0u, repack11_CP_DMA_ME_CONTROL, XLAT12_CLS_FIELD_REPACK, "CP_DMA_ME_CONTROL", "" },
     /* g10 gfx103.json:6861, absent from gfx11.json, gc_10_3_0_offset.h:6864 */
     { 0x301e4u, 0x00000u, 0, XLAT12_CLS_ABSENT, "CP_COHER_BASE_HI", "no gfx11 register of this name; unused by a first triangle" },
     /* g10 gfx103.json:6867, absent from gfx11.json, gc_10_3_0_offset.h:6866 */
@@ -2070,7 +2072,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:6969, g12 gfx11.json:5822, gc_10_3_0_offset.h:6902, gc_11_0_0_offset.h:7048 */
     { 0x30234u, 0x30234u, 0, XLAT12_CLS_IDENTICAL, "CP_PFP_IB_CONTROL", "" },
     /* g10 gfx103.json:6975, g12 gfx11.json:5828, gc_10_3_0_offset.h:6904, gc_11_0_0_offset.h:7050 */
-    { 0x30238u, 0x30238u, repack_CP_PFP_LOAD_CONTROL, XLAT12_CLS_FIELD_REPACK, "CP_PFP_LOAD_CONTROL", "" },
+    { 0x30238u, 0x30238u, repack11_CP_PFP_LOAD_CONTROL, XLAT12_CLS_FIELD_REPACK, "CP_PFP_LOAD_CONTROL", "" },
     /* g10 gfx103.json:6981, g12 gfx11.json:5834, gc_10_3_0_offset.h:6906, gc_11_0_0_offset.h:7052 */
     { 0x3023cu, 0x3023cu, 0, XLAT12_CLS_IDENTICAL, "CP_SCRATCH_INDEX", "" },
     /* g10 gfx103.json:6987, g12 gfx11.json:5840, gc_10_3_0_offset.h:6908, gc_11_0_0_offset.h:7054 */
@@ -2164,9 +2166,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:7241, g12 gfx11.json:5977, gc_10_3_0_offset.h:6998, gc_11_0_0_offset.h:7110 */
     { 0x30350u, 0x30350u, 0, XLAT12_CLS_IDENTICAL, "CP_ST_BUFSZ", "" },
     /* g10 gfx103.json:7247, g12 gfx11.json:5983, gc_10_3_0_offset.h:7000, gc_11_0_0_offset.h:7112 */
-    { 0x30354u, 0x30354u, repack_CP_EOP_DONE_EVENT_CNTL, XLAT12_CLS_FIELD_REPACK, "CP_EOP_DONE_EVENT_CNTL", "" },
+    { 0x30354u, 0x30354u, repack11_CP_EOP_DONE_EVENT_CNTL, XLAT12_CLS_FIELD_REPACK, "CP_EOP_DONE_EVENT_CNTL", "" },
     /* g10 gfx103.json:7253, g12 gfx11.json:5989, gc_10_3_0_offset.h:7002, gc_11_0_0_offset.h:7114 */
-    { 0x30358u, 0x30358u, repack_CP_EOP_DONE_DATA_CNTL, XLAT12_CLS_FIELD_REPACK, "CP_EOP_DONE_DATA_CNTL", "" },
+    { 0x30358u, 0x30358u, repack11_CP_EOP_DONE_DATA_CNTL, XLAT12_CLS_FIELD_REPACK, "CP_EOP_DONE_DATA_CNTL", "" },
     /* g10 gfx103.json:7259, g12 gfx11.json:5995, gc_10_3_0_offset.h:7004, gc_11_0_0_offset.h:7116 */
     { 0x3035cu, 0x3035cu, 0, XLAT12_CLS_IDENTICAL, "CP_EOP_DONE_CNTX_ID", "" },
     /* g10 gfx103.json:7264, g12 gfx11.json:6000, gc_10_3_0_offset.h:7006, gc_11_0_0_offset.h:7118 */
@@ -2258,13 +2260,13 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:7507, g12 gfx11.json:6172, gc_10_3_0_offset.h:7092, gc_11_0_0_offset.h:7178 */
     { 0x30928u, 0x30928u, 0, XLAT12_CLS_IDENTICAL, "GE_INDX_OFFSET", "" },
     /* g10 gfx103.json:7512, g12 gfx11.json:6177, gc_10_3_0_offset.h:7094, gc_11_0_0_offset.h:7180 */
-    { 0x3092cu, 0x3092cu, repack_GE_MULTI_PRIM_IB_RESET_EN, XLAT12_CLS_FIELD_REPACK, "GE_MULTI_PRIM_IB_RESET_EN", "" },
+    { 0x3092cu, 0x3092cu, repack11_GE_MULTI_PRIM_IB_RESET_EN, XLAT12_CLS_FIELD_REPACK, "GE_MULTI_PRIM_IB_RESET_EN", "" },
     /* g10 gfx103.json:7518, g12 gfx11.json:6183, gc_10_3_0_offset.h:7096, gc_11_0_0_offset.h:7182 */
     { 0x30930u, 0x30930u, 0, XLAT12_CLS_IDENTICAL, "VGT_NUM_INDICES", "" },
     /* g10 gfx103.json:7523, g12 gfx11.json:6188, gc_10_3_0_offset.h:7098, gc_11_0_0_offset.h:7184 */
     { 0x30934u, 0x30934u, 0, XLAT12_CLS_IDENTICAL, "VGT_NUM_INSTANCES", "" },
     /* g10 gfx103.json:7528, g12 gfx11.json:6193, gc_10_3_0_offset.h:7100, gc_11_0_0_offset.h:7186 */
-    { 0x30938u, 0x30938u, repack_VGT_TF_RING_SIZE, XLAT12_CLS_FIELD_REPACK, "VGT_TF_RING_SIZE", "" },
+    { 0x30938u, 0x30938u, repack11_VGT_TF_RING_SIZE, XLAT12_CLS_FIELD_REPACK, "VGT_TF_RING_SIZE", "" },
     /* g10 gfx103.json:7534, g12 gfx11.json:6199, gc_10_3_0_offset.h:7102, gc_11_0_0_offset.h:7188 */
     { 0x3093cu, 0x3093cu, 0, XLAT12_CLS_IDENTICAL, "VGT_HS_OFFCHIP_PARAM", "" },
     /* g10 gfx103.json:7540, g12 gfx11.json:6205, gc_10_3_0_offset.h:7104, gc_11_0_0_offset.h:7190 */
@@ -2290,7 +2292,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:7594, g12 gfx11.json:6215, gc_10_3_0_offset.h:7124, gc_11_0_0_offset.h:7194 */
     { 0x30968u, 0x30968u, 0, XLAT12_CLS_IDENTICAL, "VGT_INSTANCE_BASE_ID", "" },
     /* g10 gfx103.json:7599, g12 gfx11.json:6220, gc_10_3_0_offset.h:7126, gc_11_0_0_offset.h:7196 */
-    { 0x3096cu, 0x3096cu, repack_GE_CNTL, XLAT12_CLS_FIELD_REPACK, "GE_CNTL", "" },
+    { 0x3096cu, 0x3096cu, repack11_GE_CNTL, XLAT12_CLS_FIELD_REPACK, "GE_CNTL", "" },
     /* g10 gfx103.json:7605, g12 gfx11.json:6226, gc_10_3_0_offset.h:7128, gc_11_0_0_offset.h:7198 */
     { 0x30970u, 0x30970u, 0, XLAT12_CLS_IDENTICAL, "GE_USER_VGPR1", "" },
     /* g10 gfx103.json:7610, g12 gfx11.json:6231, gc_10_3_0_offset.h:7130, gc_11_0_0_offset.h:7200 */
@@ -2364,7 +2366,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:7805, g12 gfx11.json:6444, gc_10_3_0_offset.h:7198, gc_11_0_0_offset.h:7274 */
     { 0x30d1cu, 0x30d1cu, 0, XLAT12_CLS_IDENTICAL, "SQ_THREAD_TRACE_USERDATA_7", "" },
     /* g10 gfx103.json:7810, g12 gfx11.json:6449, gc_10_3_0_offset.h:7200, gc_11_0_0_offset.h:7276 */
-    { 0x30d20u, 0x30d20u, repack_SQC_CACHES, XLAT12_CLS_FIELD_REPACK, "SQC_CACHES", "" },
+    { 0x30d20u, 0x30d20u, repack11_SQC_CACHES, XLAT12_CLS_FIELD_REPACK, "SQC_CACHES", "" },
     /* g10 gfx103.json:7816, g12 gfx11.json:6455, gc_10_3_0_offset.h:7202, gc_11_0_0_offset.h:7278 */
     { 0x30e00u, 0x30e00u, 0, XLAT12_CLS_IDENTICAL, "TA_CS_BC_BASE_ADDR", "" },
     /* g10 gfx103.json:7821, g12 gfx11.json:6460, gc_10_3_0_offset.h:7204, gc_11_0_0_offset.h:7280 */
@@ -2414,9 +2416,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:7938, g12 gfx11.json:6566, gc_10_3_0_offset.h:7248, gc_11_0_0_offset.h:7320 */
     { 0x3102cu, 0x3102cu, 0, XLAT12_CLS_IDENTICAL, "GDS_ATOM_COMPLETE", "" },
     /* g10 gfx103.json:7944, g12 gfx11.json:6572, gc_10_3_0_offset.h:7250, gc_11_0_0_offset.h:7322 */
-    { 0x31030u, 0x31030u, repack_GDS_ATOM_BASE, XLAT12_CLS_FIELD_REPACK, "GDS_ATOM_BASE", "" },
+    { 0x31030u, 0x31030u, repack11_GDS_ATOM_BASE, XLAT12_CLS_FIELD_REPACK, "GDS_ATOM_BASE", "" },
     /* g10 gfx103.json:7950, g12 gfx11.json:6578, gc_10_3_0_offset.h:7252, gc_11_0_0_offset.h:7324 */
-    { 0x31034u, 0x31034u, repack_GDS_ATOM_SIZE, XLAT12_CLS_FIELD_REPACK, "GDS_ATOM_SIZE", "" },
+    { 0x31034u, 0x31034u, repack11_GDS_ATOM_SIZE, XLAT12_CLS_FIELD_REPACK, "GDS_ATOM_SIZE", "" },
     /* g10 gfx103.json:7956, g12 gfx11.json:6584, gc_10_3_0_offset.h:7254, gc_11_0_0_offset.h:7326 */
     { 0x31038u, 0x31038u, 0, XLAT12_CLS_IDENTICAL, "GDS_ATOM_OFFSET0", "" },
     /* g10 gfx103.json:7962, g12 gfx11.json:6590, gc_10_3_0_offset.h:7256, gc_11_0_0_offset.h:7328 */
@@ -2444,7 +2446,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:8019, g12 gfx11.json:6647, gc_10_3_0_offset.h:7278, gc_11_0_0_offset.h:7350 */
     { 0x31068u, 0x31068u, 0, XLAT12_CLS_IDENTICAL, "GDS_GWS_RESOURCE_CNTL", "" },
     /* g10 gfx103.json:8025, g12 gfx11.json:6653, gc_10_3_0_offset.h:7280, gc_11_0_0_offset.h:7352 */
-    { 0x3106cu, 0x3106cu, repack_GDS_GWS_RESOURCE, XLAT12_CLS_FIELD_REPACK, "GDS_GWS_RESOURCE", "" },
+    { 0x3106cu, 0x3106cu, repack11_GDS_GWS_RESOURCE, XLAT12_CLS_FIELD_REPACK, "GDS_GWS_RESOURCE", "" },
     /* g10 gfx103.json:8031, g12 gfx11.json:6659, gc_10_3_0_offset.h:7282, gc_11_0_0_offset.h:7354 */
     { 0x31070u, 0x31070u, 0, XLAT12_CLS_IDENTICAL, "GDS_GWS_RESOURCE_CNT", "" },
     /* g10 gfx103.json:8037, g12 gfx11.json:6665, gc_10_3_0_offset.h:7284, gc_11_0_0_offset.h:7356 */
@@ -3064,17 +3066,17 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:9583, absent from gfx11.json, gc_10_3_0_offset.h:8402 */
     { 0x35a24u, 0x00000u, 0, XLAT12_CLS_ABSENT, "SDMA3_PERFCOUNTER1_HI", "no gfx11 register of this name; unused by a first triangle" },
     /* g10 gfx103.json:9588, g12 gfx11.json:8409, gc_10_3_0_offset.h:8408, gc_11_0_0_offset.h:9008 */
-    { 0x36000u, 0x36000u, repack_CPG_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "CPG_PERFCOUNTER1_SELECT", "" },
+    { 0x36000u, 0x36000u, repack11_CPG_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "CPG_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:9594, g12 gfx11.json:8415, gc_10_3_0_offset.h:8410, gc_11_0_0_offset.h:9010 */
     { 0x36004u, 0x36004u, 0, XLAT12_CLS_IDENTICAL, "CPG_PERFCOUNTER0_SELECT1", "" },
     /* g10 gfx103.json:9600, g12 gfx11.json:8421, gc_10_3_0_offset.h:8412, gc_11_0_0_offset.h:9012 */
     { 0x36008u, 0x36008u, 0, XLAT12_CLS_IDENTICAL, "CPG_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:9606, g12 gfx11.json:8427, gc_10_3_0_offset.h:8414, gc_11_0_0_offset.h:9014 */
-    { 0x3600cu, 0x3600cu, repack_CPC_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "CPC_PERFCOUNTER1_SELECT", "" },
+    { 0x3600cu, 0x3600cu, repack11_CPC_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "CPC_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:9612, g12 gfx11.json:8433, gc_10_3_0_offset.h:8416, gc_11_0_0_offset.h:9016 */
     { 0x36010u, 0x36010u, 0, XLAT12_CLS_IDENTICAL, "CPC_PERFCOUNTER0_SELECT1", "" },
     /* g10 gfx103.json:9618, g12 gfx11.json:8439, gc_10_3_0_offset.h:8418, gc_11_0_0_offset.h:9018 */
-    { 0x36014u, 0x36014u, repack_CPF_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "CPF_PERFCOUNTER1_SELECT", "" },
+    { 0x36014u, 0x36014u, repack11_CPF_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "CPF_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:9624, g12 gfx11.json:8445, gc_10_3_0_offset.h:8420, gc_11_0_0_offset.h:9020 */
     { 0x36018u, 0x36018u, 0, XLAT12_CLS_IDENTICAL, "CPF_PERFCOUNTER0_SELECT1", "" },
     /* g10 gfx103.json:9630, g12 gfx11.json:8451, gc_10_3_0_offset.h:8422, gc_11_0_0_offset.h:9022 */
@@ -3110,65 +3112,65 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:9717, g12 gfx11.json:8544, gc_10_3_0_offset.h:8452, gc_11_0_0_offset.h:9054 */
     { 0x36104u, 0x36104u, 0, XLAT12_CLS_IDENTICAL, "GRBM_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:9723, g12 gfx11.json:8550, gc_10_3_0_offset.h:8454, gc_11_0_0_offset.h:9056 */
-    { 0x36108u, 0x36108u, repack_GRBM_SE0_PERFCOUNTER_SELECT, XLAT12_CLS_FIELD_REPACK, "GRBM_SE0_PERFCOUNTER_SELECT", "" },
+    { 0x36108u, 0x36108u, repack11_GRBM_SE0_PERFCOUNTER_SELECT, XLAT12_CLS_FIELD_REPACK, "GRBM_SE0_PERFCOUNTER_SELECT", "" },
     /* g10 gfx103.json:9729, g12 gfx11.json:8556, gc_10_3_0_offset.h:8456, gc_11_0_0_offset.h:9058 */
-    { 0x3610cu, 0x3610cu, repack_GRBM_SE1_PERFCOUNTER_SELECT, XLAT12_CLS_FIELD_REPACK, "GRBM_SE1_PERFCOUNTER_SELECT", "" },
+    { 0x3610cu, 0x3610cu, repack11_GRBM_SE1_PERFCOUNTER_SELECT, XLAT12_CLS_FIELD_REPACK, "GRBM_SE1_PERFCOUNTER_SELECT", "" },
     /* g10 gfx103.json:9735, g12 gfx11.json:8562, gc_10_3_0_offset.h:8458, gc_11_0_0_offset.h:9060 */
-    { 0x36110u, 0x36110u, repack_GRBM_SE2_PERFCOUNTER_SELECT, XLAT12_CLS_FIELD_REPACK, "GRBM_SE2_PERFCOUNTER_SELECT", "" },
+    { 0x36110u, 0x36110u, repack11_GRBM_SE2_PERFCOUNTER_SELECT, XLAT12_CLS_FIELD_REPACK, "GRBM_SE2_PERFCOUNTER_SELECT", "" },
     /* g10 gfx103.json:9741, g12 gfx11.json:8568, gc_10_3_0_offset.h:8460, gc_11_0_0_offset.h:9062 */
-    { 0x36114u, 0x36114u, repack_GRBM_SE3_PERFCOUNTER_SELECT, XLAT12_CLS_FIELD_REPACK, "GRBM_SE3_PERFCOUNTER_SELECT", "" },
+    { 0x36114u, 0x36114u, repack11_GRBM_SE3_PERFCOUNTER_SELECT, XLAT12_CLS_FIELD_REPACK, "GRBM_SE3_PERFCOUNTER_SELECT", "" },
     /* g10 gfx103.json:9747, g12 gfx11.json:8592, gc_10_3_0_offset.h:8462, gc_11_0_0_offset.h:9070 */
-    { 0x36134u, 0x36134u, repack_GRBM_PERFCOUNTER0_SELECT_HI, XLAT12_CLS_FIELD_REPACK, "GRBM_PERFCOUNTER0_SELECT_HI", "" },
+    { 0x36134u, 0x36134u, repack11_GRBM_PERFCOUNTER0_SELECT_HI, XLAT12_CLS_FIELD_REPACK, "GRBM_PERFCOUNTER0_SELECT_HI", "" },
     /* g10 gfx103.json:9753, g12 gfx11.json:8598, gc_10_3_0_offset.h:8464, gc_11_0_0_offset.h:9072 */
-    { 0x36138u, 0x36138u, repack_GRBM_PERFCOUNTER1_SELECT_HI, XLAT12_CLS_FIELD_REPACK, "GRBM_PERFCOUNTER1_SELECT_HI", "" },
+    { 0x36138u, 0x36138u, repack11_GRBM_PERFCOUNTER1_SELECT_HI, XLAT12_CLS_FIELD_REPACK, "GRBM_PERFCOUNTER1_SELECT_HI", "" },
     /* g10 gfx103.json:9759, g12 gfx11.json:8604, gc_10_3_0_offset.h:8466, gc_11_0_0_offset.h:9074 */
-    { 0x36290u, 0x36290u, repack_GE1_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER0_SELECT", "" },
+    { 0x36290u, 0x36290u, repack11_GE1_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:9765, g12 gfx11.json:8610, gc_10_3_0_offset.h:8468, gc_11_0_0_offset.h:9076 */
-    { 0x36294u, 0x36294u, repack_GE1_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER0_SELECT1", "" },
+    { 0x36294u, 0x36294u, repack11_GE1_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER0_SELECT1", "" },
     /* g10 gfx103.json:9771, g12 gfx11.json:8616, gc_10_3_0_offset.h:8470, gc_11_0_0_offset.h:9078 */
-    { 0x36298u, 0x36298u, repack_GE1_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER1_SELECT", "" },
+    { 0x36298u, 0x36298u, repack11_GE1_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:9777, g12 gfx11.json:8622, gc_10_3_0_offset.h:8472, gc_11_0_0_offset.h:9080 */
-    { 0x3629cu, 0x3629cu, repack_GE1_PERFCOUNTER1_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER1_SELECT1", "" },
+    { 0x3629cu, 0x3629cu, repack11_GE1_PERFCOUNTER1_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER1_SELECT1", "" },
     /* g10 gfx103.json:9783, g12 gfx11.json:8628, gc_10_3_0_offset.h:8474, gc_11_0_0_offset.h:9082 */
-    { 0x362a0u, 0x362a0u, repack_GE1_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER2_SELECT", "" },
+    { 0x362a0u, 0x362a0u, repack11_GE1_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER2_SELECT", "" },
     /* g10 gfx103.json:9789, g12 gfx11.json:8634, gc_10_3_0_offset.h:8476, gc_11_0_0_offset.h:9084 */
-    { 0x362a4u, 0x362a4u, repack_GE1_PERFCOUNTER2_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER2_SELECT1", "" },
+    { 0x362a4u, 0x362a4u, repack11_GE1_PERFCOUNTER2_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER2_SELECT1", "" },
     /* g10 gfx103.json:9795, g12 gfx11.json:8640, gc_10_3_0_offset.h:8478, gc_11_0_0_offset.h:9086 */
-    { 0x362a8u, 0x362a8u, repack_GE1_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER3_SELECT", "" },
+    { 0x362a8u, 0x362a8u, repack11_GE1_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER3_SELECT", "" },
     /* g10 gfx103.json:9801, g12 gfx11.json:8646, gc_10_3_0_offset.h:8480, gc_11_0_0_offset.h:9088 */
-    { 0x362acu, 0x362acu, repack_GE1_PERFCOUNTER3_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER3_SELECT1", "" },
+    { 0x362acu, 0x362acu, repack11_GE1_PERFCOUNTER3_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE1_PERFCOUNTER3_SELECT1", "" },
     /* g10 gfx103.json:9807, g12 gfx11.json:8652, gc_10_3_0_offset.h:8482, gc_11_0_0_offset.h:9090 */
-    { 0x362b0u, 0x362b0u, repack_GE2_DIST_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER0_SELECT", "" },
+    { 0x362b0u, 0x362b0u, repack11_GE2_DIST_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:9813, g12 gfx11.json:8658, gc_10_3_0_offset.h:8484, gc_11_0_0_offset.h:9092 */
-    { 0x362b4u, 0x362b4u, repack_GE2_DIST_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER0_SELECT1", "" },
+    { 0x362b4u, 0x362b4u, repack11_GE2_DIST_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER0_SELECT1", "" },
     /* g10 gfx103.json:9819, g12 gfx11.json:8664, gc_10_3_0_offset.h:8486, gc_11_0_0_offset.h:9094 */
-    { 0x362b8u, 0x362b8u, repack_GE2_DIST_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER1_SELECT", "" },
+    { 0x362b8u, 0x362b8u, repack11_GE2_DIST_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:9825, g12 gfx11.json:8670, gc_10_3_0_offset.h:8488, gc_11_0_0_offset.h:9096 */
-    { 0x362bcu, 0x362bcu, repack_GE2_DIST_PERFCOUNTER1_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER1_SELECT1", "" },
+    { 0x362bcu, 0x362bcu, repack11_GE2_DIST_PERFCOUNTER1_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER1_SELECT1", "" },
     /* g10 gfx103.json:9831, g12 gfx11.json:8676, gc_10_3_0_offset.h:8490, gc_11_0_0_offset.h:9098 */
-    { 0x362c0u, 0x362c0u, repack_GE2_DIST_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER2_SELECT", "" },
+    { 0x362c0u, 0x362c0u, repack11_GE2_DIST_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER2_SELECT", "" },
     /* g10 gfx103.json:9837, g12 gfx11.json:8682, gc_10_3_0_offset.h:8492, gc_11_0_0_offset.h:9100 */
-    { 0x362c4u, 0x362c4u, repack_GE2_DIST_PERFCOUNTER2_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER2_SELECT1", "" },
+    { 0x362c4u, 0x362c4u, repack11_GE2_DIST_PERFCOUNTER2_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER2_SELECT1", "" },
     /* g10 gfx103.json:9843, g12 gfx11.json:8688, gc_10_3_0_offset.h:8494, gc_11_0_0_offset.h:9102 */
-    { 0x362c8u, 0x362c8u, repack_GE2_DIST_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER3_SELECT", "" },
+    { 0x362c8u, 0x362c8u, repack11_GE2_DIST_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER3_SELECT", "" },
     /* g10 gfx103.json:9849, g12 gfx11.json:8694, gc_10_3_0_offset.h:8496, gc_11_0_0_offset.h:9104 */
-    { 0x362ccu, 0x362ccu, repack_GE2_DIST_PERFCOUNTER3_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER3_SELECT1", "" },
+    { 0x362ccu, 0x362ccu, repack11_GE2_DIST_PERFCOUNTER3_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_DIST_PERFCOUNTER3_SELECT1", "" },
     /* g10 gfx103.json:9855, g12 gfx11.json:8700, gc_10_3_0_offset.h:8498, gc_11_0_0_offset.h:9106 */
-    { 0x362d0u, 0x362d0u, repack_GE2_SE_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER0_SELECT", "" },
+    { 0x362d0u, 0x362d0u, repack11_GE2_SE_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:9861, g12 gfx11.json:8706, gc_10_3_0_offset.h:8500, gc_11_0_0_offset.h:9108 */
-    { 0x362d4u, 0x362d4u, repack_GE2_SE_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER0_SELECT1", "" },
+    { 0x362d4u, 0x362d4u, repack11_GE2_SE_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER0_SELECT1", "" },
     /* g10 gfx103.json:9867, g12 gfx11.json:8712, gc_10_3_0_offset.h:8502, gc_11_0_0_offset.h:9110 */
-    { 0x362d8u, 0x362d8u, repack_GE2_SE_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER1_SELECT", "" },
+    { 0x362d8u, 0x362d8u, repack11_GE2_SE_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:9873, g12 gfx11.json:8718, gc_10_3_0_offset.h:8504, gc_11_0_0_offset.h:9112 */
-    { 0x362dcu, 0x362dcu, repack_GE2_SE_PERFCOUNTER1_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER1_SELECT1", "" },
+    { 0x362dcu, 0x362dcu, repack11_GE2_SE_PERFCOUNTER1_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER1_SELECT1", "" },
     /* g10 gfx103.json:9879, g12 gfx11.json:8724, gc_10_3_0_offset.h:8506, gc_11_0_0_offset.h:9114 */
-    { 0x362e0u, 0x362e0u, repack_GE2_SE_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER2_SELECT", "" },
+    { 0x362e0u, 0x362e0u, repack11_GE2_SE_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER2_SELECT", "" },
     /* g10 gfx103.json:9885, g12 gfx11.json:8730, gc_10_3_0_offset.h:8508, gc_11_0_0_offset.h:9116 */
-    { 0x362e4u, 0x362e4u, repack_GE2_SE_PERFCOUNTER2_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER2_SELECT1", "" },
+    { 0x362e4u, 0x362e4u, repack11_GE2_SE_PERFCOUNTER2_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER2_SELECT1", "" },
     /* g10 gfx103.json:9891, g12 gfx11.json:8736, gc_10_3_0_offset.h:8510, gc_11_0_0_offset.h:9118 */
-    { 0x362e8u, 0x362e8u, repack_GE2_SE_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER3_SELECT", "" },
+    { 0x362e8u, 0x362e8u, repack11_GE2_SE_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER3_SELECT", "" },
     /* g10 gfx103.json:9897, g12 gfx11.json:8742, gc_10_3_0_offset.h:8512, gc_11_0_0_offset.h:9120 */
-    { 0x362ecu, 0x362ecu, repack_GE2_SE_PERFCOUNTER3_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER3_SELECT1", "" },
+    { 0x362ecu, 0x362ecu, repack11_GE2_SE_PERFCOUNTER3_SELECT1, XLAT12_CLS_FIELD_REPACK, "GE2_SE_PERFCOUNTER3_SELECT1", "" },
     /* g10 gfx103.json:9903, g12 gfx11.json:8748, gc_10_3_0_offset.h:8514, gc_11_0_0_offset.h:9122 */
     { 0x36400u, 0x36400u, 0, XLAT12_CLS_IDENTICAL, "PA_SU_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:9909, g12 gfx11.json:8754, gc_10_3_0_offset.h:8516, gc_11_0_0_offset.h:9124 */
@@ -3258,9 +3260,9 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:10161, g12 gfx11.json:9054, gc_10_3_0_offset.h:8600, gc_11_0_0_offset.h:9224 */
     { 0x3673cu, 0x3673cu, 0, XLAT12_CLS_IDENTICAL, "SQ_PERFCOUNTER15_SELECT", "" },
     /* g10 gfx103.json:10167, g12 gfx11.json:9126, gc_10_3_0_offset.h:8602, gc_11_0_0_offset.h:9248 */
-    { 0x36780u, 0x36780u, repack_SQ_PERFCOUNTER_CTRL, XLAT12_CLS_FIELD_REPACK, "SQ_PERFCOUNTER_CTRL", "" },
+    { 0x36780u, 0x36780u, repack11_SQ_PERFCOUNTER_CTRL, XLAT12_CLS_FIELD_REPACK, "SQ_PERFCOUNTER_CTRL", "" },
     /* g10 gfx103.json:10173, g12 gfx11.json:9132, gc_10_3_0_offset.h:8604, gc_11_0_0_offset.h:9250 */
-    { 0x36788u, 0x36788u, repack_SQ_PERFCOUNTER_CTRL2, XLAT12_CLS_FIELD_REPACK, "SQ_PERFCOUNTER_CTRL2", "" },
+    { 0x36788u, 0x36788u, repack11_SQ_PERFCOUNTER_CTRL2, XLAT12_CLS_FIELD_REPACK, "SQ_PERFCOUNTER_CTRL2", "" },
     /* g10 gfx103.json:10179, g12 gfx11.json:9221, gc_10_3_0_offset.h:8606, gc_11_0_0_offset.h:9282 */
     { 0x36800u, 0x36800u, 0, XLAT12_CLS_IDENTICAL, "GCEA_PERFCOUNTER2_SELECT", "" },
     /* g10 gfx103.json:10185, g12 gfx11.json:9227, gc_10_3_0_offset.h:8608, gc_11_0_0_offset.h:9284 */
@@ -3382,15 +3384,15 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:10533, g12 gfx11.json:9575, gc_10_3_0_offset.h:8724, gc_11_0_0_offset.h:9400 */
     { 0x37000u, 0x37000u, 0, XLAT12_CLS_IDENTICAL, "CB_PERFCOUNTER_FILTER", "" },
     /* g10 gfx103.json:10539, g12 gfx11.json:9581, gc_10_3_0_offset.h:8726, gc_11_0_0_offset.h:9402 */
-    { 0x37004u, 0x37004u, repack_CB_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER0_SELECT", "" },
+    { 0x37004u, 0x37004u, repack11_CB_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:10545, g12 gfx11.json:9587, gc_10_3_0_offset.h:8728, gc_11_0_0_offset.h:9404 */
-    { 0x37008u, 0x37008u, repack_CB_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER0_SELECT1", "" },
+    { 0x37008u, 0x37008u, repack11_CB_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER0_SELECT1", "" },
     /* g10 gfx103.json:10551, g12 gfx11.json:9593, gc_10_3_0_offset.h:8730, gc_11_0_0_offset.h:9406 */
-    { 0x3700cu, 0x3700cu, repack_CB_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER1_SELECT", "" },
+    { 0x3700cu, 0x3700cu, repack11_CB_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:10557, g12 gfx11.json:9599, gc_10_3_0_offset.h:8732, gc_11_0_0_offset.h:9408 */
-    { 0x37010u, 0x37010u, repack_CB_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER2_SELECT", "" },
+    { 0x37010u, 0x37010u, repack11_CB_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER2_SELECT", "" },
     /* g10 gfx103.json:10563, g12 gfx11.json:9605, gc_10_3_0_offset.h:8734, gc_11_0_0_offset.h:9410 */
-    { 0x37014u, 0x37014u, repack_CB_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER3_SELECT", "" },
+    { 0x37014u, 0x37014u, repack11_CB_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "CB_PERFCOUNTER3_SELECT", "" },
     /* g10 gfx103.json:10569, g12 gfx11.json:9611, gc_10_3_0_offset.h:8736, gc_11_0_0_offset.h:9412 */
     { 0x37100u, 0x37100u, 0, XLAT12_CLS_IDENTICAL, "DB_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:10575, g12 gfx11.json:9617, gc_10_3_0_offset.h:8738, gc_11_0_0_offset.h:9414 */
@@ -3404,7 +3406,7 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:10599, g12 gfx11.json:9641, gc_10_3_0_offset.h:8746, gc_11_0_0_offset.h:9422 */
     { 0x37118u, 0x37118u, 0, XLAT12_CLS_IDENTICAL, "DB_PERFCOUNTER3_SELECT", "" },
     /* g10 gfx103.json:10605, g12 gfx11.json:9647, gc_10_3_0_offset.h:8748, gc_11_0_0_offset.h:9424 */
-    { 0x37200u, 0x37200u, repack_RLC_SPM_PERFMON_CNTL, XLAT12_CLS_FIELD_REPACK, "RLC_SPM_PERFMON_CNTL", "" },
+    { 0x37200u, 0x37200u, repack11_RLC_SPM_PERFMON_CNTL, XLAT12_CLS_FIELD_REPACK, "RLC_SPM_PERFMON_CNTL", "" },
     /* g10 gfx103.json:10611, g12 gfx11.json:9653, gc_10_3_0_offset.h:8750, gc_11_0_0_offset.h:9426 */
     { 0x37204u, 0x37204u, 0, XLAT12_CLS_IDENTICAL, "RLC_SPM_PERFMON_RING_BASE_LO", "" },
     /* g10 gfx103.json:10616, g12 gfx11.json:9658, gc_10_3_0_offset.h:8752, gc_11_0_0_offset.h:9428 */
@@ -3454,11 +3456,11 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:10741, g12 gfx11.json:9744, gc_10_3_0_offset.h:8796, gc_11_0_0_offset.h:9458 */
     { 0x37260u, 0x3725cu, 0, XLAT12_CLS_MOVED, "RLC_SPM_ACCUM_CTRLRAM_DATA", "" },
     /* g10 gfx103.json:10747, g12 gfx11.json:9756, gc_10_3_0_offset.h:8798, gc_11_0_0_offset.h:9462 */
-    { 0x37264u, 0x37264u, repack_RLC_SPM_ACCUM_STATUS, XLAT12_CLS_FIELD_REPACK, "RLC_SPM_ACCUM_STATUS", "" },
+    { 0x37264u, 0x37264u, repack11_RLC_SPM_ACCUM_STATUS, XLAT12_CLS_FIELD_REPACK, "RLC_SPM_ACCUM_STATUS", "" },
     /* g10 gfx103.json:10753, g12 gfx11.json:9762, gc_10_3_0_offset.h:8800, gc_11_0_0_offset.h:9464 */
     { 0x37268u, 0x37268u, 0, XLAT12_CLS_IDENTICAL, "RLC_SPM_ACCUM_CTRL", "" },
     /* g10 gfx103.json:10759, g12 gfx11.json:9768, gc_10_3_0_offset.h:8802, gc_11_0_0_offset.h:9466 */
-    { 0x3726cu, 0x3726cu, repack_RLC_SPM_ACCUM_MODE, XLAT12_CLS_FIELD_REPACK, "RLC_SPM_ACCUM_MODE", "" },
+    { 0x3726cu, 0x3726cu, repack11_RLC_SPM_ACCUM_MODE, XLAT12_CLS_FIELD_REPACK, "RLC_SPM_ACCUM_MODE", "" },
     /* g10 gfx103.json:10765, g12 gfx11.json:9774, gc_10_3_0_offset.h:8804, gc_11_0_0_offset.h:9468 */
     { 0x37270u, 0x37270u, 0, XLAT12_CLS_IDENTICAL, "RLC_SPM_ACCUM_THRESHOLD", "" },
     /* g10 gfx103.json:10771, g12 gfx11.json:9780, gc_10_3_0_offset.h:8806, gc_11_0_0_offset.h:9470 */
@@ -3514,17 +3516,17 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:10916, absent from gfx11.json, gc_10_3_0_offset.h:8856 */
     { 0x37390u, 0x00000u, 0, XLAT12_CLS_ABSENT, "RLC_PERFMON_CLK_CNTL", "feature removed on gfx11 / unused for a minimal draw" },
     /* g10 gfx103.json:10922, g12 gfx11.json:9945, gc_10_3_0_offset.h:8858, gc_11_0_0_offset.h:9528 */
-    { 0x37400u, 0x37400u, repack_RMI_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER0_SELECT", "" },
+    { 0x37400u, 0x37400u, repack11_RMI_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:10928, g12 gfx11.json:9951, gc_10_3_0_offset.h:8860, gc_11_0_0_offset.h:9530 */
-    { 0x37404u, 0x37404u, repack_RMI_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER0_SELECT1", "" },
+    { 0x37404u, 0x37404u, repack11_RMI_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER0_SELECT1", "" },
     /* g10 gfx103.json:10934, g12 gfx11.json:9957, gc_10_3_0_offset.h:8862, gc_11_0_0_offset.h:9532 */
-    { 0x37408u, 0x37408u, repack_RMI_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER1_SELECT", "" },
+    { 0x37408u, 0x37408u, repack11_RMI_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:10940, g12 gfx11.json:9963, gc_10_3_0_offset.h:8864, gc_11_0_0_offset.h:9534 */
-    { 0x3740cu, 0x3740cu, repack_RMI_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER2_SELECT", "" },
+    { 0x3740cu, 0x3740cu, repack11_RMI_PERFCOUNTER2_SELECT, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER2_SELECT", "" },
     /* g10 gfx103.json:10946, g12 gfx11.json:9969, gc_10_3_0_offset.h:8866, gc_11_0_0_offset.h:9536 */
-    { 0x37410u, 0x37410u, repack_RMI_PERFCOUNTER2_SELECT1, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER2_SELECT1", "" },
+    { 0x37410u, 0x37410u, repack11_RMI_PERFCOUNTER2_SELECT1, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER2_SELECT1", "" },
     /* g10 gfx103.json:10952, g12 gfx11.json:9975, gc_10_3_0_offset.h:8868, gc_11_0_0_offset.h:9538 */
-    { 0x37414u, 0x37414u, repack_RMI_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER3_SELECT", "" },
+    { 0x37414u, 0x37414u, repack11_RMI_PERFCOUNTER3_SELECT, XLAT12_CLS_FIELD_REPACK, "RMI_PERFCOUNTER3_SELECT", "" },
     /* g10 gfx103.json:10958, g12 gfx11.json:9981, gc_10_3_0_offset.h:8870, gc_11_0_0_offset.h:9540 */
     { 0x37418u, 0x37418u, 0, XLAT12_CLS_IDENTICAL, "RMI_PERF_COUNTER_CNTL", "" },
     /* g10 gfx103.json:10964, g12 gfx11.json:10023, gc_10_3_0_offset.h:8942, gc_11_0_0_offset.h:3334 */
@@ -3568,11 +3570,11 @@ static const Xlat12Entry kXlat12TableGfx11[] = {
     /* g10 gfx103.json:11078, g12 gfx11.json:10017, gc_10_3_0_offset.h:8984, gc_11_0_0_offset.h:3328 */
     { 0x37504u, 0x37494u, 0, XLAT12_CLS_MOVED, "GCVML2_PERFCOUNTER2_1_MODE", "" },
     /* g10 gfx103.json:11084, g12 gfx11.json:10107, gc_10_3_0_offset.h:8872, gc_11_0_0_offset.h:9542 */
-    { 0x37580u, 0x37580u, repack_GCR_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "GCR_PERFCOUNTER0_SELECT", "" },
+    { 0x37580u, 0x37580u, repack11_GCR_PERFCOUNTER0_SELECT, XLAT12_CLS_FIELD_REPACK, "GCR_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:11090, g12 gfx11.json:10113, gc_10_3_0_offset.h:8874, gc_11_0_0_offset.h:9544 */
-    { 0x37584u, 0x37584u, repack_GCR_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "GCR_PERFCOUNTER0_SELECT1", "" },
+    { 0x37584u, 0x37584u, repack11_GCR_PERFCOUNTER0_SELECT1, XLAT12_CLS_FIELD_REPACK, "GCR_PERFCOUNTER0_SELECT1", "" },
     /* g10 gfx103.json:11096, g12 gfx11.json:10119, gc_10_3_0_offset.h:8876, gc_11_0_0_offset.h:9546 */
-    { 0x37588u, 0x37588u, repack_GCR_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "GCR_PERFCOUNTER1_SELECT", "" },
+    { 0x37588u, 0x37588u, repack11_GCR_PERFCOUNTER1_SELECT, XLAT12_CLS_FIELD_REPACK, "GCR_PERFCOUNTER1_SELECT", "" },
     /* g10 gfx103.json:11102, g12 gfx11.json:10197, gc_10_3_0_offset.h:8878, gc_11_0_0_offset.h:9572 */
     { 0x3758cu, 0x37680u, 0, XLAT12_CLS_MOVED, "UTCL1_PERFCOUNTER0_SELECT", "" },
     /* g10 gfx103.json:11108, g12 gfx11.json:10203, gc_10_3_0_offset.h:8880, gc_11_0_0_offset.h:9574 */

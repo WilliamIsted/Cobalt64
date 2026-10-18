@@ -63,6 +63,7 @@ static int wellformed(const uint32_t *o, uint32_t n)
 int main(int argc, char **argv)
 {
     unsigned long iters = argc > 1 ? strtoul(argv[1], 0, 10) : 100000ul;
+    const uint32_t level = argc > 2 ? (uint32_t)strtoul(argv[2], 0, 10) : XLAT12_LEVEL_GFX12;  /* X2: 11 = gfx11 */
     unsigned long hist[16] = { 0 };
     unsigned long malformed_out = 0;
     uint32_t *scratch = (uint32_t *)malloc(4096 * sizeof(uint32_t));
@@ -87,7 +88,7 @@ int main(int argc, char **argv)
         uint32_t *out = (uint32_t *)malloc((cap ? cap : 1) * sizeof(uint32_t));
         xlat12_ctx ctx; ctx.vs_mode = rnd() % 2 ? XLAT12_VS_NGG : XLAT12_VS_UNKNOWN;
         xlat12_stats st; uint32_t n = 0xFFFFFFFFu;
-        xlat12_status s = xlat12_translate(rnd() % 8 ? &ctx : 0, in, len, out, cap, &n, rnd() % 8 ? &st : 0);
+        xlat12_status s = xlat12_translate_level(level, rnd() % 8 ? &ctx : 0, in, len, out, cap, &n, rnd() % 8 ? &st : 0);
         if ((unsigned)s < 16) hist[s]++;
         if (s == XLAT12_OK) {
             if (n > cap || !wellformed(out, n)) malformed_out++;
@@ -95,7 +96,7 @@ int main(int argc, char **argv)
         free(in); free(out);
     }
     free(scratch);
-    printf("fuzz: %lu iterations; statuses:", iters);
+    printf("fuzz: gfx_level %u, %lu iterations; statuses:", level, iters);
     for (int k = 0; k <= XLAT12_ERR_CAPACITY; k++)
         printf(" %s=%lu", xlat12_status_name((xlat12_status)k), hist[k]);
     printf("\nfuzz: malformed OK outputs %lu\n", malformed_out);

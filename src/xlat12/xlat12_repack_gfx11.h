@@ -49,7 +49,7 @@
  * fields: gfx103.json:14442 (type SPI_SHADER_PGM_RSRC4_PS) -> gfx11.json:13369 (type SPI_SHADER_PGM_RSRC4_PS)  @mesa 4519cc56
  * new on gfx11 (left 0):  INST_PREF_SIZE, TRAP_ON_START, TRAP_ON_END, IMAGE_OP
  */
-static uint32_t repack_SPI_SHADER_PGM_RSRC4_PS(uint32_t v)
+static uint32_t repack11_SPI_SHADER_PGM_RSRC4_PS(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xffffu) <<  0; /* CU_EN [15:0]->[15:0] */
@@ -61,7 +61,7 @@ static uint32_t repack_SPI_SHADER_PGM_RSRC4_PS(uint32_t v)
  * dropped (gfx10.3 only): LOCK_LOW_THRESHOLD
  * new on gfx11 (left 0):  LDS_GROUP_SIZE
  */
-static uint32_t repack_SPI_SHADER_PGM_RSRC3_PS(uint32_t v)
+static uint32_t repack11_SPI_SHADER_PGM_RSRC3_PS(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xffffu) <<  0; /* CU_EN [15:0]->[15:0] */
@@ -73,7 +73,7 @@ static uint32_t repack_SPI_SHADER_PGM_RSRC3_PS(uint32_t v)
  * fields: gfx103.json:14436 (type SPI_SHADER_PGM_RSRC4_GS) -> gfx11.json:13356 (type SPI_SHADER_PGM_RSRC4_GS)  @mesa 4519cc56
  * new on gfx11 (left 0):  RESERVED, PH_THROTTLE_EN, SPI_THROTTLE_EN, INST_PREF_SIZE, TRAP_ON_START, TRAP_ON_END, IMAGE_OP
  */
-static uint32_t repack_SPI_SHADER_PGM_RSRC4_GS(uint32_t v)
+static uint32_t repack11_SPI_SHADER_PGM_RSRC4_GS(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* CU_EN [15:0]->[0:0] WIDTH 16->1 (masked to dst) */
@@ -85,7 +85,7 @@ static uint32_t repack_SPI_SHADER_PGM_RSRC4_GS(uint32_t v)
  * fields: gfx103.json:14442 (type SPI_SHADER_PGM_RSRC4_PS) -> gfx11.json:13369 (type SPI_SHADER_PGM_RSRC4_PS)  @mesa 4519cc56
  * new on gfx11 (left 0):  INST_PREF_SIZE, TRAP_ON_START, TRAP_ON_END, IMAGE_OP
  */
-static uint32_t repack_SPI_SHADER_PGM_RSRC4_HS(uint32_t v)
+static uint32_t repack11_SPI_SHADER_PGM_RSRC4_HS(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xffffu) <<  0; /* CU_EN [15:0]->[15:0] */
@@ -96,7 +96,7 @@ static uint32_t repack_SPI_SHADER_PGM_RSRC4_HS(uint32_t v)
  * fields: gfx103.json:11707 (type COMPUTE_DISPATCH_INITIATOR) -> gfx11.json:10618 (type COMPUTE_DISPATCH_INITIATOR)  @mesa 4519cc56
  * new on gfx11 (left 0):  AMP_SHADER_EN, DISABLE_DISP_PREMPT_EN
  */
-static uint32_t repack_COMPUTE_DISPATCH_INITIATOR(uint32_t v)
+static uint32_t repack11_COMPUTE_DISPATCH_INITIATOR(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* COMPUTE_SHADER_EN [0:0]->[0:0] */
@@ -118,7 +118,7 @@ static uint32_t repack_COMPUTE_DISPATCH_INITIATOR(uint32_t v)
 /* COMPUTE_TMPRING_SIZE  gfx10.3 0x0b860 -> gfx11 0x0b860
  * fields: gfx103.json:11831 (type COMPUTE_TMPRING_SIZE) -> gfx11.json:10758 (type COMPUTE_TMPRING_SIZE)  @mesa 4519cc56
  */
-static uint32_t repack_COMPUTE_TMPRING_SIZE(uint32_t v)
+static uint32_t repack11_COMPUTE_TMPRING_SIZE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xfffu) <<  0; /* WAVES [11:0]->[11:0] */
@@ -130,7 +130,7 @@ static uint32_t repack_COMPUTE_TMPRING_SIZE(uint32_t v)
  * fields: gfx103.json:11730 (type COMPUTE_MISC_RESERVED) -> gfx11.json:10648 (type COMPUTE_MISC_RESERVED)  @mesa 4519cc56
  * dropped (gfx10.3 only): RESERVED2
  */
-static uint32_t repack_COMPUTE_MISC_RESERVED(uint32_t v)
+static uint32_t repack11_COMPUTE_MISC_RESERVED(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3u) <<  0; /* SEND_SEID [1:0]->[2:0] WIDTH 2->3 (masked to dst) */
@@ -144,7 +144,7 @@ static uint32_t repack_COMPUTE_MISC_RESERVED(uint32_t v)
  * fields: gfx103.json:11786 (type COMPUTE_PGM_RSRC3) -> gfx11.json:10703 (type COMPUTE_PGM_RSRC3)  @mesa 4519cc56
  * new on gfx11 (left 0):  INST_PREF_SIZE, TRAP_ON_START, TRAP_ON_END, IMAGE_OP
  */
-static uint32_t repack_COMPUTE_PGM_RSRC3(uint32_t v)
+static uint32_t repack11_COMPUTE_PGM_RSRC3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xfu) <<  0; /* SHARED_VGPR_CNT [3:0]->[3:0] */
@@ -155,7 +155,7 @@ static uint32_t repack_COMPUTE_PGM_RSRC3(uint32_t v)
  * fields: gfx103.json:12648 (type DB_RENDER_CONTROL) -> gfx11.json:11506 (type DB_RENDER_CONTROL)  @mesa 4519cc56
  * new on gfx11 (left 0):  OREO_MODE, FORCE_OREO_MODE, FORCE_EXPORT_ORDER, MAX_ALLOWED_TILES_IN_WAVE
  */
-static uint32_t repack_DB_RENDER_CONTROL(uint32_t v)
+static uint32_t repack11_DB_RENDER_CONTROL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* DEPTH_CLEAR_ENABLE [0:0]->[0:0] */
@@ -176,7 +176,7 @@ static uint32_t repack_DB_RENDER_CONTROL(uint32_t v)
  * fields: gfx103.json:12552 (type DB_COUNT_CONTROL) -> gfx11.json:11419 (type DB_COUNT_CONTROL)  @mesa 4519cc56
  * dropped (gfx10.3 only): ZPASS_INCREMENT_DISABLE
  */
-static uint32_t repack_DB_COUNT_CONTROL(uint32_t v)
+static uint32_t repack11_DB_COUNT_CONTROL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  1) & 0x1u) <<  1; /* PERFECT_ZPASS_COUNTS [1:1]->[1:1] */
@@ -196,7 +196,7 @@ static uint32_t repack_DB_COUNT_CONTROL(uint32_t v)
  * fields: gfx103.json:12663 (type DB_RENDER_OVERRIDE) -> gfx11.json:11525 (type DB_RENDER_OVERRIDE)  @mesa 4519cc56
  * dropped (gfx10.3 only): FORCE_QC_SMASK_CONFLICT
  */
-static uint32_t repack_DB_RENDER_OVERRIDE(uint32_t v)
+static uint32_t repack11_DB_RENDER_OVERRIDE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3u) <<  0; /* FORCE_HIZ_ENABLE [1:0]->[1:0] */
@@ -229,7 +229,7 @@ static uint32_t repack_DB_RENDER_OVERRIDE(uint32_t v)
  * dropped (gfx10.3 only): FORCE_VRS_RATE_FINE
  * new on gfx11 (left 0):  DISABLE_NOZ
  */
-static uint32_t repack_DB_RENDER_OVERRIDE2(uint32_t v)
+static uint32_t repack11_DB_RENDER_OVERRIDE2(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3u) <<  0; /* PARTIAL_SQUAD_LAUNCH_CONTROL [1:0]->[1:0] */
@@ -257,7 +257,7 @@ static uint32_t repack_DB_RENDER_OVERRIDE2(uint32_t v)
  * dropped (gfx10.3 only): RESOURCE_LEVEL
  * new on gfx11 (left 0):  FIELD_8
  */
-static uint32_t repack_DB_RESERVED_REG_2(uint32_t v)
+static uint32_t repack11_DB_RESERVED_REG_2(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xfu) <<  0; /* FIELD_1 [3:0]->[3:0] */
@@ -274,7 +274,7 @@ static uint32_t repack_DB_RESERVED_REG_2(uint32_t v)
  * fields: gfx103.json:13686 (type PA_SC_TILE_STEERING_OVERRIDE) -> gfx11.json:12538 (type PA_SC_TILE_STEERING_OVERRIDE)  @mesa 4519cc56
  * dropped (gfx10.3 only): NUM_SE, NUM_RB_PER_SE
  */
-static uint32_t repack_PA_SC_TILE_STEERING_OVERRIDE(uint32_t v)
+static uint32_t repack11_PA_SC_TILE_STEERING_OVERRIDE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* ENABLE [0:0]->[0:0] */
@@ -288,7 +288,7 @@ static uint32_t repack_PA_SC_TILE_STEERING_OVERRIDE(uint32_t v)
  * fields: gfx103.json:11655 (type CB_RMI_GL2_CACHE_CONTROL) -> gfx11.json:10573 (type CB_RMI_GL2_CACHE_CONTROL)  @mesa 4519cc56
  * dropped (gfx10.3 only): CMASK_WR_POLICY, FMASK_WR_POLICY, CMASK_RD_POLICY, FMASK_RD_POLICY, CMASK_L3_BYPASS, FMASK_L3_BYPASS, FMASK_BIG_PAGE
  */
-static uint32_t repack_CB_RMI_GL2_CACHE_CONTROL(uint32_t v)
+static uint32_t repack11_CB_RMI_GL2_CACHE_CONTROL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  4) & 0x3u) <<  0; /* DCC_WR_POLICY [5:4]->[1:0] */
@@ -306,7 +306,7 @@ static uint32_t repack_CB_RMI_GL2_CACHE_CONTROL(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_0(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_0(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -329,7 +329,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_0(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_1(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -352,7 +352,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_1(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_2(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_2(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -375,7 +375,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_2(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_3(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -398,7 +398,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_3(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_4(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_4(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -421,7 +421,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_4(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_5(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_5(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -444,7 +444,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_5(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_6(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_6(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -467,7 +467,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_6(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_7(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_7(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -490,7 +490,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_7(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_8(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_8(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -513,7 +513,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_8(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_9(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_9(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -536,7 +536,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_9(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_10(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_10(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -559,7 +559,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_10(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_11(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_11(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -582,7 +582,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_11(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_12(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_12(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -605,7 +605,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_12(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_13(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_13(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -628,7 +628,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_13(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_14(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_14(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -651,7 +651,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_14(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_15(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_15(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -674,7 +674,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_15(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_16(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_16(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -697,7 +697,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_16(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_17(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_17(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -720,7 +720,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_17(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_18(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_18(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -743,7 +743,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_18(uint32_t v)
  * dropped (gfx10.3 only): CYL_WRAP
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_19(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_19(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -765,7 +765,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_19(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_20(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_20(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -785,7 +785,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_20(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_21(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_21(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -805,7 +805,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_21(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_22(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_22(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -825,7 +825,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_22(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_23(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_23(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -845,7 +845,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_23(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_24(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_24(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -865,7 +865,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_24(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_25(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_25(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -885,7 +885,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_25(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_26(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_26(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -905,7 +905,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_26(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_27(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_27(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -925,7 +925,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_27(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_28(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_28(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -945,7 +945,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_28(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_29(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_29(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -965,7 +965,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_29(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_30(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_30(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -985,7 +985,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_30(uint32_t v)
  * fields: gfx103.json:14206 (type SPI_PS_INPUT_CNTL_20) -> gfx11.json:13162 (type SPI_PS_INPUT_CNTL_20)  @mesa 4519cc56
  * new on gfx11 (left 0):  PRIM_ATTR
  */
-static uint32_t repack_SPI_PS_INPUT_CNTL_31(uint32_t v)
+static uint32_t repack11_SPI_PS_INPUT_CNTL_31(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OFFSET [5:0]->[5:0] */
@@ -1005,7 +1005,7 @@ static uint32_t repack_SPI_PS_INPUT_CNTL_31(uint32_t v)
  * fields: gfx103.json:14478 (type SPI_VS_OUT_CONFIG) -> gfx11.json:13409 (type SPI_VS_OUT_CONFIG)  @mesa 4519cc56
  * dropped (gfx10.3 only): VS_HALF_PACK
  */
-static uint32_t repack_SPI_VS_OUT_CONFIG(uint32_t v)
+static uint32_t repack11_SPI_VS_OUT_CONFIG(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  1) & 0x1fu) <<  1; /* VS_EXPORT_COUNT [5:1]->[5:1] */
@@ -1018,7 +1018,7 @@ static uint32_t repack_SPI_VS_OUT_CONFIG(uint32_t v)
  * fields: gfx103.json:14240 (type SPI_PS_IN_CONTROL) -> gfx11.json:13197 (type SPI_PS_IN_CONTROL)  @mesa 4519cc56
  * new on gfx11 (left 0):  PARAM_GEN
  */
-static uint32_t repack_SPI_PS_IN_CONTROL(uint32_t v)
+static uint32_t repack11_SPI_PS_IN_CONTROL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* NUM_INTERP [5:0]->[5:0] */
@@ -1033,7 +1033,7 @@ static uint32_t repack_SPI_PS_IN_CONTROL(uint32_t v)
 /* SPI_TMPRING_SIZE  gfx10.3 0x286e8 -> gfx11 0x286e8
  * fields: gfx103.json:11831 (type COMPUTE_TMPRING_SIZE) -> gfx11.json:10758 (type COMPUTE_TMPRING_SIZE)  @mesa 4519cc56
  */
-static uint32_t repack_SPI_TMPRING_SIZE(uint32_t v)
+static uint32_t repack11_SPI_TMPRING_SIZE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xfffu) <<  0; /* WAVES [11:0]->[11:0] */
@@ -1046,7 +1046,7 @@ static uint32_t repack_SPI_TMPRING_SIZE(uint32_t v)
  * dropped (gfx10.3 only): EXEC_IF_OVERLAPPED, POPS_OVERLAP_NUM_SAMPLES
  * new on gfx11 (left 0):  OREO_BLEND_ENABLE, OVERRIDE_INTRINSIC_RATE_ENABLE, OVERRIDE_INTRINSIC_RATE
  */
-static uint32_t repack_DB_SHADER_CONTROL(uint32_t v)
+static uint32_t repack11_DB_SHADER_CONTROL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* Z_EXPORT_ENABLE [0:0]->[0:0] */
@@ -1071,7 +1071,7 @@ static uint32_t repack_DB_SHADER_CONTROL(uint32_t v)
  * fields: gfx103.json:13323 (type PA_CL_VS_OUT_CNTL) -> gfx11.json:12151 (type PA_CL_VS_OUT_CNTL)  @mesa 4519cc56
  * dropped (gfx10.3 only): USE_VTX_GS_CUT_FLAG
  */
-static uint32_t repack_PA_CL_VS_OUT_CNTL(uint32_t v)
+static uint32_t repack11_PA_CL_VS_OUT_CNTL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* CLIP_DIST_ENA_0 [0:0]->[0:0] */
@@ -1110,7 +1110,7 @@ static uint32_t repack_PA_CL_VS_OUT_CNTL(uint32_t v)
  * fields: gfx103.json:13735 (type PA_SU_LINE_STIPPLE_CNTL) -> gfx11.json:12626 (type PA_SU_LINE_STIPPLE_CNTL)  @mesa 4519cc56
  * dropped (gfx10.3 only): DIAMOND_ADJUST
  */
-static uint32_t repack_PA_SU_LINE_STIPPLE_CNTL(uint32_t v)
+static uint32_t repack11_PA_SU_LINE_STIPPLE_CNTL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3u) <<  0; /* LINE_STIPPLE_RESET [1:0]->[1:0] */
@@ -1123,7 +1123,7 @@ static uint32_t repack_PA_SU_LINE_STIPPLE_CNTL(uint32_t v)
  * fields: gfx103.json:14985 (type VGT_GS_OUT_PRIM_TYPE) -> gfx11.json:13864 (type VGT_GS_OUT_PRIM_TYPE)  @mesa 4519cc56
  * dropped (gfx10.3 only): OUTPRIM_TYPE_1, OUTPRIM_TYPE_2, OUTPRIM_TYPE_3, UNIQUE_TYPE_PER_STREAM
  */
-static uint32_t repack_VGT_GS_OUT_PRIM_TYPE(uint32_t v)
+static uint32_t repack11_VGT_GS_OUT_PRIM_TYPE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* OUTPRIM_TYPE [5:0]->[5:0] */
@@ -1134,7 +1134,7 @@ static uint32_t repack_VGT_GS_OUT_PRIM_TYPE(uint32_t v)
  * fields: gfx103.json:12621 (type DB_HTILE_SURFACE) -> gfx11.json:11480 (type DB_HTILE_SURFACE)  @mesa 4519cc56
  * dropped (gfx10.3 only): VRS_HTILE_ENCODING
  */
-static uint32_t repack_DB_HTILE_SURFACE(uint32_t v)
+static uint32_t repack11_DB_HTILE_SURFACE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* RESERVED_FIELD_1 [0:0]->[0:0] */
@@ -1153,7 +1153,7 @@ static uint32_t repack_DB_HTILE_SURFACE(uint32_t v)
  * fields: gfx103.json:15066 (type VGT_SHADER_STAGES_EN) -> gfx11.json:13905 (type VGT_SHADER_STAGES_EN)  @mesa 4519cc56
  * dropped (gfx10.3 only): DISPATCH_DRAW_EN, DIS_DEALLOC_ACCUM_0, DIS_DEALLOC_ACCUM_1
  */
-static uint32_t repack_VGT_SHADER_STAGES_EN(uint32_t v)
+static uint32_t repack11_VGT_SHADER_STAGES_EN(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3u) <<  0; /* LS_EN [1:0]->[1:0] */
@@ -1181,7 +1181,7 @@ static uint32_t repack_VGT_SHADER_STAGES_EN(uint32_t v)
  * dropped (gfx10.3 only): RESERVED_REDUC_AXIS, DEPRECATED
  * new on gfx11 (left 0):  NOT_USED
  */
-static uint32_t repack_VGT_TF_PARAM(uint32_t v)
+static uint32_t repack11_VGT_TF_PARAM(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3u) <<  0; /* TYPE [1:0]->[1:0] */
@@ -1201,7 +1201,7 @@ static uint32_t repack_VGT_TF_PARAM(uint32_t v)
  * fields: gfx103.json:13678 (type PA_SC_SHADER_CONTROL) -> gfx11.json:12529 (type PA_SC_SHADER_CONTROL)  @mesa 4519cc56
  * new on gfx11 (left 0):  DISABLE_OREO_CONFLICT_QUAD
  */
-static uint32_t repack_PA_SC_SHADER_CONTROL(uint32_t v)
+static uint32_t repack11_PA_SC_SHADER_CONTROL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3u) <<  0; /* REALIGN_DQUADS_AFTER_N_WAVES [1:0]->[1:0] */
@@ -1215,7 +1215,7 @@ static uint32_t repack_PA_SC_SHADER_CONTROL(uint32_t v)
  * fields: gfx103.json:13596 (type PA_SC_NGG_MODE_CNTL) -> gfx11.json:12443 (type PA_SC_NGG_MODE_CNTL)  @mesa 4519cc56
  * new on gfx11 (left 0):  DISABLE_FPOG_AND_DEALLOC_CONFLICT, DISABLE_MAX_DEALLOC, DISABLE_MAX_ATTRIBUTES, MAX_ATTRIBUTES_IN_WAVE
  */
-static uint32_t repack_PA_SC_NGG_MODE_CNTL(uint32_t v)
+static uint32_t repack11_PA_SC_NGG_MODE_CNTL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x7ffu) <<  0; /* MAX_DEALLOCS_IN_WAVE [10:0]->[10:0] */
@@ -1227,7 +1227,7 @@ static uint32_t repack_PA_SC_NGG_MODE_CNTL(uint32_t v)
  * fields: gfx103.json:11546 (type CB_COLOR0_INFO) -> gfx11.json:10501 (type CB_COLOR0_INFO)  @mesa 4519cc56
  * dropped (gfx10.3 only): ENDIAN, FAST_CLEAR, COMPRESSION, CMASK_IS_LINEAR, FMASK_COMPRESSION_DISABLE, FMASK_COMPRESS_1FRAG_ONLY, DCC_ENABLE, CMASK_ADDR_TYPE, NBC_TILING
  */
-static uint32_t repack_CB_COLOR0_INFO(uint32_t v)
+static uint32_t repack11_CB_COLOR0_INFO(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  2) & 0x1fu) <<  0; /* FORMAT [6:2]->[4:0] */
@@ -1248,7 +1248,7 @@ static uint32_t repack_CB_COLOR0_INFO(uint32_t v)
  * dropped (gfx10.3 only): TILE_MODE_INDEX, FMASK_TILE_MODE_INDEX, FMASK_BANK_HEIGHT, NUM_SAMPLES, DISABLE_FMASK_NOFETCH_OPT
  * new on gfx11 (left 0):  DISABLE_FMASK_NOALLOC_OPT, FORCE_LIMIT_COLOR_SECTOR_TO_256B_MAX
  */
-static uint32_t repack_CB_COLOR0_ATTRIB(uint32_t v)
+static uint32_t repack11_CB_COLOR0_ATTRIB(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 15) & 0x3u) <<  0; /* NUM_FRAGMENTS [16:15]->[1:0] */
@@ -1261,7 +1261,7 @@ static uint32_t repack_CB_COLOR0_ATTRIB(uint32_t v)
  * fields: gfx103.json:11546 (type CB_COLOR0_INFO) -> gfx11.json:10501 (type CB_COLOR0_INFO)  @mesa 4519cc56
  * dropped (gfx10.3 only): ENDIAN, FAST_CLEAR, COMPRESSION, CMASK_IS_LINEAR, FMASK_COMPRESSION_DISABLE, FMASK_COMPRESS_1FRAG_ONLY, DCC_ENABLE, CMASK_ADDR_TYPE, NBC_TILING
  */
-static uint32_t repack_CB_COLOR1_INFO(uint32_t v)
+static uint32_t repack11_CB_COLOR1_INFO(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  2) & 0x1fu) <<  0; /* FORMAT [6:2]->[4:0] */
@@ -1282,7 +1282,7 @@ static uint32_t repack_CB_COLOR1_INFO(uint32_t v)
  * dropped (gfx10.3 only): TILE_MODE_INDEX, FMASK_TILE_MODE_INDEX, FMASK_BANK_HEIGHT, NUM_SAMPLES, DISABLE_FMASK_NOFETCH_OPT
  * new on gfx11 (left 0):  DISABLE_FMASK_NOALLOC_OPT, FORCE_LIMIT_COLOR_SECTOR_TO_256B_MAX
  */
-static uint32_t repack_CB_COLOR1_ATTRIB(uint32_t v)
+static uint32_t repack11_CB_COLOR1_ATTRIB(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 15) & 0x3u) <<  0; /* NUM_FRAGMENTS [16:15]->[1:0] */
@@ -1295,7 +1295,7 @@ static uint32_t repack_CB_COLOR1_ATTRIB(uint32_t v)
  * fields: gfx103.json:11546 (type CB_COLOR0_INFO) -> gfx11.json:10501 (type CB_COLOR0_INFO)  @mesa 4519cc56
  * dropped (gfx10.3 only): ENDIAN, FAST_CLEAR, COMPRESSION, CMASK_IS_LINEAR, FMASK_COMPRESSION_DISABLE, FMASK_COMPRESS_1FRAG_ONLY, DCC_ENABLE, CMASK_ADDR_TYPE, NBC_TILING
  */
-static uint32_t repack_CB_COLOR2_INFO(uint32_t v)
+static uint32_t repack11_CB_COLOR2_INFO(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  2) & 0x1fu) <<  0; /* FORMAT [6:2]->[4:0] */
@@ -1316,7 +1316,7 @@ static uint32_t repack_CB_COLOR2_INFO(uint32_t v)
  * dropped (gfx10.3 only): TILE_MODE_INDEX, FMASK_TILE_MODE_INDEX, FMASK_BANK_HEIGHT, NUM_SAMPLES, DISABLE_FMASK_NOFETCH_OPT
  * new on gfx11 (left 0):  DISABLE_FMASK_NOALLOC_OPT, FORCE_LIMIT_COLOR_SECTOR_TO_256B_MAX
  */
-static uint32_t repack_CB_COLOR2_ATTRIB(uint32_t v)
+static uint32_t repack11_CB_COLOR2_ATTRIB(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 15) & 0x3u) <<  0; /* NUM_FRAGMENTS [16:15]->[1:0] */
@@ -1329,7 +1329,7 @@ static uint32_t repack_CB_COLOR2_ATTRIB(uint32_t v)
  * fields: gfx103.json:11546 (type CB_COLOR0_INFO) -> gfx11.json:10501 (type CB_COLOR0_INFO)  @mesa 4519cc56
  * dropped (gfx10.3 only): ENDIAN, FAST_CLEAR, COMPRESSION, CMASK_IS_LINEAR, FMASK_COMPRESSION_DISABLE, FMASK_COMPRESS_1FRAG_ONLY, DCC_ENABLE, CMASK_ADDR_TYPE, NBC_TILING
  */
-static uint32_t repack_CB_COLOR3_INFO(uint32_t v)
+static uint32_t repack11_CB_COLOR3_INFO(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  2) & 0x1fu) <<  0; /* FORMAT [6:2]->[4:0] */
@@ -1350,7 +1350,7 @@ static uint32_t repack_CB_COLOR3_INFO(uint32_t v)
  * dropped (gfx10.3 only): TILE_MODE_INDEX, FMASK_TILE_MODE_INDEX, FMASK_BANK_HEIGHT, NUM_SAMPLES, DISABLE_FMASK_NOFETCH_OPT
  * new on gfx11 (left 0):  DISABLE_FMASK_NOALLOC_OPT, FORCE_LIMIT_COLOR_SECTOR_TO_256B_MAX
  */
-static uint32_t repack_CB_COLOR3_ATTRIB(uint32_t v)
+static uint32_t repack11_CB_COLOR3_ATTRIB(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 15) & 0x3u) <<  0; /* NUM_FRAGMENTS [16:15]->[1:0] */
@@ -1363,7 +1363,7 @@ static uint32_t repack_CB_COLOR3_ATTRIB(uint32_t v)
  * fields: gfx103.json:11546 (type CB_COLOR0_INFO) -> gfx11.json:10501 (type CB_COLOR0_INFO)  @mesa 4519cc56
  * dropped (gfx10.3 only): ENDIAN, FAST_CLEAR, COMPRESSION, CMASK_IS_LINEAR, FMASK_COMPRESSION_DISABLE, FMASK_COMPRESS_1FRAG_ONLY, DCC_ENABLE, CMASK_ADDR_TYPE, NBC_TILING
  */
-static uint32_t repack_CB_COLOR4_INFO(uint32_t v)
+static uint32_t repack11_CB_COLOR4_INFO(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  2) & 0x1fu) <<  0; /* FORMAT [6:2]->[4:0] */
@@ -1384,7 +1384,7 @@ static uint32_t repack_CB_COLOR4_INFO(uint32_t v)
  * dropped (gfx10.3 only): TILE_MODE_INDEX, FMASK_TILE_MODE_INDEX, FMASK_BANK_HEIGHT, NUM_SAMPLES, DISABLE_FMASK_NOFETCH_OPT
  * new on gfx11 (left 0):  DISABLE_FMASK_NOALLOC_OPT, FORCE_LIMIT_COLOR_SECTOR_TO_256B_MAX
  */
-static uint32_t repack_CB_COLOR4_ATTRIB(uint32_t v)
+static uint32_t repack11_CB_COLOR4_ATTRIB(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 15) & 0x3u) <<  0; /* NUM_FRAGMENTS [16:15]->[1:0] */
@@ -1397,7 +1397,7 @@ static uint32_t repack_CB_COLOR4_ATTRIB(uint32_t v)
  * fields: gfx103.json:11546 (type CB_COLOR0_INFO) -> gfx11.json:10501 (type CB_COLOR0_INFO)  @mesa 4519cc56
  * dropped (gfx10.3 only): ENDIAN, FAST_CLEAR, COMPRESSION, CMASK_IS_LINEAR, FMASK_COMPRESSION_DISABLE, FMASK_COMPRESS_1FRAG_ONLY, DCC_ENABLE, CMASK_ADDR_TYPE, NBC_TILING
  */
-static uint32_t repack_CB_COLOR5_INFO(uint32_t v)
+static uint32_t repack11_CB_COLOR5_INFO(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  2) & 0x1fu) <<  0; /* FORMAT [6:2]->[4:0] */
@@ -1418,7 +1418,7 @@ static uint32_t repack_CB_COLOR5_INFO(uint32_t v)
  * dropped (gfx10.3 only): TILE_MODE_INDEX, FMASK_TILE_MODE_INDEX, FMASK_BANK_HEIGHT, NUM_SAMPLES, DISABLE_FMASK_NOFETCH_OPT
  * new on gfx11 (left 0):  DISABLE_FMASK_NOALLOC_OPT, FORCE_LIMIT_COLOR_SECTOR_TO_256B_MAX
  */
-static uint32_t repack_CB_COLOR5_ATTRIB(uint32_t v)
+static uint32_t repack11_CB_COLOR5_ATTRIB(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 15) & 0x3u) <<  0; /* NUM_FRAGMENTS [16:15]->[1:0] */
@@ -1431,7 +1431,7 @@ static uint32_t repack_CB_COLOR5_ATTRIB(uint32_t v)
  * fields: gfx103.json:11546 (type CB_COLOR0_INFO) -> gfx11.json:10501 (type CB_COLOR0_INFO)  @mesa 4519cc56
  * dropped (gfx10.3 only): ENDIAN, FAST_CLEAR, COMPRESSION, CMASK_IS_LINEAR, FMASK_COMPRESSION_DISABLE, FMASK_COMPRESS_1FRAG_ONLY, DCC_ENABLE, CMASK_ADDR_TYPE, NBC_TILING
  */
-static uint32_t repack_CB_COLOR6_INFO(uint32_t v)
+static uint32_t repack11_CB_COLOR6_INFO(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  2) & 0x1fu) <<  0; /* FORMAT [6:2]->[4:0] */
@@ -1452,7 +1452,7 @@ static uint32_t repack_CB_COLOR6_INFO(uint32_t v)
  * dropped (gfx10.3 only): TILE_MODE_INDEX, FMASK_TILE_MODE_INDEX, FMASK_BANK_HEIGHT, NUM_SAMPLES, DISABLE_FMASK_NOFETCH_OPT
  * new on gfx11 (left 0):  DISABLE_FMASK_NOALLOC_OPT, FORCE_LIMIT_COLOR_SECTOR_TO_256B_MAX
  */
-static uint32_t repack_CB_COLOR6_ATTRIB(uint32_t v)
+static uint32_t repack11_CB_COLOR6_ATTRIB(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 15) & 0x3u) <<  0; /* NUM_FRAGMENTS [16:15]->[1:0] */
@@ -1465,7 +1465,7 @@ static uint32_t repack_CB_COLOR6_ATTRIB(uint32_t v)
  * fields: gfx103.json:11546 (type CB_COLOR0_INFO) -> gfx11.json:10501 (type CB_COLOR0_INFO)  @mesa 4519cc56
  * dropped (gfx10.3 only): ENDIAN, FAST_CLEAR, COMPRESSION, CMASK_IS_LINEAR, FMASK_COMPRESSION_DISABLE, FMASK_COMPRESS_1FRAG_ONLY, DCC_ENABLE, CMASK_ADDR_TYPE, NBC_TILING
  */
-static uint32_t repack_CB_COLOR7_INFO(uint32_t v)
+static uint32_t repack11_CB_COLOR7_INFO(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  2) & 0x1fu) <<  0; /* FORMAT [6:2]->[4:0] */
@@ -1486,7 +1486,7 @@ static uint32_t repack_CB_COLOR7_INFO(uint32_t v)
  * dropped (gfx10.3 only): TILE_MODE_INDEX, FMASK_TILE_MODE_INDEX, FMASK_BANK_HEIGHT, NUM_SAMPLES, DISABLE_FMASK_NOFETCH_OPT
  * new on gfx11 (left 0):  DISABLE_FMASK_NOALLOC_OPT, FORCE_LIMIT_COLOR_SECTOR_TO_256B_MAX
  */
-static uint32_t repack_CB_COLOR7_ATTRIB(uint32_t v)
+static uint32_t repack11_CB_COLOR7_ATTRIB(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 15) & 0x3u) <<  0; /* NUM_FRAGMENTS [16:15]->[1:0] */
@@ -1499,7 +1499,7 @@ static uint32_t repack_CB_COLOR7_ATTRIB(uint32_t v)
  * fields: gfx103.json:11505 (type CB_COLOR0_ATTRIB3) -> gfx11.json:10471 (type CB_COLOR0_ATTRIB3)  @mesa 4519cc56
  * dropped (gfx10.3 only): FMASK_SW_MODE, CMASK_PIPE_ALIGNED, RESOURCE_LEVEL, VRS_RATE_HINT_ENABLE
  */
-static uint32_t repack_CB_COLOR0_ATTRIB3(uint32_t v)
+static uint32_t repack11_CB_COLOR0_ATTRIB3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1fffu) <<  0; /* MIP0_DEPTH [12:0]->[12:0] */
@@ -1514,7 +1514,7 @@ static uint32_t repack_CB_COLOR0_ATTRIB3(uint32_t v)
  * fields: gfx103.json:11505 (type CB_COLOR0_ATTRIB3) -> gfx11.json:10471 (type CB_COLOR0_ATTRIB3)  @mesa 4519cc56
  * dropped (gfx10.3 only): FMASK_SW_MODE, CMASK_PIPE_ALIGNED, RESOURCE_LEVEL, VRS_RATE_HINT_ENABLE
  */
-static uint32_t repack_CB_COLOR1_ATTRIB3(uint32_t v)
+static uint32_t repack11_CB_COLOR1_ATTRIB3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1fffu) <<  0; /* MIP0_DEPTH [12:0]->[12:0] */
@@ -1529,7 +1529,7 @@ static uint32_t repack_CB_COLOR1_ATTRIB3(uint32_t v)
  * fields: gfx103.json:11505 (type CB_COLOR0_ATTRIB3) -> gfx11.json:10471 (type CB_COLOR0_ATTRIB3)  @mesa 4519cc56
  * dropped (gfx10.3 only): FMASK_SW_MODE, CMASK_PIPE_ALIGNED, RESOURCE_LEVEL, VRS_RATE_HINT_ENABLE
  */
-static uint32_t repack_CB_COLOR2_ATTRIB3(uint32_t v)
+static uint32_t repack11_CB_COLOR2_ATTRIB3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1fffu) <<  0; /* MIP0_DEPTH [12:0]->[12:0] */
@@ -1544,7 +1544,7 @@ static uint32_t repack_CB_COLOR2_ATTRIB3(uint32_t v)
  * fields: gfx103.json:11505 (type CB_COLOR0_ATTRIB3) -> gfx11.json:10471 (type CB_COLOR0_ATTRIB3)  @mesa 4519cc56
  * dropped (gfx10.3 only): FMASK_SW_MODE, CMASK_PIPE_ALIGNED, RESOURCE_LEVEL, VRS_RATE_HINT_ENABLE
  */
-static uint32_t repack_CB_COLOR3_ATTRIB3(uint32_t v)
+static uint32_t repack11_CB_COLOR3_ATTRIB3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1fffu) <<  0; /* MIP0_DEPTH [12:0]->[12:0] */
@@ -1559,7 +1559,7 @@ static uint32_t repack_CB_COLOR3_ATTRIB3(uint32_t v)
  * fields: gfx103.json:11505 (type CB_COLOR0_ATTRIB3) -> gfx11.json:10471 (type CB_COLOR0_ATTRIB3)  @mesa 4519cc56
  * dropped (gfx10.3 only): FMASK_SW_MODE, CMASK_PIPE_ALIGNED, RESOURCE_LEVEL, VRS_RATE_HINT_ENABLE
  */
-static uint32_t repack_CB_COLOR4_ATTRIB3(uint32_t v)
+static uint32_t repack11_CB_COLOR4_ATTRIB3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1fffu) <<  0; /* MIP0_DEPTH [12:0]->[12:0] */
@@ -1574,7 +1574,7 @@ static uint32_t repack_CB_COLOR4_ATTRIB3(uint32_t v)
  * fields: gfx103.json:11505 (type CB_COLOR0_ATTRIB3) -> gfx11.json:10471 (type CB_COLOR0_ATTRIB3)  @mesa 4519cc56
  * dropped (gfx10.3 only): FMASK_SW_MODE, CMASK_PIPE_ALIGNED, RESOURCE_LEVEL, VRS_RATE_HINT_ENABLE
  */
-static uint32_t repack_CB_COLOR5_ATTRIB3(uint32_t v)
+static uint32_t repack11_CB_COLOR5_ATTRIB3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1fffu) <<  0; /* MIP0_DEPTH [12:0]->[12:0] */
@@ -1589,7 +1589,7 @@ static uint32_t repack_CB_COLOR5_ATTRIB3(uint32_t v)
  * fields: gfx103.json:11505 (type CB_COLOR0_ATTRIB3) -> gfx11.json:10471 (type CB_COLOR0_ATTRIB3)  @mesa 4519cc56
  * dropped (gfx10.3 only): FMASK_SW_MODE, CMASK_PIPE_ALIGNED, RESOURCE_LEVEL, VRS_RATE_HINT_ENABLE
  */
-static uint32_t repack_CB_COLOR6_ATTRIB3(uint32_t v)
+static uint32_t repack11_CB_COLOR6_ATTRIB3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1fffu) <<  0; /* MIP0_DEPTH [12:0]->[12:0] */
@@ -1604,7 +1604,7 @@ static uint32_t repack_CB_COLOR6_ATTRIB3(uint32_t v)
  * fields: gfx103.json:11505 (type CB_COLOR0_ATTRIB3) -> gfx11.json:10471 (type CB_COLOR0_ATTRIB3)  @mesa 4519cc56
  * dropped (gfx10.3 only): FMASK_SW_MODE, CMASK_PIPE_ALIGNED, RESOURCE_LEVEL, VRS_RATE_HINT_ENABLE
  */
-static uint32_t repack_CB_COLOR7_ATTRIB3(uint32_t v)
+static uint32_t repack11_CB_COLOR7_ATTRIB3(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1fffu) <<  0; /* MIP0_DEPTH [12:0]->[12:0] */
@@ -1619,7 +1619,7 @@ static uint32_t repack_CB_COLOR7_ATTRIB3(uint32_t v)
  * fields: gfx103.json:11892 (type CP_APPEND_ADDR_HI) -> gfx11.json:10826 (type CP_APPEND_ADDR_HI)  @mesa 4519cc56
  * new on gfx11 (left 0):  FENCE_SIZE, PWS_ENABLE
  */
-static uint32_t repack_CP_APPEND_ADDR_HI(uint32_t v)
+static uint32_t repack11_CP_APPEND_ADDR_HI(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xffffu) <<  0; /* MEM_ADDR_HI [15:0]->[15:0] */
@@ -1633,7 +1633,7 @@ static uint32_t repack_CP_APPEND_ADDR_HI(uint32_t v)
  * fields: gfx103.json:12397 (type CP_ME_MC_WADDR_HI) -> gfx11.json:11278 (type CP_ME_MC_WADDR_HI)  @mesa 4519cc56
  * new on gfx11 (left 0):  WRITE_CONFIRM, WRITE64, VMID, RINGID, PRIVILEGE
  */
-static uint32_t repack_CP_ME_MC_WADDR_HI(uint32_t v)
+static uint32_t repack11_CP_ME_MC_WADDR_HI(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xffffu) <<  0; /* ME_MC_WADDR_HI [15:0]->[15:0] */
@@ -1645,7 +1645,7 @@ static uint32_t repack_CP_ME_MC_WADDR_HI(uint32_t v)
  * fields: gfx103.json:12386 (type CP_ME_MC_RADDR_HI) -> gfx11.json:11264 (type CP_ME_MC_RADDR_HI)  @mesa 4519cc56
  * new on gfx11 (left 0):  SIZE, VMID, PRIVILEGE
  */
-static uint32_t repack_CP_ME_MC_RADDR_HI(uint32_t v)
+static uint32_t repack11_CP_ME_MC_RADDR_HI(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xffffu) <<  0; /* ME_MC_RADDR_HI [15:0]->[15:0] */
@@ -1657,7 +1657,7 @@ static uint32_t repack_CP_ME_MC_RADDR_HI(uint32_t v)
  * fields: gfx103.json:12285 (type CP_DMA_PFP_CONTROL) -> gfx11.json:11128 (type CP_DMA_PFP_CONTROL)  @mesa 4519cc56
  * new on gfx11 (left 0):  VMID, TMZ
  */
-static uint32_t repack_CP_DMA_PFP_CONTROL(uint32_t v)
+static uint32_t repack11_CP_DMA_PFP_CONTROL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 10) & 0x1u) << 10; /* MEMLOG_CLEAR [10:10]->[10:10] */
@@ -1674,7 +1674,7 @@ static uint32_t repack_CP_DMA_PFP_CONTROL(uint32_t v)
  * fields: gfx103.json:12285 (type CP_DMA_PFP_CONTROL) -> gfx11.json:11128 (type CP_DMA_PFP_CONTROL)  @mesa 4519cc56
  * new on gfx11 (left 0):  VMID, TMZ
  */
-static uint32_t repack_CP_DMA_ME_CONTROL(uint32_t v)
+static uint32_t repack11_CP_DMA_ME_CONTROL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 10) & 0x1u) << 10; /* MEMLOG_CLEAR [10:10]->[10:10] */
@@ -1691,7 +1691,7 @@ static uint32_t repack_CP_DMA_ME_CONTROL(uint32_t v)
  * fields: gfx103.json:12431 (type CP_PFP_LOAD_CONTROL) -> gfx11.json:11317 (type CP_PFP_LOAD_CONTROL)  @mesa 4519cc56
  * new on gfx11 (left 0):  LOAD_ORDINAL
  */
-static uint32_t repack_CP_PFP_LOAD_CONTROL(uint32_t v)
+static uint32_t repack11_CP_PFP_LOAD_CONTROL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* CONFIG_REG_EN [0:0]->[0:0] */
@@ -1706,7 +1706,7 @@ static uint32_t repack_CP_PFP_LOAD_CONTROL(uint32_t v)
  * fields: gfx103.json:12335 (type CP_EOP_DONE_EVENT_CNTL) -> gfx11.json:11181 (type CP_EOP_DONE_EVENT_CNTL)  @mesa 4519cc56
  * new on gfx11 (left 0):  GLK_INV, PWS_ENABLE
  */
-static uint32_t repack_CP_EOP_DONE_EVENT_CNTL(uint32_t v)
+static uint32_t repack11_CP_EOP_DONE_EVENT_CNTL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 12) & 0xfffu) << 12; /* GCR_CNTL [23:12]->[24:12] WIDTH 12->13 (masked to dst) */
@@ -1720,7 +1720,7 @@ static uint32_t repack_CP_EOP_DONE_EVENT_CNTL(uint32_t v)
  * fields: gfx103.json:12326 (type CP_EOP_DONE_DATA_CNTL) -> gfx11.json:11171 (type CP_EOP_DONE_DATA_CNTL)  @mesa 4519cc56
  * new on gfx11 (left 0):  SEMAPHORE_SIGNAL_TYPE
  */
-static uint32_t repack_CP_EOP_DONE_DATA_CNTL(uint32_t v)
+static uint32_t repack11_CP_EOP_DONE_DATA_CNTL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 16) & 0x3u) << 16; /* DST_SEL [17:16]->[17:16] */
@@ -1735,7 +1735,7 @@ static uint32_t repack_CP_EOP_DONE_DATA_CNTL(uint32_t v)
  * fields: gfx103.json:15033 (type VGT_MULTI_PRIM_IB_RESET_EN) -> gfx11.json:11883 (type GE_MULTI_PRIM_IB_RESET_EN)  @mesa 4519cc56
  * new on gfx11 (left 0):  DISABLE_FOR_AUTO_INDEX
  */
-static uint32_t repack_GE_MULTI_PRIM_IB_RESET_EN(uint32_t v)
+static uint32_t repack11_GE_MULTI_PRIM_IB_RESET_EN(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* RESET_EN [0:0]->[0:0] */
@@ -1746,7 +1746,7 @@ static uint32_t repack_GE_MULTI_PRIM_IB_RESET_EN(uint32_t v)
 /* VGT_TF_RING_SIZE  gfx10.3 0x30938 -> gfx11 0x30938
  * fields: gfx103.json:15145 (type VGT_TF_RING_SIZE) -> gfx11.json:13955 (type VGT_TF_RING_SIZE)  @mesa 4519cc56
  */
-static uint32_t repack_VGT_TF_RING_SIZE(uint32_t v)
+static uint32_t repack11_VGT_TF_RING_SIZE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xffffu) <<  0; /* SIZE [15:0]->[16:0] WIDTH 16->17 (masked to dst) */
@@ -1758,7 +1758,7 @@ static uint32_t repack_VGT_TF_RING_SIZE(uint32_t v)
  * dropped (gfx10.3 only): VERT_GRP_SIZE, BREAK_WAVE_AT_EOI
  * new on gfx11 (left 0):  PRIMS_PER_SUBGRP, VERTS_PER_SUBGRP, BREAK_SUBGRP_AT_EOI, BREAK_PRIMGRP_AT_EOI, GCR_DISABLE, DIS_PG_SIZE_ADJUST_FOR_STRIP
  */
-static uint32_t repack_GE_CNTL(uint32_t v)
+static uint32_t repack11_GE_CNTL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >> 19) & 0x1u) << 19; /* PACKET_TO_ONE_PA [19:19]->[19:19] */
@@ -1770,7 +1770,7 @@ static uint32_t repack_GE_CNTL(uint32_t v)
  * fields: gfx103.json:14486 (type SQC_CACHES) -> gfx11.json:13423 (type SQC_CACHES)  @mesa 4519cc56
  * dropped (gfx10.3 only): L2_WB_POLICY
  */
-static uint32_t repack_SQC_CACHES(uint32_t v)
+static uint32_t repack11_SQC_CACHES(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* TARGET_INST [0:0]->[0:0] */
@@ -1783,7 +1783,7 @@ static uint32_t repack_SQC_CACHES(uint32_t v)
 /* GDS_ATOM_BASE  gfx10.3 0x31030 -> gfx11 0x31030
  * fields: gfx103.json:12931 (type GDS_ATOM_BASE) -> gfx11.json:11755 (type GDS_ATOM_BASE)  @mesa 4519cc56
  */
-static uint32_t repack_GDS_ATOM_BASE(uint32_t v)
+static uint32_t repack11_GDS_ATOM_BASE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xfffu) <<  0; /* BASE [15:0]->[11:0] WIDTH 16->12 (masked to dst) */
@@ -1794,7 +1794,7 @@ static uint32_t repack_GDS_ATOM_BASE(uint32_t v)
 /* GDS_ATOM_SIZE  gfx10.3 0x31034 -> gfx11 0x31034
  * fields: gfx103.json:12969 (type GDS_ATOM_SIZE) -> gfx11.json:11793 (type GDS_ATOM_SIZE)  @mesa 4519cc56
  */
-static uint32_t repack_GDS_ATOM_SIZE(uint32_t v)
+static uint32_t repack11_GDS_ATOM_SIZE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1fffu) <<  0; /* SIZE [15:0]->[12:0] WIDTH 16->13 (masked to dst) */
@@ -1806,7 +1806,7 @@ static uint32_t repack_GDS_ATOM_SIZE(uint32_t v)
  * fields: gfx103.json:12975 (type GDS_GWS_RESOURCE) -> gfx11.json:11799 (type GDS_GWS_RESOURCE)  @mesa 4519cc56
  * dropped (gfx10.3 only): HEAD_QUEUE1, UNUSED1
  */
-static uint32_t repack_GDS_GWS_RESOURCE(uint32_t v)
+static uint32_t repack11_GDS_GWS_RESOURCE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* FLAG [0:0]->[0:0] */
@@ -1826,7 +1826,7 @@ static uint32_t repack_GDS_GWS_RESOURCE(uint32_t v)
  * dropped (gfx10.3 only): PERF_SEL1, CNTR_MODE1, CNTR_MODE0
  * new on gfx11 (left 0):  CNTR_MODE
  */
-static uint32_t repack_CPG_PERFCOUNTER1_SELECT(uint32_t v)
+static uint32_t repack11_CPG_PERFCOUNTER1_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL [9:0]->[9:0] */
@@ -1839,7 +1839,7 @@ static uint32_t repack_CPG_PERFCOUNTER1_SELECT(uint32_t v)
  * dropped (gfx10.3 only): PERF_SEL1, CNTR_MODE1, CNTR_MODE0
  * new on gfx11 (left 0):  CNTR_MODE
  */
-static uint32_t repack_CPC_PERFCOUNTER1_SELECT(uint32_t v)
+static uint32_t repack11_CPC_PERFCOUNTER1_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL [9:0]->[9:0] */
@@ -1852,7 +1852,7 @@ static uint32_t repack_CPC_PERFCOUNTER1_SELECT(uint32_t v)
  * dropped (gfx10.3 only): PERF_SEL1, CNTR_MODE1, CNTR_MODE0
  * new on gfx11 (left 0):  CNTR_MODE
  */
-static uint32_t repack_CPF_PERFCOUNTER1_SELECT(uint32_t v)
+static uint32_t repack11_CPF_PERFCOUNTER1_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL [9:0]->[9:0] */
@@ -1864,7 +1864,7 @@ static uint32_t repack_CPF_PERFCOUNTER1_SELECT(uint32_t v)
  * fields: gfx103.json:13126 (type GRBM_SE0_PERFCOUNTER_SELECT) -> gfx11.json:11976 (type GRBM_SE0_PERFCOUNTER_SELECT)  @mesa 4519cc56
  * new on gfx11 (left 0):  GL1H_BUSY_USER_DEFINED_MASK, PC_BUSY_USER_DEFINED_MASK, SEDC_BUSY_USER_DEFINED_MASK
  */
-static uint32_t repack_GRBM_SE0_PERFCOUNTER_SELECT(uint32_t v)
+static uint32_t repack11_GRBM_SE0_PERFCOUNTER_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* PERF_SEL [5:0]->[5:0] */
@@ -1889,7 +1889,7 @@ static uint32_t repack_GRBM_SE0_PERFCOUNTER_SELECT(uint32_t v)
  * fields: gfx103.json:13126 (type GRBM_SE0_PERFCOUNTER_SELECT) -> gfx11.json:11976 (type GRBM_SE0_PERFCOUNTER_SELECT)  @mesa 4519cc56
  * new on gfx11 (left 0):  GL1H_BUSY_USER_DEFINED_MASK, PC_BUSY_USER_DEFINED_MASK, SEDC_BUSY_USER_DEFINED_MASK
  */
-static uint32_t repack_GRBM_SE1_PERFCOUNTER_SELECT(uint32_t v)
+static uint32_t repack11_GRBM_SE1_PERFCOUNTER_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* PERF_SEL [5:0]->[5:0] */
@@ -1914,7 +1914,7 @@ static uint32_t repack_GRBM_SE1_PERFCOUNTER_SELECT(uint32_t v)
  * fields: gfx103.json:13126 (type GRBM_SE0_PERFCOUNTER_SELECT) -> gfx11.json:11976 (type GRBM_SE0_PERFCOUNTER_SELECT)  @mesa 4519cc56
  * new on gfx11 (left 0):  GL1H_BUSY_USER_DEFINED_MASK, PC_BUSY_USER_DEFINED_MASK, SEDC_BUSY_USER_DEFINED_MASK
  */
-static uint32_t repack_GRBM_SE2_PERFCOUNTER_SELECT(uint32_t v)
+static uint32_t repack11_GRBM_SE2_PERFCOUNTER_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* PERF_SEL [5:0]->[5:0] */
@@ -1939,7 +1939,7 @@ static uint32_t repack_GRBM_SE2_PERFCOUNTER_SELECT(uint32_t v)
  * fields: gfx103.json:13126 (type GRBM_SE0_PERFCOUNTER_SELECT) -> gfx11.json:11976 (type GRBM_SE0_PERFCOUNTER_SELECT)  @mesa 4519cc56
  * new on gfx11 (left 0):  GL1H_BUSY_USER_DEFINED_MASK, PC_BUSY_USER_DEFINED_MASK, SEDC_BUSY_USER_DEFINED_MASK
  */
-static uint32_t repack_GRBM_SE3_PERFCOUNTER_SELECT(uint32_t v)
+static uint32_t repack11_GRBM_SE3_PERFCOUNTER_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3fu) <<  0; /* PERF_SEL [5:0]->[5:0] */
@@ -1964,7 +1964,7 @@ static uint32_t repack_GRBM_SE3_PERFCOUNTER_SELECT(uint32_t v)
  * fields: gfx103.json:13114 (type GRBM_PERFCOUNTER0_SELECT_HI) -> gfx11.json:11963 (type GRBM_PERFCOUNTER0_SELECT_HI)  @mesa 4519cc56
  * new on gfx11 (left 0):  GL1H_BUSY_USER_DEFINED_MASK
  */
-static uint32_t repack_GRBM_PERFCOUNTER0_SELECT_HI(uint32_t v)
+static uint32_t repack11_GRBM_PERFCOUNTER0_SELECT_HI(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  1) & 0x1u) <<  1; /* UTCL1_BUSY_USER_DEFINED_MASK [1:1]->[1:1] */
@@ -1982,7 +1982,7 @@ static uint32_t repack_GRBM_PERFCOUNTER0_SELECT_HI(uint32_t v)
  * fields: gfx103.json:13114 (type GRBM_PERFCOUNTER0_SELECT_HI) -> gfx11.json:11963 (type GRBM_PERFCOUNTER0_SELECT_HI)  @mesa 4519cc56
  * new on gfx11 (left 0):  GL1H_BUSY_USER_DEFINED_MASK
  */
-static uint32_t repack_GRBM_PERFCOUNTER1_SELECT_HI(uint32_t v)
+static uint32_t repack11_GRBM_PERFCOUNTER1_SELECT_HI(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  1) & 0x1u) <<  1; /* UTCL1_BUSY_USER_DEFINED_MASK [1:1]->[1:1] */
@@ -1999,7 +1999,7 @@ static uint32_t repack_GRBM_PERFCOUNTER1_SELECT_HI(uint32_t v)
 /* GE1_PERFCOUNTER0_SELECT  gfx10.3 0x36290 -> gfx11 0x36290
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE1_PERFCOUNTER0_SELECT(uint32_t v)
+static uint32_t repack11_GE1_PERFCOUNTER0_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2013,7 +2013,7 @@ static uint32_t repack_GE1_PERFCOUNTER0_SELECT(uint32_t v)
 /* GE1_PERFCOUNTER0_SELECT1  gfx10.3 0x36294 -> gfx11 0x36294
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE1_PERFCOUNTER0_SELECT1(uint32_t v)
+static uint32_t repack11_GE1_PERFCOUNTER0_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2026,7 +2026,7 @@ static uint32_t repack_GE1_PERFCOUNTER0_SELECT1(uint32_t v)
 /* GE1_PERFCOUNTER1_SELECT  gfx10.3 0x36298 -> gfx11 0x36298
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE1_PERFCOUNTER1_SELECT(uint32_t v)
+static uint32_t repack11_GE1_PERFCOUNTER1_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2040,7 +2040,7 @@ static uint32_t repack_GE1_PERFCOUNTER1_SELECT(uint32_t v)
 /* GE1_PERFCOUNTER1_SELECT1  gfx10.3 0x3629c -> gfx11 0x3629c
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE1_PERFCOUNTER1_SELECT1(uint32_t v)
+static uint32_t repack11_GE1_PERFCOUNTER1_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2053,7 +2053,7 @@ static uint32_t repack_GE1_PERFCOUNTER1_SELECT1(uint32_t v)
 /* GE1_PERFCOUNTER2_SELECT  gfx10.3 0x362a0 -> gfx11 0x362a0
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE1_PERFCOUNTER2_SELECT(uint32_t v)
+static uint32_t repack11_GE1_PERFCOUNTER2_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2067,7 +2067,7 @@ static uint32_t repack_GE1_PERFCOUNTER2_SELECT(uint32_t v)
 /* GE1_PERFCOUNTER2_SELECT1  gfx10.3 0x362a4 -> gfx11 0x362a4
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE1_PERFCOUNTER2_SELECT1(uint32_t v)
+static uint32_t repack11_GE1_PERFCOUNTER2_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2080,7 +2080,7 @@ static uint32_t repack_GE1_PERFCOUNTER2_SELECT1(uint32_t v)
 /* GE1_PERFCOUNTER3_SELECT  gfx10.3 0x362a8 -> gfx11 0x362a8
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE1_PERFCOUNTER3_SELECT(uint32_t v)
+static uint32_t repack11_GE1_PERFCOUNTER3_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2094,7 +2094,7 @@ static uint32_t repack_GE1_PERFCOUNTER3_SELECT(uint32_t v)
 /* GE1_PERFCOUNTER3_SELECT1  gfx10.3 0x362ac -> gfx11 0x362ac
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE1_PERFCOUNTER3_SELECT1(uint32_t v)
+static uint32_t repack11_GE1_PERFCOUNTER3_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2107,7 +2107,7 @@ static uint32_t repack_GE1_PERFCOUNTER3_SELECT1(uint32_t v)
 /* GE2_DIST_PERFCOUNTER0_SELECT  gfx10.3 0x362b0 -> gfx11 0x362b0
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_DIST_PERFCOUNTER0_SELECT(uint32_t v)
+static uint32_t repack11_GE2_DIST_PERFCOUNTER0_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2121,7 +2121,7 @@ static uint32_t repack_GE2_DIST_PERFCOUNTER0_SELECT(uint32_t v)
 /* GE2_DIST_PERFCOUNTER0_SELECT1  gfx10.3 0x362b4 -> gfx11 0x362b4
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_DIST_PERFCOUNTER0_SELECT1(uint32_t v)
+static uint32_t repack11_GE2_DIST_PERFCOUNTER0_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2134,7 +2134,7 @@ static uint32_t repack_GE2_DIST_PERFCOUNTER0_SELECT1(uint32_t v)
 /* GE2_DIST_PERFCOUNTER1_SELECT  gfx10.3 0x362b8 -> gfx11 0x362b8
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_DIST_PERFCOUNTER1_SELECT(uint32_t v)
+static uint32_t repack11_GE2_DIST_PERFCOUNTER1_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2148,7 +2148,7 @@ static uint32_t repack_GE2_DIST_PERFCOUNTER1_SELECT(uint32_t v)
 /* GE2_DIST_PERFCOUNTER1_SELECT1  gfx10.3 0x362bc -> gfx11 0x362bc
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_DIST_PERFCOUNTER1_SELECT1(uint32_t v)
+static uint32_t repack11_GE2_DIST_PERFCOUNTER1_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2161,7 +2161,7 @@ static uint32_t repack_GE2_DIST_PERFCOUNTER1_SELECT1(uint32_t v)
 /* GE2_DIST_PERFCOUNTER2_SELECT  gfx10.3 0x362c0 -> gfx11 0x362c0
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_DIST_PERFCOUNTER2_SELECT(uint32_t v)
+static uint32_t repack11_GE2_DIST_PERFCOUNTER2_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2175,7 +2175,7 @@ static uint32_t repack_GE2_DIST_PERFCOUNTER2_SELECT(uint32_t v)
 /* GE2_DIST_PERFCOUNTER2_SELECT1  gfx10.3 0x362c4 -> gfx11 0x362c4
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_DIST_PERFCOUNTER2_SELECT1(uint32_t v)
+static uint32_t repack11_GE2_DIST_PERFCOUNTER2_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2188,7 +2188,7 @@ static uint32_t repack_GE2_DIST_PERFCOUNTER2_SELECT1(uint32_t v)
 /* GE2_DIST_PERFCOUNTER3_SELECT  gfx10.3 0x362c8 -> gfx11 0x362c8
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_DIST_PERFCOUNTER3_SELECT(uint32_t v)
+static uint32_t repack11_GE2_DIST_PERFCOUNTER3_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2202,7 +2202,7 @@ static uint32_t repack_GE2_DIST_PERFCOUNTER3_SELECT(uint32_t v)
 /* GE2_DIST_PERFCOUNTER3_SELECT1  gfx10.3 0x362cc -> gfx11 0x362cc
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_DIST_PERFCOUNTER3_SELECT1(uint32_t v)
+static uint32_t repack11_GE2_DIST_PERFCOUNTER3_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2215,7 +2215,7 @@ static uint32_t repack_GE2_DIST_PERFCOUNTER3_SELECT1(uint32_t v)
 /* GE2_SE_PERFCOUNTER0_SELECT  gfx10.3 0x362d0 -> gfx11 0x362d0
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_SE_PERFCOUNTER0_SELECT(uint32_t v)
+static uint32_t repack11_GE2_SE_PERFCOUNTER0_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2229,7 +2229,7 @@ static uint32_t repack_GE2_SE_PERFCOUNTER0_SELECT(uint32_t v)
 /* GE2_SE_PERFCOUNTER0_SELECT1  gfx10.3 0x362d4 -> gfx11 0x362d4
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_SE_PERFCOUNTER0_SELECT1(uint32_t v)
+static uint32_t repack11_GE2_SE_PERFCOUNTER0_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2242,7 +2242,7 @@ static uint32_t repack_GE2_SE_PERFCOUNTER0_SELECT1(uint32_t v)
 /* GE2_SE_PERFCOUNTER1_SELECT  gfx10.3 0x362d8 -> gfx11 0x362d8
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_SE_PERFCOUNTER1_SELECT(uint32_t v)
+static uint32_t repack11_GE2_SE_PERFCOUNTER1_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2256,7 +2256,7 @@ static uint32_t repack_GE2_SE_PERFCOUNTER1_SELECT(uint32_t v)
 /* GE2_SE_PERFCOUNTER1_SELECT1  gfx10.3 0x362dc -> gfx11 0x362dc
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_SE_PERFCOUNTER1_SELECT1(uint32_t v)
+static uint32_t repack11_GE2_SE_PERFCOUNTER1_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2269,7 +2269,7 @@ static uint32_t repack_GE2_SE_PERFCOUNTER1_SELECT1(uint32_t v)
 /* GE2_SE_PERFCOUNTER2_SELECT  gfx10.3 0x362e0 -> gfx11 0x362e0
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_SE_PERFCOUNTER2_SELECT(uint32_t v)
+static uint32_t repack11_GE2_SE_PERFCOUNTER2_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2283,7 +2283,7 @@ static uint32_t repack_GE2_SE_PERFCOUNTER2_SELECT(uint32_t v)
 /* GE2_SE_PERFCOUNTER2_SELECT1  gfx10.3 0x362e4 -> gfx11 0x362e4
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_SE_PERFCOUNTER2_SELECT1(uint32_t v)
+static uint32_t repack11_GE2_SE_PERFCOUNTER2_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2296,7 +2296,7 @@ static uint32_t repack_GE2_SE_PERFCOUNTER2_SELECT1(uint32_t v)
 /* GE2_SE_PERFCOUNTER3_SELECT  gfx10.3 0x362e8 -> gfx11 0x362e8
  * fields: gfx103.json:13024 (type GE1_PERFCOUNTER0_SELECT) -> gfx11.json:11846 (type GE1_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_SE_PERFCOUNTER3_SELECT(uint32_t v)
+static uint32_t repack11_GE2_SE_PERFCOUNTER3_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL0 [9:0]->[9:0] */
@@ -2310,7 +2310,7 @@ static uint32_t repack_GE2_SE_PERFCOUNTER3_SELECT(uint32_t v)
 /* GE2_SE_PERFCOUNTER3_SELECT1  gfx10.3 0x362ec -> gfx11 0x362ec
  * fields: gfx103.json:13033 (type GE1_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GE2_SE_PERFCOUNTER3_SELECT1(uint32_t v)
+static uint32_t repack11_GE2_SE_PERFCOUNTER3_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x3ffu) <<  0; /* PERF_SEL2 [9:0]->[9:0] */
@@ -2324,7 +2324,7 @@ static uint32_t repack_GE2_SE_PERFCOUNTER3_SELECT1(uint32_t v)
  * fields: gfx103.json:14502 (type SQ_PERFCOUNTER_CTRL) -> gfx11.json:13431 (type SQG_PERFCOUNTER_CTRL)  @mesa 4519cc56
  * dropped (gfx10.3 only): VS_EN, ES_EN, LS_EN, CNTR_RATE, DISABLE_FLUSH
  */
-static uint32_t repack_SQ_PERFCOUNTER_CTRL(uint32_t v)
+static uint32_t repack11_SQ_PERFCOUNTER_CTRL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* PS_EN [0:0]->[0:0] */
@@ -2344,7 +2344,7 @@ static uint32_t repack_SQ_PERFCOUNTER_CTRL(uint32_t v)
  * fields: gfx103.json:14521 (type SQ_PERFCOUNTER_CTRL2) -> gfx11.json:13445 (type SQG_PERFCOUNTER_CTRL2)  @mesa 4519cc56
  * new on gfx11 (left 0):  VMID_EN
  */
-static uint32_t repack_SQ_PERFCOUNTER_CTRL2(uint32_t v)
+static uint32_t repack11_SQ_PERFCOUNTER_CTRL2(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* FORCE_EN [0:0]->[0:0] */
@@ -2354,7 +2354,7 @@ static uint32_t repack_SQ_PERFCOUNTER_CTRL2(uint32_t v)
 /* CB_PERFCOUNTER0_SELECT  gfx10.3 0x37004 -> gfx11 0x37004
  * fields: gfx103.json:11616 (type CB_PERFCOUNTER0_SELECT) -> gfx11.json:13021 (type SDMA0_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_CB_PERFCOUNTER0_SELECT(uint32_t v)
+static uint32_t repack11_CB_PERFCOUNTER0_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2368,7 +2368,7 @@ static uint32_t repack_CB_PERFCOUNTER0_SELECT(uint32_t v)
 /* CB_PERFCOUNTER0_SELECT1  gfx10.3 0x37008 -> gfx11 0x37008
  * fields: gfx103.json:11625 (type CB_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_CB_PERFCOUNTER0_SELECT1(uint32_t v)
+static uint32_t repack11_CB_PERFCOUNTER0_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL2 [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2381,7 +2381,7 @@ static uint32_t repack_CB_PERFCOUNTER0_SELECT1(uint32_t v)
 /* CB_PERFCOUNTER1_SELECT  gfx10.3 0x3700c -> gfx11 0x3700c
  * fields: gfx103.json:11633 (type CB_PERFCOUNTER1_SELECT) -> gfx11.json:10551 (type CB_PERFCOUNTER1_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_CB_PERFCOUNTER1_SELECT(uint32_t v)
+static uint32_t repack11_CB_PERFCOUNTER1_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2392,7 +2392,7 @@ static uint32_t repack_CB_PERFCOUNTER1_SELECT(uint32_t v)
 /* CB_PERFCOUNTER2_SELECT  gfx10.3 0x37010 -> gfx11 0x37010
  * fields: gfx103.json:11633 (type CB_PERFCOUNTER1_SELECT) -> gfx11.json:10551 (type CB_PERFCOUNTER1_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_CB_PERFCOUNTER2_SELECT(uint32_t v)
+static uint32_t repack11_CB_PERFCOUNTER2_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2403,7 +2403,7 @@ static uint32_t repack_CB_PERFCOUNTER2_SELECT(uint32_t v)
 /* CB_PERFCOUNTER3_SELECT  gfx10.3 0x37014 -> gfx11 0x37014
  * fields: gfx103.json:11633 (type CB_PERFCOUNTER1_SELECT) -> gfx11.json:10551 (type CB_PERFCOUNTER1_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_CB_PERFCOUNTER3_SELECT(uint32_t v)
+static uint32_t repack11_CB_PERFCOUNTER3_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2415,7 +2415,7 @@ static uint32_t repack_CB_PERFCOUNTER3_SELECT(uint32_t v)
  * fields: gfx103.json:14028 (type RLC_SPM_PERFMON_CNTL) -> gfx11.json:12886 (type RLC_SPM_PERFMON_CNTL)  @mesa 4519cc56
  * new on gfx11 (left 0):  DISABLE_GFXCLOCK_COUNT
  */
-static uint32_t repack_RLC_SPM_PERFMON_CNTL(uint32_t v)
+static uint32_t repack11_RLC_SPM_PERFMON_CNTL(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xfffu) <<  0; /* RESERVED1 [11:0]->[11:0] */
@@ -2429,7 +2429,7 @@ static uint32_t repack_RLC_SPM_PERFMON_CNTL(uint32_t v)
  * fields: gfx103.json:13966 (type RLC_SPM_ACCUM_STATUS) -> gfx11.json:12837 (type RLC_SPM_ACCUM_STATUS)  @mesa 4519cc56
  * new on gfx11 (left 0):  MultiSampleAborted
  */
-static uint32_t repack_RLC_SPM_ACCUM_STATUS(uint32_t v)
+static uint32_t repack11_RLC_SPM_ACCUM_STATUS(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0xffu) <<  0; /* NumbSamplesCompleted [7:0]->[7:0] */
@@ -2457,7 +2457,7 @@ static uint32_t repack_RLC_SPM_ACCUM_STATUS(uint32_t v)
  * dropped (gfx10.3 only): SwaAutoResetPerfmonDisable
  * new on gfx11 (left 0):  SE4_LoadOverride, SE4_SwaLoadOverride, SE5_LoadOverride, SE5_SwaLoadOverride
  */
-static uint32_t repack_RLC_SPM_ACCUM_MODE(uint32_t v)
+static uint32_t repack11_RLC_SPM_ACCUM_MODE(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1u) <<  0; /* EnableAccum [0:0]->[0:0] */
@@ -2484,7 +2484,7 @@ static uint32_t repack_RLC_SPM_ACCUM_MODE(uint32_t v)
 /* RMI_PERFCOUNTER0_SELECT  gfx10.3 0x37400 -> gfx11 0x37400
  * fields: gfx103.json:11616 (type CB_PERFCOUNTER0_SELECT) -> gfx11.json:13021 (type SDMA0_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_RMI_PERFCOUNTER0_SELECT(uint32_t v)
+static uint32_t repack11_RMI_PERFCOUNTER0_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2498,7 +2498,7 @@ static uint32_t repack_RMI_PERFCOUNTER0_SELECT(uint32_t v)
 /* RMI_PERFCOUNTER0_SELECT1  gfx10.3 0x37404 -> gfx11 0x37404
  * fields: gfx103.json:11625 (type CB_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_RMI_PERFCOUNTER0_SELECT1(uint32_t v)
+static uint32_t repack11_RMI_PERFCOUNTER0_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL2 [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2511,7 +2511,7 @@ static uint32_t repack_RMI_PERFCOUNTER0_SELECT1(uint32_t v)
 /* RMI_PERFCOUNTER1_SELECT  gfx10.3 0x37408 -> gfx11 0x37408
  * fields: gfx103.json:11633 (type CB_PERFCOUNTER1_SELECT) -> gfx11.json:10551 (type CB_PERFCOUNTER1_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_RMI_PERFCOUNTER1_SELECT(uint32_t v)
+static uint32_t repack11_RMI_PERFCOUNTER1_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2522,7 +2522,7 @@ static uint32_t repack_RMI_PERFCOUNTER1_SELECT(uint32_t v)
 /* RMI_PERFCOUNTER2_SELECT  gfx10.3 0x3740c -> gfx11 0x3740c
  * fields: gfx103.json:11616 (type CB_PERFCOUNTER0_SELECT) -> gfx11.json:13021 (type SDMA0_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_RMI_PERFCOUNTER2_SELECT(uint32_t v)
+static uint32_t repack11_RMI_PERFCOUNTER2_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2536,7 +2536,7 @@ static uint32_t repack_RMI_PERFCOUNTER2_SELECT(uint32_t v)
 /* RMI_PERFCOUNTER2_SELECT1  gfx10.3 0x37410 -> gfx11 0x37410
  * fields: gfx103.json:11625 (type CB_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_RMI_PERFCOUNTER2_SELECT1(uint32_t v)
+static uint32_t repack11_RMI_PERFCOUNTER2_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL2 [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2549,7 +2549,7 @@ static uint32_t repack_RMI_PERFCOUNTER2_SELECT1(uint32_t v)
 /* RMI_PERFCOUNTER3_SELECT  gfx10.3 0x37414 -> gfx11 0x37414
  * fields: gfx103.json:11633 (type CB_PERFCOUNTER1_SELECT) -> gfx11.json:10551 (type CB_PERFCOUNTER1_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_RMI_PERFCOUNTER3_SELECT(uint32_t v)
+static uint32_t repack11_RMI_PERFCOUNTER3_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2560,7 +2560,7 @@ static uint32_t repack_RMI_PERFCOUNTER3_SELECT(uint32_t v)
 /* GCR_PERFCOUNTER0_SELECT  gfx10.3 0x37580 -> gfx11 0x37580
  * fields: gfx103.json:11616 (type CB_PERFCOUNTER0_SELECT) -> gfx11.json:13021 (type SDMA0_PERFCOUNTER0_SELECT)  @mesa 4519cc56
  */
-static uint32_t repack_GCR_PERFCOUNTER0_SELECT(uint32_t v)
+static uint32_t repack11_GCR_PERFCOUNTER0_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2574,7 +2574,7 @@ static uint32_t repack_GCR_PERFCOUNTER0_SELECT(uint32_t v)
 /* GCR_PERFCOUNTER0_SELECT1  gfx10.3 0x37584 -> gfx11 0x37584
  * fields: gfx103.json:11625 (type CB_PERFCOUNTER0_SELECT1) -> gfx11.json:13030 (type SDMA0_PERFCOUNTER0_SELECT1)  @mesa 4519cc56
  */
-static uint32_t repack_GCR_PERFCOUNTER0_SELECT1(uint32_t v)
+static uint32_t repack11_GCR_PERFCOUNTER0_SELECT1(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL2 [8:0]->[9:0] WIDTH 9->10 (masked to dst) */
@@ -2589,7 +2589,7 @@ static uint32_t repack_GCR_PERFCOUNTER0_SELECT1(uint32_t v)
  * dropped (gfx10.3 only): CNTL_MODE
  * new on gfx11 (left 0):  CNTR_MODE
  */
-static uint32_t repack_GCR_PERFCOUNTER1_SELECT(uint32_t v)
+static uint32_t repack11_GCR_PERFCOUNTER1_SELECT(uint32_t v)
 {
     uint32_t o = 0u;
     o |= ((v >>  0) & 0x1ffu) <<  0; /* PERF_SEL [8:0]->[9:0] WIDTH 9->10 (masked to dst) */

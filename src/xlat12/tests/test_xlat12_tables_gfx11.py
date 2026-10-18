@@ -48,7 +48,7 @@ b10, _ = G.derive_bases(m10, l10)
 b11, _ = G.derive_bases(m11, l11)
 
 # ---- parse the committed header rows ----------------------------------------
-ROW = re.compile(r'\{\s*0x([0-9a-f]+)u,\s*0x([0-9a-f]+)u,\s*(0|repack_\w+),'
+ROW = re.compile(r'\{\s*0x([0-9a-f]+)u,\s*0x([0-9a-f]+)u,\s*(0|repack11_\w+),'
                  r'\s*XLAT12_CLS_(\w+),\s*"(\w+)",\s*"(.*?)"\s*\},')
 hdr = open(os.path.join(XLAT, "xlat12_tables_gfx11.h")).read()
 rows = []
@@ -74,7 +74,7 @@ for r in rows:
         if cls == "MOVED":
             check(r["g11"] != r["g10"] and r["rp"] == "0", "%s MOVED shape wrong" % nm)
         if cls == "FIELD_REPACK":
-            check(r["rp"] == "repack_" + nm and r["g11"] != 0, "%s FIELD_REPACK shape wrong" % nm)
+            check(r["rp"] == "repack11_" + nm and r["g11"] != 0, "%s FIELD_REPACK shape wrong" % nm)
     elif cls in ("ABSENT", "LEGACY_VS"):
         check(present is None, "%s is %s but gfx11.json carries it" % (nm, cls))
         check(r["g11"] == 0 and r["rp"] == "0" and r["reason"], "%s %s shape wrong" % (nm, cls))
@@ -89,7 +89,7 @@ for r in rows:
 # ---- 3: every field_repack function matches the re-derived field mapping -----
 repack_src = open(os.path.join(XLAT, "xlat12_repack_gfx11.h")).read()
 def fn_body(name):
-    m = re.search(r"static uint32_t repack_%s\(uint32_t v\)\n\{.*?\n\}" % re.escape(name),
+    m = re.search(r"static uint32_t repack11_%s\(uint32_t v\)\n\{.*?\n\}" % re.escape(name),
                   repack_src, re.S)
     return m.group(0) if m else None
 nrepack = 0
@@ -103,10 +103,11 @@ for r in rows:
     if rr and rr["cls"] == "field_repack":
         code, _, _ = G.emit_repack(rr, m10, m11)
         code = code.replace("-> gfx12 0x", "-> gfx11 0x").replace("new on gfx12", "new on gfx11")
+        code = code.replace("static uint32_t repack_", "static uint32_t repack11_", 1)
         check(code in repack_src, "%s repack body does not match the re-derived field mapping" % r["name"])
-check(repack_src.count("static uint32_t repack_") == nrepack,
+check(repack_src.count("static uint32_t repack11_") == nrepack,
       "repack header has %d functions, table has %d field_repack rows"
-      % (repack_src.count("static uint32_t repack_"), nrepack))
+      % (repack_src.count("static uint32_t repack11_"), nrepack))
 
 # ---- 4: study-method (address-first) counts over all 1,828 gfx10.3 SET_* regs
 def fields(mdb, name):

@@ -132,6 +132,20 @@ xlat12_status xlat12_translate(xlat12_ctx *ctx, const uint32_t *in, uint32_t in_
                                uint32_t *out, uint32_t out_cap,
                                uint32_t *out_dwords, xlat12_stats *stats);
 
+/* Target generation for xlat12_translate_level (stage 3 step 7 X2). Not XLAT12_GFX11: that
+ * name is test_tables_gfx11.c's build-mode macro. */
+enum { XLAT12_LEVEL_GFX11 = 11, XLAT12_LEVEL_GFX12 = 12 };
+
+/* xlat12_translate with the target chosen per call: gfx12 (xlat12_tables.h, the behaviour above) or
+ * gfx11 (xlat12_tables_gfx11.h, the full gfx10.3 SET_* set). Any other gfx_level is XLAT12_ERR_ARG.
+ * gfx11 differs from gfx12 only in the table and in three gfx12-only rules it skips: no REUSED
+ * override, no inclusive-scissor BR adjust, and SW_MODE fields pass only mode 0 (ERR_SWMODE
+ * otherwise, until X3 adds a gfx11 swizzle table). The NGG rule is unchanged: gfx11 has no
+ * hardware VS stage either. The lookup/introspection functions below are gfx12 only. */
+xlat12_status xlat12_translate_level(uint32_t gfx_level, xlat12_ctx *ctx, const uint32_t *in, uint32_t in_dwords,
+                                     uint32_t *out, uint32_t out_cap,
+                                     uint32_t *out_dwords, xlat12_stats *stats);
+
 /* One gfx10.3 address: returns 1 and fills gfx12 address / class if tabled, else 0. */
 int xlat12_lookup(uint32_t g10_addr, uint32_t *out_g12, uint32_t *out_cls);
 

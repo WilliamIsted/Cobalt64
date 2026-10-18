@@ -6,6 +6,8 @@
 #include "xlat12.h"
 #include "xlat12_tables.h"
 #include "xlat12_reused.h"
+/* stage 3 step 7 X2: the gfx10.3 -> gfx11 table (X1), selected per call by gfx_level. */
+#include "xlat12_tables_gfx11.h"
 /* build 0.0.452 item 3 (F5): kXlat12SwModeG10ToG12 / XLAT12_SWMODE_MAP_COUNT only - xlat12_desc.h's own
  * translation functions are `static inline` (no -Wunused-function exposure) and this file calls none of them. */
 #include "xlat12_desc.h"
@@ -63,6 +65,33 @@ static const Xlat12Entry *lookup(uint32_t g10)
         if (kXlat12Table[mid].g10 < g10) lo = mid + 1; else hi = mid;
     }
     return 0;
+}
+
+/* One decided row, whichever table it came from: dst is the target-generation address. */
+typedef struct {
+    uint32_t     dst;
+    Xlat12Repack repack;
+    uint32_t     cls;
+    const char  *name;
+} Row;
+
+static int row_of(uint32_t gfx_level, uint32_t g10, Row *r)
+{
+    if (gfx_level == XLAT12_LEVEL_GFX11) {
+        /* No REUSED override: gfx11.json has no register at either xlat12_reused.h address. */
+        uint32_t lo = 0, hi = XLAT12_TABLE_LEN_GFX11;
+        while (lo < hi) {
+            uint32_t mid = lo + ((hi - lo) >> 1);
+            const Xlat12EntryGfx11 *e = &kXlat12TableGfx11[mid];
+            if (e->g10 == g10) { r->dst = e->g11; r->repack = e->repack; r->cls = e->cls; r->name = e->name; return 1; }
+            if (e->g10 < g10) lo = mid + 1; else hi = mid;
+        }
+        return 0;
+    }
+    const Xlat12Entry *e = lookup(g10);
+    if (!e) return 0;
+    r->dst = e->g12; r->repack = e->repack; r->cls = e->cls; r->name = e->name;
+    return 1;
 }
 
 int xlat12_lookup(uint32_t g10_addr, uint32_t *out_g12, uint32_t *out_cls)
@@ -212,13 +241,23 @@ static xlat12_status run_add(Emitter *e, xlat12_stats *st, uint32_t g12, uint32_
     return XLAT12_OK;
 }
 
-/* Decide one register value. Returns OK and *emit=1 with *val set when the value
- * must be written at ent->g12; OK and *emit=0 when dropped; an error otherwise. */
-static xlat12_status decide(xlat12_ctx *ctx, xlat12_stats *st, uint32_t g10, uint32_t *val, int *emit,
-                            const Xlat12Entry **pent)
+/* Low bit of the gfx10 SW_MODE field for the registers that carry one, else 0xFF. */
+static uint32_t g10_swmode_lo(uint32_t g10)
 {
-    const Xlat12Entry *ent = lookup(g10);
-    *emit = 0; *pent = ent;
+    if (g10 == 0x28ee0u || g10 == 0x28ee4u || g10 == 0x28ee8u || g10 == 0x28eecu ||
+        g10 == 0x28ef0u || g10 == 0x28ef4u || g10 == 0x28ef8u || g10 == 0x28efcu) return 14u; /* CB_COLORn_ATTRIB3 */
+    if (g10 == 0x28040u || g10 == 0x28044u) return 4u;                                     /* DB_Z/STENCIL_INFO */
+    return 0xFFu;
+}
+
+/* Decide one register value. Returns OK and *emit=1 with *val set when the value
+ * must be written at *dst (the gfx_level address); OK and *emit=0 when dropped; an error otherwise. */
+static xlat12_status decide(uint32_t gfx_level, xlat12_ctx *ctx, xlat12_stats *st, uint32_t g10, uint32_t *val,
+                            int *emit, uint32_t *dst)
+{
+    Row row;
+    const Row *ent = row_of(gfx_level, g10, &row) ? &row : 0;
+    *emit = 0; *dst = ent ? ent->dst : 0u;
     st->regs_in++;
     if (!ent || ent->cls == XLAT12_CLS_UNKNOWN) {
         st->err_reg_addr = g10;
@@ -230,6 +269,8 @@ static xlat12_status decide(xlat12_ctx *ctx, xlat12_stats *st, uint32_t g10, uin
         st->regs_dropped_absent++;
         return XLAT12_OK;
     case XLAT12_CLS_LEGACY_VS:
+        /* Same rule on gfx11: gfx11 has no VS stage registers either (gfx11.json, gc_11_0_0_offset.h)
+         * and RADV forces NGG there (radv_physical_device.c:2818-2820), so nothing can carry the value. */
         if ((ctx && ctx->vs_mode == XLAT12_VS_NGG) || *val == 0u) {
             st->regs_dropped_legacy_vs++;
             return XLAT12_OK;
@@ -240,6 +281,18 @@ static xlat12_status decide(xlat12_ctx *ctx, xlat12_stats *st, uint32_t g10, uin
     case XLAT12_CLS_MOVED:
     case XLAT12_CLS_FIELD_REPACK:
     case XLAT12_CLS_REUSED:
+        /* shortcut: gfx11 has no SW_MODE table yet (X3), and its encoding differs from gfx10 for some modes
+         * (gfx11addrlib.cpp SwizzleModeTable: 28-31 are 256KB_*_X, several are reserved). So only mode 0
+         * (linear on both) passes; any other refuses until X3. Checked for every class: DB_Z_INFO and
+         * DB_STENCIL_INFO are IDENTICAL on gfx11, CB_COLORn_ATTRIB3 FIELD_REPACK. */
+        if (gfx_level == XLAT12_LEVEL_GFX11) {
+            const uint32_t lo = g10_swmode_lo(g10);
+            if (lo != 0xFFu && ((*val >> lo) & 0x1Fu) != 0u) {
+                st->err_reg_addr = g10; st->err_name = ent->name;
+                return XLAT12_ERR_SWMODE;
+            }
+        }
+        /* gfx11 keeps this refusal too: a PRIMGEN_EN=0 pipeline needs the hardware VS stage gfx11 lacks. */
         if (g10 == XLAT12_G10_VGT_SHADER_STAGES_EN) {
             if (((*val >> XLAT12_G10_PRIMGEN_EN_BIT) & 1u) == 0u) {
                 st->err_reg_addr = g10; st->err_name = ent->name;
@@ -266,15 +319,10 @@ static xlat12_status decide(xlat12_ctx *ctx, xlat12_stats *st, uint32_t g10, uin
              * canonical table (kXlat12SwModeG10ToG12, xlat12_desc.h) - reused here, not duplicated. It refuses
              * (XLAT12_ERR_SWMODE) ONLY on a gfx10 mode with NO gfx12 counterpart in that table (e.g. 28, 31, 32 -
              * documented there), exactly as the draw policy already does. */
-            uint32_t swInLo = 0xFFu, swOutLo = 0u, swOutW = 0u;
-            if (g10 == 0x28ee0u || g10 == 0x28ee4u || g10 == 0x28ee8u || g10 == 0x28eecu ||
-                g10 == 0x28ef0u || g10 == 0x28ef4u || g10 == 0x28ef8u || g10 == 0x28efcu) {
-                swInLo = 14u; swOutLo = 15u; swOutW = 3u;                 /* CB_COLORn_ATTRIB3 */
-            } else if (g10 == 0x28040u || g10 == 0x28044u) {
-                swInLo = 4u; swOutLo = 4u; swOutW = 5u;                   /* DB_Z_INFO / DB_STENCIL_INFO */
-            }
+            const uint32_t swInLo = g10_swmode_lo(g10);
+            const uint32_t swOutLo = swInLo == 14u ? 15u : 4u, swOutW = swInLo == 14u ? 3u : 5u;
             const uint32_t naive = ent->repack(*val);
-            if (swInLo != 0xFFu) {
+            if (swInLo != 0xFFu && gfx_level == XLAT12_LEVEL_GFX12) {
                 const uint32_t g10Mode = (*val >> swInLo) & 0x1Fu;
                 uint32_t g12Mode = 0xFFFFFFFFu;
                 for (uint32_t i = 0; i < XLAT12_SWMODE_MAP_COUNT; i++)
@@ -297,7 +345,8 @@ static xlat12_status decide(xlat12_ctx *ctx, xlat12_stats *st, uint32_t g10, uin
         /* build 0.0.499: a scissor BOTTOM-RIGHT is exclusive on gfx10.3 and INCLUSIVE on gfx12
          * (xlat12_scissor.h, with the mesa quotes): BR_X/BR_Y -1 on the value the row above already produced, or
          * REFUSE when a component is 0 (fail-closed: it cannot be made inclusive without rewriting its TL). */
-        {
+        /* gfx11 keeps the gfx10.3 exclusive BR (radv_cmd_buffer.c:4597: the -1 is GFX12-only), so no adjust. */
+        if (gfx_level == XLAT12_LEVEL_GFX12) {
             uint32_t s12 = *val;
             const uint32_t sr = xlat12_scissor_br_g12(g10, *val, &s12);
             if (sr == XLAT12_SCISSOR_EMPTY) {
@@ -318,11 +367,19 @@ xlat12_status xlat12_translate(xlat12_ctx *ctx, const uint32_t *in, uint32_t in_
                                uint32_t *out, uint32_t out_cap,
                                uint32_t *out_dwords, xlat12_stats *stats)
 {
+    return xlat12_translate_level(XLAT12_LEVEL_GFX12, ctx, in, in_dwords, out, out_cap, out_dwords, stats);
+}
+
+xlat12_status xlat12_translate_level(uint32_t gfx_level, xlat12_ctx *ctx, const uint32_t *in, uint32_t in_dwords,
+                                     uint32_t *out, uint32_t out_cap,
+                                     uint32_t *out_dwords, xlat12_stats *stats)
+{
     xlat12_stats local;
     xlat12_stats *st = stats ? stats : &local;
     *st = kZeroStats;
     if (out_dwords) *out_dwords = 0;
     if ((!in && in_dwords) || (!out && out_cap)) return XLAT12_ERR_ARG;
+    if (gfx_level != XLAT12_LEVEL_GFX11 && gfx_level != XLAT12_LEVEL_GFX12) return XLAT12_ERR_ARG;
 
     Emitter e;
     e.out = out; e.cap = out_cap; e.n = 0; e.open = 0; e.op = 0; e.flags = 0;
@@ -350,11 +407,11 @@ xlat12_status xlat12_translate(xlat12_ctx *ctx, const uint32_t *in, uint32_t in_
             e.runs_this_packet = 0;
             for (uint32_t k = 0; k < n; k++) {
                 uint32_t g10 = base + ((p[0] + k) << 2), val = p[1 + k];
-                const Xlat12Entry *ent; int emit;
-                xlat12_status s = decide(ctx, st, g10, &val, &emit, &ent);
+                uint32_t dst; int emit;
+                xlat12_status s = decide(gfx_level, ctx, st, g10, &val, &emit, &dst);
                 if (s != XLAT12_OK) { st->err_opcode = op; return s; }
                 if (!emit) continue;
-                s = run_add(&e, st, ent->g12, flags, val);
+                s = run_add(&e, st, dst, flags, val);
                 if (s != XLAT12_OK) { st->err_opcode = op; st->err_reg_addr = g10; return s; }
             }
             run_close(&e, st);                              /* runs never span input packets */
@@ -377,18 +434,18 @@ xlat12_status xlat12_translate(xlat12_ctx *ctx, const uint32_t *in, uint32_t in_
             uint32_t emitted = 0;
             for (uint32_t k = 0; k < n; k++) {
                 uint32_t g10 = base + ((off + k) << 2), val = p[1 + k];
-                const Xlat12Entry *ent; int emit;
-                xlat12_status s = decide(ctx, st, g10, &val, &emit, &ent);
+                uint32_t dst; int emit;
+                xlat12_status s = decide(gfx_level, ctx, st, g10, &val, &emit, &dst);
                 if (s != XLAT12_OK) { st->err_opcode = op; return s; }
                 if (!emit) continue;
                 uint32_t b2, d2;
                 block_of_op(op, &b2, &d2);
-                if (set_op_for_addr(ent->g12) != (op == OP_SET_SH_REG_INDEX ? OP_SET_SH_REG : OP_SET_UCONFIG_REG)) {
+                if (set_op_for_addr(dst) != (op == OP_SET_SH_REG_INDEX ? OP_SET_SH_REG : OP_SET_UCONFIG_REG)) {
                     st->err_opcode = op; st->err_reg_addr = g10; return XLAT12_ERR_RANGE;
                 }
                 if (e.cap - e.n < 3u) { st->err_opcode = op; st->err_reg_addr = g10; return XLAT12_ERR_CAPACITY; }
                 e.out[e.n++] = PKT3_MK(op, 1u, flags);
-                e.out[e.n++] = (idx << 28) | ((ent->g12 - b2) >> 2);
+                e.out[e.n++] = (idx << 28) | ((dst - b2) >> 2);
                 e.out[e.n++] = val;
                 st->packets_out++; st->set_packets_out++; emitted++;
             }

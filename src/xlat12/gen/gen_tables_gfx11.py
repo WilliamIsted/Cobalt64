@@ -46,8 +46,10 @@ CLASSIFICATION (gen_tables.py's classify(), unchanged): a gfx10.3 register is
                 field-first buckets so its semantics match the existing gfx12 table and
                 the translator's decide() (X2).
   absent        no gfx11 register of that name: dropped (reason in the row)
-  legacy_vs     a legacy-VS slot absent on gfx11 (gfx11 keeps the VS path, so in
-                practice none fire; kept for parity with classify())
+  legacy_vs     a legacy-VS slot absent on gfx11: 39 rows. gfx11.json and
+                gc_11_0_0_offset.h have no SPI_SHADER_*_VS register, and RADV forces NGG
+                on GFX11 (radv_physical_device.c:2818-2820), so the translator keeps the
+                gfx12 NGG rule for these (X2)
   unknown       the two sources contradict, or a repack whose field lists share no
                 field name: refused by the translator
 
@@ -200,6 +202,8 @@ def main():
         if r["cls"] == "field_repack":
             code, notes, _ = G.emit_repack(r, m10, m11)
             code = code.replace("-> gfx12 0x", "-> gfx11 0x").replace("new on gfx12", "new on gfx11")
+            # X2: repack11_ so this header can share a translation unit with xlat12_repack.h's repack_*
+            code = code.replace("static uint32_t repack_", "static uint32_t repack11_", 1)
             repacks.append(code)
             notes_all += notes
 
@@ -264,8 +268,10 @@ def write_headers(out, entries, repacks, notes, summary, ngg):
             f.write(" * %s\n" % s)
         f.write(" */\n\n")
         f.write("/* Xlat12Class values are defined in xlat12.h. This header defines the gfx11\n"
-                " * table and its row struct; include it INSTEAD OF xlat12_tables.h (never both\n"
-                " * in one translation unit). The XLAT12_GFX11 build mode selects it. */\n\n")
+                " * table and its row struct. Its names (Xlat12EntryGfx11, repack11_*) do not\n"
+                " * collide with xlat12_tables.h, so xlat12.c includes both and selects one per\n"
+                " * call by gfx_level (X2); the typedef and the two XLAT12_G10_* macros are\n"
+                " * identical redefinitions. */\n\n")
         f.write("typedef uint32_t (*Xlat12Repack)(uint32_t);\n\n")
         f.write("typedef struct {\n"
                 "    uint32_t     g10;     /* gfx10.3 MMIO byte address (sort key) */\n"
@@ -274,13 +280,13 @@ def write_headers(out, entries, repacks, notes, summary, ngg):
                 "    uint8_t      cls;     /* Xlat12Class */\n"
                 "    const char  *name;\n"
                 "    const char  *reason;  /* absent/legacy_vs/unknown: why */\n"
-                "} Xlat12Entry;\n\n")
+                "} Xlat12EntryGfx11;\n\n")
         f.write("#define XLAT12_G10_VGT_SHADER_STAGES_EN 0x%05xu /* %s */\n" % (ngg["addr"], ngg["cite"]))
         f.write("#define XLAT12_G10_PRIMGEN_EN_BIT       %du      /* NGG: radeonsi si_state_shaders.cpp:1352 */\n\n" % ngg["bit"])
-        f.write("static const Xlat12Entry kXlat12TableGfx11[] = {\n")
+        f.write("static const Xlat12EntryGfx11 kXlat12TableGfx11[] = {\n")
         for a in sorted(entries):
             r = entries[a]
-            rp = ("repack_%s" % r["name"]) if r["cls"] == "field_repack" else "0"
+            rp = ("repack11_%s" % r["name"]) if r["cls"] == "field_repack" else "0"
             f.write('    /* %s */\n' % G.cstr(r["cite"]))
             f.write('    { 0x%05xu, 0x%05xu, %s, XLAT12_CLS_%s, "%s", "%s" },\n'
                     % (a, r["g12"], rp, r["cls"].upper(), r["name"], G.cstr(r["reason"])))
