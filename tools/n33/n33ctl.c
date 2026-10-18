@@ -182,6 +182,7 @@ static void usage(void) {
 	    "  cp ib                        step 7 T1: K4's store_magic dispatch run from a VRAM IB through INDIRECT_BUFFER (after cp test 2/K3)\n"
 	    "  cp submit | waitseq <seq>    step 7 W1: the winsys submit->wait split of cp ib (submit returns a seqno, waitseq polls its fence)\n"
 	    "                               cp flags | journal <i> | start <n>: raw, for cp-negative.sh only (flags reads no register)\n"
+	    "  fbsum [bytes]                sha256 of the GOP scanout in VRAM (read-only; default length from status)\n"
 	    "  log                          print the kext's own log (holds every refusal line, unlike the unified log)\n"
 	    "  why <code>                   explain a refusal code from n33ctl log (no kext needed)\n"
 	    "all offsets/dwords accept 0x.. ; writes are re-checked in the kext\n");
@@ -1458,6 +1459,29 @@ static int doCp(int argc, char **argv) {
 	return 2;
 }
 
+// fbsum: SHA-256 of the GOP scanout in VRAM, read through action 2 (one BAR0 dword per call, read-only).
+// The region is the kext's GOP range from status: HUBP0 address at kext start, pitch px * 4 * height, page rounded.
+// Run before and after card work and compare: a change means something wrote the scanout.
+static int fbSum(uint64_t bytes) {
+	uint64_t s[11] = {0};
+	if (call(aStatus, NULL, 0, s, 11)) return 1;
+	const uint64_t off = s[3], len = bytes ? bytes : s[4];
+	if (!len || (len & 3) || off > s[0] || s[0] - off < len) { fprintf(stderr, "fbsum: bad range VRAM %#llx len %#llx\n", off, len); return 1; }
+	if (s[5] - s[1] != off) fprintf(stderr, "fbsum: note: HUBP0 now scans VRAM %#llx, not the GOP range\n", s[5] - s[1]);
+	CC_SHA256_CTX c; CC_SHA256_Init(&c);
+	for (uint64_t a = off; a < off + len; a += 4) {
+		uint64_t v = 0; uint64_t in = a; uint32_t w;
+		if (call(aBar0Read, &in, 1, &v, 1)) { fprintf(stderr, "fbsum: read failed at VRAM %#llx\n", a); return 1; }
+		w = (uint32_t)v;
+		CC_SHA256_Update(&c, &w, 4);
+	}
+	unsigned char d[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(d, &c);
+	printf("fbsum VRAM %#llx len %#llx (%llu bytes) sha256 ", off, len, len);
+	for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) printf("%02x", d[i]);
+	printf("\n");
+	return 0;
+}
+
 int main(int argc, char **argv) {
 	if (argc < 2) { usage(); return 2; }
 	if (!strcmp(argv[1], "why") && argc == 3) { printf("%s\n", whyName(num(argv[2]))); return 0; }
@@ -1534,6 +1558,8 @@ int main(int argc, char **argv) {
 		rc = doSdma(argc, argv);
 	} else if (!strcmp(cmd, "cp") && argc >= 3) {
 		rc = doCp(argc, argv);
+	} else if (!strcmp(cmd, "fbsum") && argc <= 3) {
+		rc = fbSum(argc == 3 ? num(argv[2]) : 0);
 	} else if (!strcmp(cmd, "log") && argc == 2) {
 		// The negative tests read refusals here: logd can quarantine the kernel and drop IOLog lines.
 		char chunk[4097];
