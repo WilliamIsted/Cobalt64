@@ -39,7 +39,8 @@ static void order_cases() {
 	record(s, kTmr, 0, true, 0, 0);
 	CHECK(may_send(s, kTmr, 0, 0, 0) == kWhyOrder);
 	CHECK(may_send(s, kIpFw, 13, kFwBuf, 0x1000) == kWhyType);               // VCN
-	CHECK(may_send(s, kIpFw, 51, kFwBuf, 0x1000) == kWhyOrder);              // DMUB: only after autoload (stage 3 proof)
+	CHECK(may_send(s, kIpFw, 51, kFwBuf, 0x1000) == kWhyType);               // DMUB by raw send: never
+	CHECK(may_send(s, kIpFw, 51, kFwBuf, 0x1000, true) == kWhyOrder);        // DMUB from action 62: only after autoload
 	CHECK(may_send(s, kIpFw, 73, kFwBuf, 0x1000) == kWhyType);               // PPTABLE
 	CHECK(may_send(s, kAutoload, 0, 0, 0) == kWhyOrder);                     // before RLC_G
 	uint64_t off = kFwBuf;
@@ -54,12 +55,14 @@ static void order_cases() {
 	record(s, kAutoload, 0, true, 0, 0);
 	CHECK(s.autoload && !s.failed);
 	CHECK(may_send(s, kAutoload, 0, 0, 0) == kWhyOrder);
-	// DMUB (type 51): refused until autoload, allowed exactly once after it (stage 3 DMCUB proof).
-	CHECK(may_send(s, kIpFw, kFwDmub, kFwBuf, 0x38ca0) == kWhyOk);
-	CHECK(may_send(s, kIpFw, kFwDmub, kFwBuf + 0x10, 0x38ca0) == kWhyRange);   // still page aligned, inside fw_buf
+	// DMUB (type 51): the raw send (negative tests) always gets kWhyType; action 62 may load it once after autoload.
+	CHECK(may_send(s, kIpFw, kFwDmub, kFwBuf, 0x38ca0) == kWhyType);
+	CHECK(may_send(s, kIpFw, kFwDmub, kFwBuf, 0x38ca0, true) == kWhyOk);
+	CHECK(may_send(s, kIpFw, kFwDmub, kFwBuf + 0x10, 0x38ca0, true) == kWhyRange);   // still page aligned, inside fw_buf
 	record(s, kIpFw, kFwDmub, true, 0, 0);
 	CHECK(loaded(s, kFwDmub));
-	CHECK(may_send(s, kIpFw, kFwDmub, kFwBuf, 0x38ca0) == kWhyOrder);          // once only
+	CHECK(may_send(s, kIpFw, kFwDmub, kFwBuf, 0x38ca0, true) == kWhyOrder);          // once only
+	CHECK(may_send(s, kIpFw, kFwDmub, kFwBuf, 0x38ca0) == kWhyType);
 }
 
 static void failure_cases() {

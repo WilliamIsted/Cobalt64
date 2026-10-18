@@ -9252,7 +9252,7 @@ uint32_t Navi48Bringup::n33DmubSnap(uint64_t *out, uint32_t outCount) {
 uint32_t Navi48Bringup::n33DmubLoad(uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount) {
 	const uint32_t w = n33dmub::may_load(n33Dmub, n33P2.autoload, false);
 	if (w) return w;
-	const uint32_t pw = n33PspSubmit(n33psp2::kIpFw, n33psp2::kFwDmub, off, size, out, outCount);
+	const uint32_t pw = n33PspSubmit(n33psp2::kIpFw, n33psp2::kFwDmub, off, size, out, outCount, true);
 	const bool ok = pw == n33psp2::kWhyOk && !n33P2.failed;
 	n33dmub::record_load(n33Dmub, ok);
 	if (!ok) { N48LOG("n33 dmub: PSP type-51 load refused (psp why %u)", pw); return n33dmub::kWhyPspType51; }
@@ -9896,10 +9896,11 @@ void Navi48Bringup::n33PspStop() {           // called by stop() with gN33PspLoc
 // One command through the KM ring: psp_cmd_submit_buf + psp_ring_cmd_submit. Returns a refusal, or 0
 // with the outcome in out[] (a non-zero PSP status or a timeout is an outcome, not a refusal, and
 // latches failure: D5).
-uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount) {
+uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount,
+                                     bool dmubCaller) {
 	using namespace n33psp2;
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
-	const uint32_t w = may_send(n33P2, cmd, fwType, off, size);
+	const uint32_t w = may_send(n33P2, cmd, fwType, off, size, dmubCaller);
 	if (w) return w;
 	uint64_t mc = 0, sz = size, pa = 0;
 	if (cmd == kToc) {

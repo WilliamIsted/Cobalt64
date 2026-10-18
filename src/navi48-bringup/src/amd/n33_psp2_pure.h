@@ -52,7 +52,7 @@ constexpr uint32_t kTmrFlagsVirtPhys = 0x2;       // bitfield.virt_phy_addr = 1 
 constexpr uint32_t kFwSmu = 18, kFwRlcG = 8;
 // GFX_FW_TYPE_DMUB = 51 (amdgpu/psp_gfx_if.h:262). Linux sends it as its own LOAD_IP_FW after RLC autoload, while
 // the VBIOS-started DMCUB still runs (amdgpu/amdgpu_psp.c:3533-3584, DMCUB in AMDGPU_UCODE_ID order after RLC_G).
-// Stage 3 DMCUB proof: allow exactly one type-51 load, only after autoload (see may_send). Nothing else uses 51.
+// Stage 3 DMCUB proof: allow exactly one type-51 load, only after autoload and only from action 62 (see may_send).
 constexpr uint32_t kFwDmub = 51;
 // The GC 11.0.2 / SDMA 6.0.2 set of the design's table, in Linux's order (rows 1 to 26).
 constexpr uint32_t kGcOrder[26] = { 71, 72, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
@@ -67,7 +67,7 @@ enum Why : uint32_t {
 	kWhyOk = 0,
 	kWhyNoRing = 15,      // no ring created by this kext load
 	kWhyOrder = 16,       // command out of D3's order, or sent twice
-	kWhyType = 17,        // fw_type not on the list (VCN 13, PPTABLE 73 and the rest; DMUB 51 is allowed after autoload)
+	kWhyType = 17,        // fw_type not on the list (VCN 13, PPTABLE 73 and the rest; DMUB 51 only from action 62, after autoload)
 	kWhyRange = 18,       // image not inside fw_buf / fw_pri, misaligned, or empty
 	kWhyTmrSize = 19,     // LOAD_TOC answer 0 or above 32 MiB after rounding
 	kWhyTmrOverlap = 20,  // TMR overlaps a live DMCUB window or REGION4-6
@@ -101,8 +101,10 @@ inline bool in_buf(uint64_t off, uint64_t size, uint64_t base, uint64_t len) {
 }
 
 // May this command be sent now? D3. The TMR overlap with live DMCUB windows is the caller's (it reads
-// the hardware).
-inline uint32_t may_send(const State &s, uint32_t cmd, uint32_t fwType, uint64_t off, uint64_t size) {
+// the hardware). dmubCaller is true only on the DMCUB load action (62); the raw send (action 9, the negative
+// tests) keeps refusing type 51 as kWhyType, so a test run after autoload cannot make a real DMUB load.
+inline uint32_t may_send(const State &s, uint32_t cmd, uint32_t fwType, uint64_t off, uint64_t size,
+                         bool dmubCaller = false) {
 	if (s.failed) return kWhyFailed;
 	if (!s.ring) return kWhyNoRing;
 	switch (cmd) {
@@ -117,6 +119,7 @@ inline uint32_t may_send(const State &s, uint32_t cmd, uint32_t fwType, uint64_t
 			if (!s.tmr || loaded(s, fwType) || s.autoload) return kWhyOrder;
 		} else if (fwType == kFwDmub) {
 			// Stage 3 DMCUB proof: one DMUB load, only after RLC autoload, in Linux's order (DMCUB after RLC_G).
+			if (!dmubCaller) return kWhyType;
 			if (!s.autoload || loaded(s, kFwDmub)) return kWhyOrder;
 		} else {
 			return kWhyType;

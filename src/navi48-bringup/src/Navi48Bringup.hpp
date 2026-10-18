@@ -154,7 +154,8 @@ private:
 	uint32_t n33PspRingCreate(uint32_t *c64);
 	bool     n33PspRingDestroy(uint32_t *c64);
 	void     n33PspStop();
-	uint32_t n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount);
+	uint32_t n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount,
+	                      bool dmubCaller = false);
 	// N33 SMU 13.0.7 driver mailbox, S1 to S3 (n33smu::, Navi48Bringup.cpp).
 	n33smu::State n33Smu {};
 	uint32_t n33SmuSend(uint32_t msg, uint32_t arg, uint64_t *out, uint32_t outCount);
