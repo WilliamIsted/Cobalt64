@@ -50,6 +50,10 @@ constexpr uint32_t kTmrFlagsVirtPhys = 0x2;       // bitfield.virt_phy_addr = 1 
 
 // fw_type values (psp_gfx_if.h, amdgpu_psp_get_fw_type).
 constexpr uint32_t kFwSmu = 18, kFwRlcG = 8;
+// GFX_FW_TYPE_DMUB = 51 (amdgpu/psp_gfx_if.h:262). Linux sends it as its own LOAD_IP_FW after RLC autoload, while
+// the VBIOS-started DMCUB still runs (amdgpu/amdgpu_psp.c:3533-3584, DMCUB in AMDGPU_UCODE_ID order after RLC_G).
+// Stage 3 DMCUB proof: allow exactly one type-51 load, only after autoload (see may_send). Nothing else uses 51.
+constexpr uint32_t kFwDmub = 51;
 // The GC 11.0.2 / SDMA 6.0.2 set of the design's table, in Linux's order (rows 1 to 26).
 constexpr uint32_t kGcOrder[26] = { 71, 72, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
                                     33, 34, 81, 82, 68, 69, 20, 21, 26, 48, 25, 7, 8 };
@@ -63,7 +67,7 @@ enum Why : uint32_t {
 	kWhyOk = 0,
 	kWhyNoRing = 15,      // no ring created by this kext load
 	kWhyOrder = 16,       // command out of D3's order, or sent twice
-	kWhyType = 17,        // fw_type not on the list (VCN 13, DMUB 51, PPTABLE 73 and the rest)
+	kWhyType = 17,        // fw_type not on the list (VCN 13, PPTABLE 73 and the rest; DMUB 51 is allowed after autoload)
 	kWhyRange = 18,       // image not inside fw_buf / fw_pri, misaligned, or empty
 	kWhyTmrSize = 19,     // LOAD_TOC answer 0 or above 32 MiB after rounding
 	kWhyTmrOverlap = 20,  // TMR overlaps a live DMCUB window or REGION4-6
@@ -111,6 +115,9 @@ inline uint32_t may_send(const State &s, uint32_t cmd, uint32_t fwType, uint64_t
 			if (!s.toc || s.smu || s.tmr) return kWhyOrder;
 		} else if (gc_type(fwType)) {
 			if (!s.tmr || loaded(s, fwType) || s.autoload) return kWhyOrder;
+		} else if (fwType == kFwDmub) {
+			// Stage 3 DMCUB proof: one DMUB load, only after RLC autoload, in Linux's order (DMCUB after RLC_G).
+			if (!s.autoload || loaded(s, kFwDmub)) return kWhyOrder;
 		} else {
 			return kWhyType;
 		}
