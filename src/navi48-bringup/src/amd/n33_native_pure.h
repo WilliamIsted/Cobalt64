@@ -17,7 +17,9 @@
 namespace n33n {
 
 // ---- build and identity ------------------------------------------------------------------------------------------
-constexpr uint32_t kKextBuild = 675;                 // 0.0.675 (Hello / QueryInfo report it; the host test pins it to Info.plist)
+// The build word Hello / QueryInfo report. It is the CFBundleVersion patch number; the host test parses Info.plist and
+// fails unless they are equal, so the two can never drift apart silently (bump this and Info.plist together).
+constexpr uint32_t kKextBuild = 677;                 // 0.0.677
 constexpr uint32_t kVmid      = n33vm::kVmid;         // 8: the Darwin backend's and W2V's static VMID
 constexpr uint32_t kGcMajor = 11, kGcMinor = 0, kGcRev = 2;   // gfx11.0.2 (Navi 33); (maj<<16)|(min<<8)|rev
 constexpr uint32_t kGcVersion = (kGcMajor << 16) | (kGcMinor << 8) | kGcRev;   // 0x0B0002
@@ -31,9 +33,10 @@ constexpr uint32_t kIpCompute = 1u, kIpGfx = 0u;
 constexpr uint32_t kIbFlagsAllowed = N48N_IB_FLAG_PREAMBLE | N48N_IB_FLAG_PREEMPT | N48N_IB_FLAG_TC_WB_NOT_INVALIDATE;
 
 // The ring submit buffer (n33cp::kSubmitDw dwords, padded to 256) holds, per IB, an ACQUIRE_MEM (8 dw, before EVERY
-// INDIRECT_BUFFER - the W2 GL2 lesson) plus an INDIRECT_BUFFER (4 dw), and one RELEASE_MEM (8 dw) at the end. So the
-// ring caps the IB count below N48N_MAX_IBS: (kSubmitDw - 8) / 12.
-constexpr uint32_t kRingPerIbDw = 8u + 4u, kRingTailDw = 8u;
+// INDIRECT_BUFFER - the W2 GL2 lesson) plus an INDIRECT_BUFFER (4 dw), then at the tail up to two RELEASE_MEM (8 dw
+// each): the optional user-fence write to the caller's fence BO and the kernel seqno write to host page B. So the ring
+// caps the IB count below N48N_MAX_IBS: (kSubmitDw - 16) / 12.
+constexpr uint32_t kRingPerIbDw = 8u + 4u, kRingTailDw = 8u + 8u;
 constexpr uint32_t kMaxRingIbs = (n33cp::kSubmitDw - kRingTailDw) / kRingPerIbDw;   // 20
 static_assert(kMaxRingIbs >= 2u && kMaxRingIbs <= N48N_MAX_IBS, "the ring holds at least two IBs and no more than the ABI cap");
 
@@ -185,6 +188,8 @@ inline Code fence_check(const n33bo::State &bo, uint32_t handle, uint32_t offset
 	if (!n33bo::handle_ok(bo, handle)) return kBadArg;
 	if (offset & 7u) return kBadArg;                                  // 8-aligned (Mesa gives bytes)
 	if ((uint64_t)offset + 8ull > bo_bytes(bo, handle)) return kBadArg;
+	// An 8-aligned 8-byte fence never straddles a 4 KiB page, so the one GART slot the submit binds to page
+	// (offset / kPage) always contains the whole fence - no extra within-page check is needed here.
 	return kOk;
 }
 
@@ -242,17 +247,41 @@ inline Code submit_check(const uint8_t *in, uint32_t size, const n33vm::State &v
 
 // ---- the W3 ring content (new stream; W1/W2/W2V streams stay byte-identical) -------------------------------------
 // ACQUIRE_MEM before EVERY INDIRECT_BUFFER (the W2 GL2 lesson), one INDIRECT_BUFFER per caller IB in order at its
-// VMID-8 VA, then one RELEASE_MEM to the fence MC (the caller's fence BO when given, else the kernel seqno fence in
-// host page B, exactly as W2V's ring does). The kext does NOT build or touch the IB bodies (Mesa wrote them into the
-// BOs). Returns the dword count written (<= kSubmitDw - the pad tail); the kext pads to kSubmitDw and kicks.
-inline uint32_t ring_build(uint32_t *p, const SubmitReq &req, uint64_t fenceMc, uint32_t seq) {
+// VMID-8 VA, then the fences: when the caller named a fence BO, a RELEASE_MEM writing the seqno to its VMID-0 MC FIRST
+// (the user fence, as gfx12's build_submit emits it: amd/native_s1c_pure.h build_submit), THEN always a RELEASE_MEM of
+// the seqno to the kernel fence in host page B, which is what n33CpWait polls - so a retired kernel seqno implies the
+// user fence already landed, and WaitSeq keeps working whether or not a fence BO was given (exactly W2V's kernel fence).
+// userFenceMc 0 means no caller fence. The kext does NOT build or touch the IB bodies (Mesa wrote them into the BOs).
+// Returns the dword count written (<= kSubmitDw - the pad tail); the kext pads to kSubmitDw and kicks.
+inline uint32_t ring_build(uint32_t *p, const SubmitReq &req, uint64_t userFenceMc, uint64_t kernelFenceMc, uint32_t seq) {
 	uint32_t n = 0;
 	for (uint32_t i = 0; i < req.numIbs; i++) {
 		n += n33cp::pkt_acquire_mem(p + n);
 		n += n33cp::pkt_indirect_buffer(p + n, req.ib[i].va, req.ib[i].dw, kVmid);
 	}
-	n += n33cp::pkt_release_mem(p + n, fenceMc, seq, true);   // GL2_WB before the fence, as every n33 ring fence does
+	if (userFenceMc) n += n33cp::pkt_release_mem(p + n, userFenceMc, seq, true);   // user fence first (gfx12 order)
+	n += n33cp::pkt_release_mem(p + n, kernelFenceMc, seq, true);   // GL2_WB before the fence, as every n33 ring fence does
 	return n;
+}
+
+// ---- WaitSeq (selector 8): resolve the target against what the one compute queue emitted / retired ---------------
+// The N33 queue runs one submit at a time (submit_check / may_submit refuse a second before its WaitSeq), so the last
+// retired seqno is seqEmitted when idle, or seqEmitted - 1 while a submit is still outstanding. target 0 means "no
+// wait" and N48N_SEQ_LAST means "the seqno emitted at entry" (as gfx12's wait_resolve, amd/native_s1c_pure.h). A target
+// already retired (including 0, and a second WaitSeq on a signalled fence - RADV waits more than once) answers busy 0;
+// a future target (> emitted) is a bad argument; otherwise it is the outstanding submit and the kext polls its fence.
+enum WaitAction : uint32_t { kWaitDone = 0, kWaitPoll, kWaitBadArg };
+struct WaitPlan { uint32_t action; uint64_t retired; uint64_t emitted; uint32_t pollSeq; };
+inline WaitPlan wait_plan(uint64_t target, uint32_t seqEmitted, bool submitPending) {
+	WaitPlan p{};
+	p.emitted = seqEmitted;
+	const uint64_t lastRetired = submitPending ? (seqEmitted ? (uint64_t)seqEmitted - 1ull : 0ull) : (uint64_t)seqEmitted;
+	p.retired = lastRetired;
+	const uint64_t res = (target == N48N_SEQ_LAST) ? (uint64_t)seqEmitted : target;
+	if (res > (uint64_t)seqEmitted) { p.action = kWaitBadArg; return p; }   // never emitted
+	if (res <= lastRetired)        { p.action = kWaitDone;   return p; }    // already retired (incl. target 0): busy 0
+	p.action = kWaitPoll; p.pollSeq = (uint32_t)res;                        // the outstanding submit's seqno
+	return p;
 }
 
 } // namespace n33n

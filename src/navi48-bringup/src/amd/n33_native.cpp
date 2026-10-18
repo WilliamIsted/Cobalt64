@@ -184,8 +184,10 @@ IOReturn Navi48Bringup::n33nBoImportHost(task_t importTask, uint64_t hostVa, uin
 	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
 	(void)flags;
-	if (gpuVa != 0) {   // RADV imports handle-only and maps later with GemVa; map-at-import is not served on N33 yet
-		N33NLOG("bo import refused: map-at-import (gpuVa != 0) is not supported on N33; import handle-only and map with GemVa");
+	if (gpuVa != 0) {   // gfx12 supports map-at-import, but RADV's Darwin backend never uses it: acd_create_bo_from_user_mem
+		// (ac_darwin_drm.c) calls BO_IMPORT_HOST with only host+size and maps later with GemVa (gpu_va = sout[2] on return).
+		// So N33 serves handle-only import and refuses map-at-import, rather than carry an untested VMID-8 map-at-import path.
+		N33NLOG("bo import refused: map-at-import (gpuVa != 0) is not used by RADV on Darwin; import handle-only and map with GemVa");
 		return kIOReturnUnsupported;
 	}
 	uint64_t bo[8] = {};
@@ -224,10 +226,6 @@ IOReturn Navi48Bringup::n33nSubmit(const uint8_t *in, uint32_t size, uint64_t *s
 	n33n::SubmitReq req {};
 	const n33n::Code c = n33n::submit_check(in, size, n33Vm, n33Bo, n33Vm.live, n33NativeClient, &req);
 	if (c != n33n::kOk) return n33n_io(c);
-	if (req.hasFence) {   // Mesa's W3 test carries no fence BO; a caller fence BO needs its MC resolved + a BO-side wait, not done yet
-		N33NLOG("submit refused: a caller fence BO is not yet supported on N33 (the kernel seqno fence is used instead)");
-		return kIOReturnUnsupported;
-	}
 	uint64_t out[16] = {};
 	const uint32_t w = n33VmSubmitUser(req, out, 16);
 	if (w) return why_io(w);
@@ -238,13 +236,19 @@ IOReturn Navi48Bringup::n33nSubmit(const uint8_t *in, uint32_t size, uint64_t *s
 IOReturn Navi48Bringup::n33nWait(uint64_t target, uint64_t timeoutNs, uint64_t out[3]) {
 	N33Lock lk(n33NativeLock());   // held across the bounded (2 s dispatch timeout) poll only
 	if (!n33NativeOpen) return kIOReturnNotReady;
-	(void)timeoutNs;
+	(void)timeoutNs;   // n33CpWait uses its own 2 s bound; RADV loops with short slices, which only lengthens a wait
+	// Resolve the target (0 / SEQ_LAST / explicit) against the one queue's emitted / retired seqnos (n33n::wait_plan).
+	const n33n::WaitPlan pl = n33n::wait_plan(target, n33Cp.seq, n33Cp.submitPending);
+	out[0] = 0; out[1] = pl.retired; out[2] = pl.emitted;
+	if (pl.action == n33n::kWaitBadArg) return kIOReturnBadArgument;   // a seqno never emitted
+	if (pl.action == n33n::kWaitDone)  return kIOReturnSuccess;        // already retired (incl. target 0, a repeat wait): busy 0
+	// Poll the outstanding submit's fence (host page B) through n33CpWait; pl.pollSeq is this submit's seqno.
 	uint64_t w[16] = {};
-	const uint32_t rc = n33CpWait((uint32_t)target, w, 16);   // may_waitseq refuses a seqno that is not the outstanding submit
-	if (rc) { out[0] = 0; out[1] = 0; out[2] = n33Cp.seq; return why_io(rc); }
+	const uint32_t rc = n33CpWait(pl.pollSeq, w, 16);   // may_waitseq accepts it (it is the outstanding seqno)
+	if (rc) { out[0] = 1; out[2] = n33Cp.seq; return why_io(rc); }   // timeout / fault: still busy (out[1] stays the last retired)
 	const bool retired = (w[1] != 0);   // n33CpIbWait put(1, latch == kLatchNone ? 1 : 0)
 	out[0] = retired ? 0ull : 1ull;     // busy
-	out[1] = retired ? n33Cp.seq : n33Cp.seq - 1u;   // the last RETIRED seqno, as the ABI and n1c_wait give it (one outstanding submit)
+	out[1] = retired ? (uint64_t)n33Cp.seq : (n33Cp.seq ? (uint64_t)n33Cp.seq - 1u : 0ull);   // the last RETIRED seqno
 	out[2] = n33Cp.seq;                 // last emitted
 	return kIOReturnSuccess;
 }
@@ -301,6 +305,25 @@ uint32_t Navi48Bringup::n33VmSubmitUser(const n33n::SubmitReq &req, uint64_t *ou
 		const uint32_t mw = n33GmcMap(kSlotB, 1, n33gmc::kMapHost, kHostB, mo, 4);
 		if (mw) { N33NLOG("submit refused: gart map of host page B (why %u)", mw); return kWhyGart; }
 	}
+	// Resolve the caller's fence BO (if any) to a VMID-0 MC the ring's user-fence RELEASE_MEM can reach. A VRAM BO sits
+	// in the slab, directly MC-addressable; a GTT BO's fence page is bound at the dedicated GART fence slot (VMID 0),
+	// exactly as host page B above; an imported host BO is never a kernel-written fence target (as gfx12's resolve_fence,
+	// native_s1c.cpp). Done before the hub flush below so the one flush covers both the host-page-B and the fence-slot PTE.
+	uint64_t userFenceMc = 0;
+	if (req.hasFence) {
+		const n33bo::Bo &fb = n33Bo.bo[req.fenceHandle - 1];
+		if (fb.kind == n33bo::kImport) { N33NLOG("submit refused: an imported host BO cannot be a fence target"); return n33bo::kWhyArg; }
+		if (fb.kind == n33bo::kVram) {
+			userFenceMc = n33FbBase + n33bo::kSlabOff + fb.vramOff + req.fenceOffset;
+		} else {   // kGtt: bind the fence page at the GART fence slot and point the RELEASE_MEM at it
+			const uint32_t page = req.fenceOffset / (uint32_t)n33gmc::kPage;
+			const uint64_t pa = n33BoPagePa(req.fenceHandle, page);
+			if (!pa) { N33NLOG("submit refused: no bus address for the fence BO page"); return kWhyGart; }
+			*reinterpret_cast<volatile uint64_t *>(n33Bar0 + n33gmc::slot_off(n33cp::kSlotFence)) = n33gmc::pte_sys(pa);
+			n33GmcHdpFlush();   // the GART PTE is in VRAM through BAR0: make it visible before the TLB flush below
+			userFenceMc = n33gmc::slot_mc(n33cp::kSlotFence) + (req.fenceOffset & (uint64_t)(n33gmc::kPage - 1));
+		}
+	}
 	const uint32_t mm = n33GmcFlush(false), gc = n33GmcFlush(true);
 	if (!n33gmc::flush_ok(false, mm) || !n33gmc::flush_ok(true, gc)) {
 		n33Gmc.stopped = true;
@@ -315,7 +338,7 @@ uint32_t Navi48Bringup::n33VmSubmitUser(const n33n::SubmitReq &req, uint64_t *ou
 	n33Gmc.engineHolds = true;   // the GMC restore is refused and the host pages leak from now on (as W2V)
 	// The ring: ACQUIRE_MEM before every INDIRECT_BUFFER, one IB per caller IB in VMID 8, RELEASE_MEM to host page B.
 	uint32_t pk[kSubmitDw];
-	uint32_t len = n33n::ring_build(pk, req, g.hostB + kHostFence4, seq);
+	uint32_t len = n33n::ring_build(pk, req, userFenceMc, g.hostB + kHostFence4, seq);
 	len = pad(pk, len);
 	const uint64_t at = ring_off(n33Cp.wptrDw);
 	for (uint32_t i = 0; i < len; i++) w32(kRingOff + at + 4ull * i, pk[i]);
@@ -333,7 +356,7 @@ uint32_t Navi48Bringup::n33VmSubmitUser(const n33n::SubmitReq &req, uint64_t *ou
 	}
 	n33Cp.seq = seq;
 	record_submit(n33Cp, seq, wp, rptr0, kXibVmUser);
-	N33NLOG("user submit seqno %u (%u IBs in VMID %u, wptr %llu, PQ_RPTR %#x); run cp waitseq %u", seq, req.numIbs, n33n::kVmid, wp, rptr0, seq);
+	N33NLOG("user submit seqno %u (%u IBs in VMID %u, wptr %llu, PQ_RPTR %#x, user fence MC %#llx); run cp waitseq %u", seq, req.numIbs, n33n::kVmid, wp, rptr0, userFenceMc, seq);
 	put(0, 0); put(1, seq); put(4, rptr0); put(5, wp);
 	return kWhyOk;
 }

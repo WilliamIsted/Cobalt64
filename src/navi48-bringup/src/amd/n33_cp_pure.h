@@ -108,6 +108,9 @@ constexpr uint32_t kRingDw = 1024, kSubmitDw = 256;               // commit pads
 // Host page B (the GMC code's host page 1) at GART slot 1: result dwords 0 to 31 at +0, then the K3 word and the
 // three fences.
 constexpr uint32_t kSlotB = 1, kHostB = 1;
+// W4: a dedicated GART slot (VMID 0) the submit binds to a caller GTT fence BO's page, so the ring's user-fence
+// RELEASE_MEM can reach it. Slots 0 (host A) and 1 (host B) are the only others used; slot 2 is free.
+constexpr uint32_t kSlotFence = 2;
 constexpr uint32_t kHostK3 = 0x100, kHostFence4 = 0x180, kHostFence5a = 0x188, kHostFence5b = 0x190;
 constexpr uint32_t kResultDw = 32;
 constexpr uint32_t kMagic = 0xCA11ED47u;

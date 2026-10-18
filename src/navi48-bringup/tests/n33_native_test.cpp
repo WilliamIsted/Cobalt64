@@ -50,7 +50,7 @@ static void info_cases() {
 	L.gtt_cap = 512ull << 20; L.gtt_max_bo = 1ull << 20; L.pt_cap = 8ull << 20;
 	L.seq_emitted = 5; L.seq_retired = 4;
 	info_fill(&info, L);
-	CHECK(info.abi_version == N48N_ABI_VERSION && info.kext_build == 675);
+	CHECK(info.abi_version == N48N_ABI_VERSION && info.kext_build == kKextBuild);
 	CHECK(info.gb_addr_config == 0x343u);
 	CHECK(info.gc_version == 0x000B0002u);                              // gfx11.0.2
 	CHECK(info.vmid == 8u && info.max_ibs == N48N_MAX_IBS);
@@ -232,31 +232,64 @@ static void domain_cases() {
 	CHECK(domain_to_kind(0, &k) == kBadArg);
 }
 
+static void check_release_mem(const uint32_t *p, uint32_t at, uint64_t mc, uint32_t seq) {
+	CHECK(p[at] == n33cp::pkt3(n33cp::kOpReleaseMem, 6));
+	CHECK((p[at + 1] & n33cp::kGl2Wb) != 0u);                      // GL2_WB before the fence
+	CHECK(p[at + 3] == (n33cp::lo32(mc) & ~3u) && p[at + 4] == n33cp::hi32(mc) && p[at + 5] == seq);
+}
 static void ring_cases() {
-	// two IBs at high-half VAs, a caller fence MC: ACQUIRE_MEM + IB per IB, one RELEASE_MEM at the end.
+	// two IBs at high-half VAs: ACQUIRE_MEM + IB per IB, then the fence(s).
 	SubmitReq req{}; req.numIbs = 2;
 	req.ib[0] = { 0xFFFF800100000000ull, 64u };
 	req.ib[1] = { 0xFFFF800100010000ull, 40u };
-	const uint64_t fenceMc = 0xC000000ull + 0x40;
+	const uint64_t kernelMc = 0xC000000ull + 0x40, userMc = 0x8400002100ull;   // host page B fence; a GART fence-slot MC
 	const uint32_t seq = 7;
-	uint32_t p[n33cp::kSubmitDw]; memset(p, 0, sizeof p);
-	const uint32_t n = ring_build(p, req, fenceMc, seq);
-	CHECK(n == 2u * 12u + 8u);                                 // 2*(acquire 8 + ib 4) + release 8 = 32
+	uint32_t p[n33cp::kSubmitDw];
+
+	// no caller fence: one RELEASE_MEM (the kernel seqno) at the end, exactly as W2V.
+	memset(p, 0, sizeof p);
+	uint32_t n = ring_build(p, req, /*userFenceMc*/0, kernelMc, seq);
+	CHECK(n == 2u * 12u + 8u);                                     // 2*(acquire 8 + ib 4) + release 8 = 32
 	for (uint32_t i = 0; i < 2; i++) {
-		const uint32_t a = i * 12u;                            // ACQUIRE_MEM
+		const uint32_t a = i * 12u;                                // ACQUIRE_MEM
 		CHECK(p[a] == n33cp::pkt3(n33cp::kOpAcquireMem, 6));
-		const uint32_t b = a + 8u;                             // INDIRECT_BUFFER
+		const uint32_t b = a + 8u;                                 // INDIRECT_BUFFER
 		CHECK(p[b] == n33cp::pkt3(n33cp::kOpIndirectBuffer, 2));
 		CHECK(p[b + 1] == (n33cp::lo32(req.ib[i].va) & ~3u) && p[b + 2] == n33cp::hi32(req.ib[i].va));
-		CHECK(((p[b + 3] >> 24) & 0xFu) == kVmid);             // INDIRECT_BUFFER runs in VMID 8
-		CHECK((p[b + 3] & 0xFFFFFu) == req.ib[i].dw);          // the caller's IB size
+		CHECK(((p[b + 3] >> 24) & 0xFu) == kVmid);                 // INDIRECT_BUFFER runs in VMID 8
+		CHECK((p[b + 3] & 0xFFFFFu) == req.ib[i].dw);              // the caller's IB size
 	}
-	const uint32_t r = 2u * 12u;                               // RELEASE_MEM
-	CHECK(p[r] == n33cp::pkt3(n33cp::kOpReleaseMem, 6));
-	CHECK((p[r + 1] & n33cp::kGl2Wb) != 0u);                   // GL2_WB before the fence
-	CHECK(p[r + 3] == (n33cp::lo32(fenceMc) & ~3u) && p[r + 4] == n33cp::hi32(fenceMc) && p[r + 5] == seq);
-	// the ring never overflows the submit buffer, even at the cap
-	CHECK(kMaxRingIbs * 12u + 8u <= n33cp::kSubmitDw);
+	check_release_mem(p, 2u * 12u, kernelMc, seq);
+
+	// a caller fence BO: the user fence RELEASE_MEM comes FIRST (gfx12 order), then the kernel seqno, both the same seq.
+	memset(p, 0, sizeof p);
+	n = ring_build(p, req, userMc, kernelMc, seq);
+	CHECK(n == 2u * 12u + 8u + 8u);                                // + a second RELEASE_MEM
+	check_release_mem(p, 2u * 12u, userMc, seq);                   // user fence first
+	check_release_mem(p, 2u * 12u + 8u, kernelMc, seq);            // kernel seqno (what n33CpWait polls) second
+
+	// the ring never overflows the submit buffer, even at the cap with both fences
+	CHECK(kMaxRingIbs * 12u + 16u <= n33cp::kSubmitDw);
+}
+
+static void wait_cases() {
+	// idle (no submit pending): seqEmitted = 5, so 5 retired. A target already retired, 0 and LAST all answer busy 0.
+	WaitPlan p = wait_plan(5, 5, /*pending*/false);
+	CHECK(p.action == kWaitDone && p.retired == 5 && p.emitted == 5);
+	CHECK(wait_plan(0, 5, false).action == kWaitDone);             // target 0: no wait
+	CHECK(wait_plan(3, 5, false).action == kWaitDone);             // an older, retired seqno
+	CHECK(wait_plan(N48N_SEQ_LAST, 5, false).action == kWaitDone); // LAST resolves to 5, retired while idle
+	CHECK(wait_plan(6, 5, false).action == kWaitBadArg);           // never emitted
+	// a submit outstanding: seqEmitted = 6 but only 5 retired, so a wait on 6 polls, on 5 is done, LAST polls 6.
+	p = wait_plan(6, 6, /*pending*/true);
+	CHECK(p.action == kWaitPoll && p.pollSeq == 6 && p.retired == 5 && p.emitted == 6);
+	CHECK(wait_plan(5, 6, true).action == kWaitDone && wait_plan(5, 6, true).retired == 5);  // the previous fence, still signalled
+	p = wait_plan(N48N_SEQ_LAST, 6, true);
+	CHECK(p.action == kWaitPoll && p.pollSeq == 6);
+	// a repeat wait on the just-retired seqno after it retired (pending cleared): busy 0, retired == that seq (RADV loops)
+	CHECK(wait_plan(6, 6, false).action == kWaitDone && wait_plan(6, 6, false).retired == 6);
+	// the first-ever wait before anything emitted
+	CHECK(wait_plan(0, 0, false).action == kWaitDone && wait_plan(0, 0, false).retired == 0);
 }
 
 static void submit_cap_case() {
@@ -290,14 +323,23 @@ static int header_check(const char *root) {
 	return f;
 }
 
-// Pin kKextBuild to Info.plist (CFBundleVersion), tried at a couple of relative paths; skipped if not found.
+// Pin kKextBuild to Info.plist (CFBundleVersion), tried at a couple of relative paths; skipped if not found. The patch
+// number of CFBundleVersion (0.0.<n>) must equal kKextBuild, so the reported build word can never drift from the bundle.
 static void version_check() {
 	const char *paths[] = { "src/navi48-bringup/Info.plist", "Info.plist", "../Info.plist" };
 	for (const char *p : paths) {
 		std::ifstream in(p);
 		if (!in) continue;
 		std::stringstream ss; ss << in.rdbuf(); std::string s = ss.str();
-		CHECK(s.find("0.0.676") != std::string::npos);                // CFBundleVersion / ShortVersion
+		const std::string key = "<key>CFBundleVersion</key>";
+		const size_t k = s.find(key);
+		CHECK(k != std::string::npos);
+		if (k == std::string::npos) return;
+		const size_t a = s.find("<string>0.0.", k), dot = (a == std::string::npos) ? a : s.rfind('.', s.find("</string>", a));
+		CHECK(a != std::string::npos && dot != std::string::npos);
+		if (a == std::string::npos || dot == std::string::npos) return;
+		const uint32_t patch = (uint32_t)strtoul(s.c_str() + dot + 1, nullptr, 10);
+		CHECK(patch == kKextBuild);                                   // the build word follows CFBundleVersion's patch number
 		return;
 	}
 	printf("version check skipped: Info.plist not found from the working directory\n");
@@ -305,7 +347,7 @@ static void version_check() {
 
 int main(int argc, char **argv) {
 	hello_cases(); info_cases(); read_regs_cases(); ctx_cases(); gemva_cases(); fence_cases(); submit_cases();
-	gate_cases(); domain_cases(); ring_cases(); submit_cap_case();
+	gate_cases(); domain_cases(); ring_cases(); wait_cases(); submit_cap_case();
 	version_check();
 	if (argc > 1) fails += header_check(argv[1]);
 	else printf("header check skipped: pass the Linux tree root (3857c2fe) as the first argument\n");
