@@ -91,6 +91,25 @@ int main() {
 		CHECK(xlat12_ib_translate_level(XLAT12_LEVEL_GFX11, &ctx, in, n, out, kCap, &len, nullptr, nullptr) == 0, "neg");
 		CHECK(len == 41 && memcmp(out, want, 41 * 4) != 0, "a wrong TMPRING_SIZE value matched the native stream");
 	}
+	// X4b: the kext's path (Navi48Bringup::n33CpStreamBuild): xib_g103 translated into a kXibCap buffer, judged by
+	// xib_verdict against xib_native. Both streams pass at T1's addresses; a forced mismatch through the translator is 65.
+	for (uint32_t stream = kXibWd; stream <= kXibDispatch; stream++)
+		for (uint32_t seq : seqs) {
+			const Geo g = geo(fb[0]);
+			uint32_t in[kXibCap], nat[kXibCap], out[kXibCap], len = 0, eop = 0;
+			const uint32_t n = xib_g103(stream, in, g, seq), nn = xib_native(stream, nat, g, seq);
+			xlat12_ctx ctx; ctx.vs_mode = XLAT12_VS_UNKNOWN;
+			xlat12_stats st = {};
+			const uint32_t s = xlat12_ib_translate_level(XLAT12_LEVEL_GFX11, &ctx, in, n, out, kXibCap, &len, &st, &eop);
+			CHECK(xib_verdict(s, out, len, nat, nn) == kWhyOk, "x4b stream %u seq %u: status %s, len %u native %u", stream,
+			      seq, xlat12_ib_status_name(s), len, nn);
+			in[n - 3] ^= 1;   // the fence seqno dword of the gfx10.3 input: translated verbatim, so it must differ
+			len = 0;
+			const uint32_t s2 = xlat12_ib_translate_level(XLAT12_LEVEL_GFX11, &ctx, in, n, out, kXibCap, &len, &st, &eop);
+			CHECK(s2 == 0 && xib_verdict(s2, out, len, nat, nn) == kWhyXibMismatch &&
+			      xib_first_diff(out, len, nat, nn) == n - 3, "x4b stream %u seq %u: forced mismatch not caught", stream, seq);
+			CHECK(xib_verdict(XLAT12_IB_ERR_UNLISTED, nat, nn, nat, nn) == kWhyXibMismatch, "x4b: a status passed");
+		}
 	printf("test_n33_xib: %u cases (3 fb bases x 3 host pages x 4 seqnos x 2 gl2wb), %d checks passed, %d failed\n",
 	       cases, g_pass, g_fail);
 	return g_fail ? 1 : 0;

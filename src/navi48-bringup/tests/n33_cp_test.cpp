@@ -474,6 +474,62 @@ static void w1_cases() {
 	CHECK(!f.submitPending);
 }
 
+// X4b (step 7): cp xib's gate, stream selection, the 65 verdict and the seqno bookkeeping it shares with W1. The
+// translator itself is not linked here; src/xlat12/tests/test_n33_xib.cpp runs xib_g103 through it against xib_native.
+static void x4b_cases() {
+	CHECK(kWhyXibMismatch == 65 && kWhyXibMismatch != kWhyNoSubmit);
+	CHECK(kXibCap >= 53 && kXibCap <= kSubmitDw);         // X4a's worst translated case fits; the IB buffer holds it
+	CHECK(kHostXibWd % 4 == 0 && kHostXibWd >= kResultDw * 4 && kHostXibWd < kHostFence4);   // apart from data and fence
+	// Stream selection: 1 and 2 only; anything else is 60 whatever the queue state.
+	CHECK(!valid_xib(kXibK4) && valid_xib(kXibWd) && valid_xib(kXibDispatch) && !valid_xib(3) && !valid_xib(0xFFFFFFFFu));
+	State s = {};
+	CHECK(may_xib(s, 0) == kWhyArg && may_xib(s, 3) == kWhyArg);
+	// The gate is cp submit's: not running 62, no K2/K3 yet 62, then ok; latched 56.
+	CHECK(may_xib(s, kXibWd) == kWhyIbOrder);
+	record_start(s, kModeDb, true);
+	CHECK(may_xib(s, kXibWd) == kWhyIbOrder && may_xib(s, kXibDispatch) == kWhyIbOrder);
+	record_test(s, 2, kLatchNone, false);                  // K3 alone also opens it
+	CHECK(may_xib(s, kXibWd) == kWhyOk && may_xib(s, kXibDispatch) == kWhyOk);
+	// One outstanding submit across cp submit and cp xib, one seqno sequence, waitseq retires either.
+	const uint64_t wp0 = s.wptrDw;
+	record_submit(s, 3, wp0 + kSubmitDw, 0x10, kXibWd);
+	CHECK(s.submitPending && s.submitStream == kXibWd && s.seq == 3 && s.wptrDw == wp0 + kSubmitDw);
+	CHECK(may_xib(s, kXibDispatch) == kWhyIbOrder && may_submit(s) == kWhyIbOrder && may_ib(s) == kWhyIbOrder);
+	CHECK(may_waitseq(s, 2) == kWhyNoSubmit && may_waitseq(s, 3) == kWhyOk);
+	record_waitseq(s, kLatchNone);
+	CHECK(!s.submitPending && may_xib(s, kXibDispatch) == kWhyOk);
+	record_submit(s, 4, s.wptrDw + kSubmitDw, 0x20, kXibDispatch);
+	CHECK(s.submitStream == kXibDispatch && may_waitseq(s, 4) == kWhyOk);
+	record_waitseq(s, kLatchNone);
+	record_submit(s, 5, s.wptrDw + kSubmitDw, 0x30);       // a plain cp submit after xib: stream back to K4
+	CHECK(s.submitStream == kXibK4 && s.seq == 5 && s.wptrDw == wp0 + 3 * kSubmitDw);
+	record_waitseq(s, kLatchHard);
+	CHECK(may_xib(s, kXibWd) == kWhyLatched);
+	// Stores waitseq counts: one for wd, 32 for the dispatches.
+	CHECK(xib_want(kXibWd) == 1 && xib_want(kXibDispatch) == kResultDw && xib_want(kXibK4) == kResultDw);
+	// Streams: the native forms are T1/W1's addresses; the dispatch native equals T1's K4 exactly.
+	const Geo g = geo(kFbBase);
+	uint32_t a[kXibCap], b[kXibCap];
+	CHECK(xib_g103(kXibK4, a, g, 1) == 0 && xib_g103(3, a, g, 1) == 0 && xib_native(3, a, g, 1) == 0);
+	uint32_t n = xib_native(kXibDispatch, a, g, 9), m = pkt_dispatch(b, g.code, g.hostB, g.hostB + kHostFence4, 9, true);
+	CHECK(n == 41 && m == 41 && xib_first_diff(a, n, b, m) == kXibSame);
+	CHECK(xib_native(kXibK4, b, g, 9) == 41 && xib_first_diff(a, n, b, 41) == kXibSame);
+	n = xib_native(kXibWd, a, g, 9);
+	CHECK(n == 13 && a[0] == pkt3(kOpWriteData, 3) && a[2] == (uint32_t)(g.hostB + kHostXibWd) && a[3] == hi32(g.hostB) &&
+	      a[4] == kMagic + 9 && a[5] == pkt3(kOpReleaseMem, 6) && a[8] == (uint32_t)(g.hostB + kHostFence4) && a[10] == 9);
+	m = xib_g103(kXibWd, b, g, 9);
+	CHECK(m == 13 && xib_first_diff(a, n, b, m) == kXibSame);   // wd's gfx10.3 and gfx11 encodings are the same dwords
+	CHECK(xib_g103(kXibDispatch, b, g, 9) == 41);
+	// The verdict: equal is 0; a translator status, an empty output, a changed dword or a length difference is 65.
+	CHECK(xib_verdict(0, a, n, a, n) == kWhyOk);
+	CHECK(xib_verdict(21, a, n, a, n) == kWhyXibMismatch);
+	CHECK(xib_verdict(0, a, 0, a, 0) == kWhyXibMismatch);
+	CHECK(xib_verdict(0, a, n - 1, a, n) == kWhyXibMismatch && xib_first_diff(a, n - 1, a, n) == n - 1);
+	for (uint32_t i = 0; i < n; i++) b[i] = a[i];
+	b[10] ^= 1;                                            // a forced mismatch in the fence seqno
+	CHECK(xib_verdict(0, b, n, a, n) == kWhyXibMismatch && xib_first_diff(b, n, a, n) == 10);
+}
+
 // ---- Part 2: the Linux headers --------------------------------------------------------------------------------
 typedef std::map<std::string, unsigned long long> Defs;
 static bool load_defs(const std::string &path, Defs &d) {
@@ -643,6 +699,7 @@ int main(int argc, char **argv) {
 	placement_cases(); shader_cases(); packet_cases(); mqd_cases(); start_cases(); stop_cases(); gate_cases(); outcome_cases();
 	t1_cases();
 	w1_cases();
+	x4b_cases();
 	if (argc > 1) fails += header_check(argv[1]);
 	else printf("header check skipped: pass the Linux tree root (3857c2fe) as the first argument\n");
 	if (fails) { printf("%d FAILED\n", fails); return 1; }

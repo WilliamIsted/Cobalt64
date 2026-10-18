@@ -227,6 +227,38 @@ inline uint32_t pkt_wd(uint32_t *p, uint64_t mc, uint32_t v, uint64_t fenceMc, u
 inline uint32_t pkt_wd_g103(uint32_t *p, uint64_t mc, uint32_t v, uint64_t fenceMc, uint32_t seq, bool gl2wb) {
 	return pkt_wd(p, mc, v, fenceMc, seq, gl2wb);
 }
+
+// ---- X4b (step 7): cp xib <stream>, a fixed gfx10.3 stream translated in the kext and submitted as W1's cp submit ----
+// Stream 0 is T1/W1's native K4 (no translation). Streams 1 and 2 are built here as gfx10.3, translated by
+// xlat12_ib_translate_level(11, ...) into the IB, and compared dword for dword with the native builder (refusal 65).
+// No PM4 comes from userspace: it names a stream number only. Addresses are T1/W1's: code page, host page B, fence.
+enum Xib : uint32_t { kXibK4 = 0, kXibWd = 1, kXibDispatch = 2 };
+constexpr uint32_t kXibCap = 64;              // X4a: the worst translated length of these streams is 53 dwords
+constexpr uint32_t kHostXibWd = kHostK3;      // wd's target in host page B (K3's word, pre-filled before each submit)
+constexpr uint32_t kXibSame = 0xFFFFFFFFu;    // xib_first_diff: no difference
+inline bool valid_xib(uint32_t s) { return s == kXibWd || s == kXibDispatch; }
+inline uint32_t xib_wd_value(uint32_t seq) { return kMagic + seq; }
+// Dwords the stream stores in host page B: wd writes one, the dispatches (K4 and xib 2) write 32.
+inline uint32_t xib_want(uint32_t stream) { return stream == kXibWd ? 1 : kResultDw; }
+// The gfx10.3 input of stream 1 or 2 (0 dwords for any other stream).
+inline uint32_t xib_g103(uint32_t s, uint32_t *p, const Geo &g, uint32_t seq) {
+	if (s == kXibWd) return pkt_wd_g103(p, g.hostB + kHostXibWd, xib_wd_value(seq), g.hostB + kHostFence4, seq, true);
+	if (s == kXibDispatch) return pkt_dispatch_g103(p, g.code, g.hostB, g.hostB + kHostFence4, seq, true);
+	return 0;
+}
+// The native gfx11 oracle for the same stream; stream 0 is T1/W1's K4 exactly as they build it.
+inline uint32_t xib_native(uint32_t s, uint32_t *p, const Geo &g, uint32_t seq) {
+	if (s == kXibWd) return pkt_wd(p, g.hostB + kHostXibWd, xib_wd_value(seq), g.hostB + kHostFence4, seq, true);
+	if (s == kXibDispatch || s == kXibK4) return pkt_dispatch(p, g.code, g.hostB, g.hostB + kHostFence4, seq, true);
+	return 0;
+}
+// First dword index where a and b differ (a length difference differs at the shorter length), or kXibSame.
+inline uint32_t xib_first_diff(const uint32_t *a, uint32_t an, const uint32_t *b, uint32_t bn) {
+	const uint32_t n = an < bn ? an : bn;
+	for (uint32_t i = 0; i < n; i++) if (a[i] != b[i]) return i;
+	return an == bn ? kXibSame : n;
+}
+
 // Pad with one-dword NOPs to the next 256-dword boundary, as amdgpu_ring_commit. Returns the padded length.
 inline uint32_t pad(uint32_t *p, uint32_t n) {
 	while (n % kSubmitDw) p[n++] = kNop;
@@ -290,7 +322,14 @@ enum Why : uint32_t {
 	kWhyIbOverlap = 63,  // T1: the IB page overlaps a live DMCUB window or another protected range
 	kWhyNoSubmit = 64,   // W1 (step 7): cp waitseq with no outstanding cp submit in this load, or a seqno that is not
 	                     // the outstanding one
+	kWhyXibMismatch = 65,// X4b (step 7): cp xib's translated stream differs from the native builder, or xlat12 refused it
 };
+
+// X4b: 65 on a translator error (status not 0) or any difference from the native stream; an empty stream differs.
+inline uint32_t xib_verdict(uint32_t status, const uint32_t *out, uint32_t len, const uint32_t *native, uint32_t nn) {
+	if (status || !nn || xib_first_diff(out, len, native, nn) != kXibSame) return kWhyXibMismatch;
+	return kWhyOk;
+}
 
 // ---- Plans (step 5's Entry and read-back rule, plus three ops of its own) ---------------------------------------
 // kOpSleepMs: sleep value ms. kOpPoll: read reg until (reg & mask) == 0, up to value ms (0: one read); its outcome is
@@ -399,6 +438,7 @@ struct State {
 	uint32_t submitSeq;     // W1: the RELEASE_MEM seqno cp submit returned
 	uint64_t submitWp;      // W1: the ring wptr after that submit, for cp waitseq's rptr_at check
 	uint32_t submitRptr0;   // W1: CP_HQD_PQ_RPTR just before the submit kick, for cp waitseq's rptrMoved check
+	uint32_t submitStream;  // X4b: the outstanding submit's stream (kXibK4 for cp submit), so cp waitseq checks its stores
 };
 
 // K1's MEC check (code 55): C1 leaves 0x40000000; a K6 in this load leaves pipe 0 active as well.
@@ -487,9 +527,15 @@ inline uint32_t may_waitseq(const State &s, uint32_t seq) {
 }
 // record_submit: the ring grew by one 256-dword submission (as record_ib), the fence seqno is live and one submit is
 // outstanding. wp is the post-kick wptr and rptr0 the pre-kick CP_HQD_PQ_RPTR, both kept for cp waitseq.
-inline void record_submit(State &s, uint32_t seq, uint64_t wp, uint32_t rptr0) {
+inline void record_submit(State &s, uint32_t seq, uint64_t wp, uint32_t rptr0, uint32_t stream = kXibK4) {
 	s.wptrDw += kSubmitDw; s.seq = seq;
-	s.submitPending = true; s.submitSeq = seq; s.submitWp = wp; s.submitRptr0 = rptr0;
+	s.submitPending = true; s.submitSeq = seq; s.submitWp = wp; s.submitRptr0 = rptr0; s.submitStream = stream;
+}
+// X4b: cp xib is cp submit with a translated stream, so it has cp submit's gate (62, 56) and shares its seqno, one
+// outstanding submit and cp waitseq. A stream other than 1 or 2 is 60.
+inline uint32_t may_xib(const State &s, uint32_t stream) {
+	if (!valid_xib(stream)) return kWhyArg;
+	return may_submit(s);
 }
 // record_waitseq: the wait consumed the outstanding submit; the latch is carried exactly as record_ib carries it (a
 // timeout marks the mode, a hard failure latches). The wptr already grew at submit, so it is not advanced again.

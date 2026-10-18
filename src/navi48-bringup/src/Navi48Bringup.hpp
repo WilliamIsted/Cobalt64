@@ -209,10 +209,11 @@ private:
 	uint32_t n33CpTest(uint32_t n, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpStop(bool unload, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpIbPageClear() const;
-	uint32_t n33CpIbBuildKick(uint32_t &seq, uint64_t &wp, uint32_t &rptr0, volatile uint32_t *&hb, uint64_t *out, uint32_t outCount);
-	uint32_t n33CpIbWait(uint32_t seq, uint64_t wp, uint32_t rptr0, volatile uint32_t *hb, uint64_t *out, uint32_t outCount);
+	uint32_t n33CpStreamBuild(uint32_t stream, const n33cp::Geo &g, uint32_t seq, uint32_t *ib, uint32_t &ibDw);   // X4b
+	uint32_t n33CpIbBuildKick(uint32_t stream, uint32_t &seq, uint64_t &wp, uint32_t &rptr0, volatile uint32_t *&hb, uint64_t *out, uint32_t outCount);
+	uint32_t n33CpIbWait(uint32_t stream, uint32_t seq, uint64_t wp, uint32_t rptr0, volatile uint32_t *hb, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpIb(uint64_t *out, uint32_t outCount);
-	uint32_t n33CpSubmit(uint64_t *out, uint32_t outCount);        // W1 (step 7): the winsys submit half of cp ib
+	uint32_t n33CpSubmit(uint32_t stream, uint64_t *out, uint32_t outCount);   // W1 (step 7) cp submit (stream 0), X4b cp xib (1, 2)
 	uint32_t n33CpWait(uint32_t seq, uint64_t *out, uint32_t outCount);   // W1 (step 7): the winsys waitseq half
 	// N33 stage 3 DMCUB bring-up proof (n33dmub::, Navi48Bringup.cpp): snapshot, PSP type-51 load, reset, init,
 	// QUERY_FEATURE_CAPS, and the hold/revert check. No writes until snapshot arms the gate.

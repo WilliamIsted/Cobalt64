@@ -115,6 +115,7 @@ static const char *whyName(uint64_t why) {
 	case 62:  return "step 7 T1: cp ib before cp start, or before a plain ring packet (cp test 1/K2 or test 2/K3) succeeded since the start";
 	case 63:  return "step 7 T1: the IB page overlaps a live DMCUB window or another protected range";
 	case 64:  return "step 7 W1: cp waitseq with no outstanding cp submit in this load, or a seqno that is not the outstanding one";
+	case 65:  return "step 7 X4b: cp xib's xlat12-translated stream differs from the native builder, or xlat12 refused it (kext log: first diff)";
 	case 200: return "dmub: a DMCUB write before dmub snapshot armed the gate";
 	case 201: return "dmub: HUBP0 is not on the GOP scanout surface";
 	case 202: return "dmub: the N33 framebuffer nub is published";
@@ -194,6 +195,8 @@ static void usage(void) {
 	    "  cp state | hqd | start db|mmio | test 1..5 | stop   step 6: one MEC compute queue, K2 to K5b (state, hqd read-only)\n"
 	    "  cp ib                        step 7 T1: K4's store_magic dispatch run from a VRAM IB through INDIRECT_BUFFER (after cp test 2/K3)\n"
 	    "  cp submit | waitseq <seq>    step 7 W1: the winsys submit->wait split of cp ib (submit returns a seqno, waitseq polls its fence)\n"
+	    "  cp xib 1|2                   step 7 X4b: a fixed gfx10.3 stream (1 wd, 2 store_magic dispatch) translated by xlat12, submitted\n"
+	    "                               as cp submit; retire it with cp waitseq <seq>\n"
 	    "                               cp flags | journal <i> | start <n>: raw, for cp-negative.sh only (flags reads no register)\n"
 	    "  dmub snapshot|reset|init|query|check | load <dcn_3_2_1_dmcub.bin>   stage 3 DMCUB proof (snapshot is read-only)\n"
 	    "                               order: snapshot, load, reset, init, query (QUERY_FEATURE_CAPS = the proof), check\n"
@@ -1231,7 +1234,7 @@ static int doSdma(int argc, char **argv) {
 // n33ctl cp stop             K6: drain (the reset stage if needed), pointers and doorbell off, MEC halted
 // The kext computes every value and builds every packet; this tool keeps the order and stops after each step for the
 // display check. Each step is William's go. If K2 times out in db mode: cp stop, cp start mmio, cp test 1 (D4).
-enum { aCpState = 29, aCpHqd = 30, aCpStart = 31, aCpTest = 32, aCpStop = 33, aCpRecord = 34, aCpIb = 35, aCpSubmit = 36, aCpWait = 37 };
+enum { aCpState = 29, aCpHqd = 30, aCpStart = 31, aCpTest = 32, aCpStop = 33, aCpRecord = 34, aCpIb = 35, aCpSubmit = 36, aCpWait = 37, aCpXib = 38 };
 static const struct { uint32_t reg; const char *name; } kCpNames[] = {
 	{ 0xC904, "CP_MEC_RS64_CNTL" }, { 0xC908, "CP_MEC_RS64_INSTR_PNTR" }, { 0x3083, "CP_PQ_WPTR_POLL_CNTL" },
 	{ 0x30B8, "CP_PQ_STATUS" }, { 0x305C, "CP_MEC_DOORBELL_RANGE_LOWER" }, { 0x305D, "CP_MEC_DOORBELL_RANGE_UPPER" },
@@ -1418,6 +1421,19 @@ static int cpSubmit(void) {
 	return 0;
 }
 
+// X4b (step 7): cp xib 1|2, cp submit with the kext's fixed gfx10.3 stream translated by xlat12 (1 wd, 2 dispatch).
+static int cpXib(uint64_t stream) {
+	uint64_t st[15], o[16] = {0};
+	if (cpFlags(st)) return 1;
+	cpPrintFlags(st);
+	if (call(aCpXib, &stream, 1, o, 16)) { printf("X4b (cp xib %llu): REFUSED by the kext\n", stream); return 1; }
+	printf("X4b xib %llu (%s), %s mode: seqno %llu kicked; translated IB at MC %#llx, %llu dwords, read-back %s; PQ_RPTR %#llx, "
+	       "wptr %llu dwords\n", stream, stream == 1 ? "wd" : "dispatch", st[1] == 2 ? "db" : "mmio", o[1], o[12], o[13] >> 8,
+	       o[13] & 1 ? "ok" : "MISMATCH", o[4], o[5]);
+	printf("next go: n33ctl cp waitseq %llu (polls the RELEASE_MEM fence of this submit)\n", o[1]);
+	return 0;
+}
+
 // W1 (step 7): cp waitseq <seq>, the winsys wait half. Polls the outstanding submit's fence and reports retired.
 static int cpWait(uint64_t seq) {
 	uint64_t st[15], o[16] = {0};
@@ -1428,8 +1444,13 @@ static int cpWait(uint64_t seq) {
 	if (call(aCpWait, &seq, 1, o, 16)) { printf("W1 (cp waitseq %llu): REFUSED by the kext\n", seq); return 1; }
 	printf("W1 waitseq %llu, %s mode: %s after %llu us\n", seq, st[1] == 2 ? "db" : "mmio",
 	       o[1] ? "RETIRED" : o[14] == 1 ? "TIMEOUT (timeout only)" : "FAILED (latched)", o[15]);
-	printf("  host page B: %llu of 32 dwords 0xca11ed47 + i; fence reads %#llx; first data / fence at %lld / %lld us\n",
-	       o[2], o[3], (long long)(int32_t)(o[11] >> 32), (long long)(int32_t)(o[11] & 0xFFFFFFFFull));
+	if (o[12] == 1)   // X4b wd: one dword, 0xca11ed47 + seqno at host page B + 0x100
+		printf("  stream wd: host page B: %llu of %llu dword 0xca11ed47 + seqno at +0x100; fence reads %#llx; first data / fence at %lld / %lld us\n",
+		       o[2], o[13], o[3], (long long)(int32_t)(o[11] >> 32), (long long)(int32_t)(o[11] & 0xFFFFFFFFull));
+	else
+		printf("  stream %s: host page B: %llu of %llu dwords 0xca11ed47 + i; fence reads %#llx; first data / fence at %lld / %lld us\n",
+		       o[12] == 2 ? "dispatch" : "K4", o[2], o[13], o[3], (long long)(int32_t)(o[11] >> 32),
+		       (long long)(int32_t)(o[11] & 0xFFFFFFFFull));
 	printf("  PQ_RPTR %#llx, wptr %llu dwords, rptr slot %#llx, ACTIVE %#llx, HQD_ERROR %#llx, GRBM_STATUS %#llx, GC fault status %#llx\n",
 	       o[4], o[5], o[6], o[9], o[8], o[10], o[7]);
 	if (gmcDisplay(&after)) return 1;
@@ -1459,6 +1480,7 @@ static int doCp(int argc, char **argv) {
 	if (!strcmp(sub, "ib") && argc == 3) return cpIb();
 	if (!strcmp(sub, "submit") && argc == 3) return cpSubmit();
 	if (!strcmp(sub, "waitseq") && argc == 4) return cpWait(num(argv[3]));
+	if (!strcmp(sub, "xib") && argc == 4) return cpXib(num(argv[3]));
 	if (!strcmp(sub, "stop") && argc == 3) {
 		if (call(aCpStop, NULL, 0, o, 10)) { printf("K6: REFUSED by the kext\n"); return 1; }
 		printf("K6: %s, %llu writes, %llu mismatches, drain %s%s, ACTIVE %#llx (want 0), PQ_RPTR %#llx (want 0), "
