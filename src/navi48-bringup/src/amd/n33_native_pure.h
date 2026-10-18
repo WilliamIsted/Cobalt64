@@ -17,7 +17,7 @@
 namespace n33n {
 
 // ---- build and identity ------------------------------------------------------------------------------------------
-constexpr uint32_t kKextBuild = 674;                 // 0.0.674 (Hello / QueryInfo report it; the host test pins it to Info.plist)
+constexpr uint32_t kKextBuild = 675;                 // 0.0.675 (Hello / QueryInfo report it; the host test pins it to Info.plist)
 constexpr uint32_t kVmid      = n33vm::kVmid;         // 8: the Darwin backend's and W2V's static VMID
 constexpr uint32_t kGcMajor = 11, kGcMinor = 0, kGcRev = 2;   // gfx11.0.2 (Navi 33); (maj<<16)|(min<<8)|rev
 constexpr uint32_t kGcVersion = (kGcMajor << 16) | (kGcMinor << 8) | kGcRev;   // 0x0B0002
@@ -50,9 +50,14 @@ inline void client_reset(Client &c) { c = Client{}; }
 
 // ---- newUserClient gate (item 1): one client at a time, only after step 6 K1-K3 ran and a W2V VM exists -----------
 // cpQueueReady: the step-6 compute queue is up and K2/K3 landed this load. vmLive: n33Vm.live (vm create done).
-inline Code may_open(bool cpQueueReady, bool vmLive, bool alreadyOpen) {
+// legacyBoLive / legacyMapping: a legacy n33ctl BO or VMID-8 mapping already exists (beyond the VM tree). The native
+// client and the legacy n33ctl path share the one n33Bo/n33Vm state, so the native open is refused unless that state is
+// clear of legacy allocations - the client then owns every BO and mapping it makes, and the legacy actions are refused
+// while it is open (checked in n33CallLocked).
+inline Code may_open(bool cpQueueReady, bool vmLive, bool alreadyOpen, bool legacyBoLive, bool legacyMapping) {
 	if (alreadyOpen) return kExclusive;                 // one N48N client at a time on N33
 	if (!cpQueueReady || !vmLive) return kNotReady;
+	if (legacyBoLive || legacyMapping) return kExclusive;   // ownership: no legacy BOs / VMID-8 mappings may exist at open
 	return kOk;
 }
 

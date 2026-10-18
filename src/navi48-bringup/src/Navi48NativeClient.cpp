@@ -46,8 +46,11 @@ IOReturn IOAccelNavi48NativeClient::create(Navi48Bringup *owner, IOService *atta
 	// W3 (step 7): on the N33 build the open and every selector go through owner->n33n* (the native bridge over W1/W2/W2V),
 	// not the gfx12 engine. The per-open gate (K1-K3 ran, a W2V VM exists, one client at a time) is in n33nOpen.
 	if (owner->n33IsObserving()) {
+		// The N33 native client drives a GPU VM that can reach host memory: root (administrator) only. initWithTask already
+		// refuses a non-admin with the default boot-args; this rejects a uid-88 / app admission too, as defence in depth.
+		if (!uc->adminClient) { uc->release(); return kIOReturnNotPrivileged; }
 		uint32_t id = 0;
-		const IOReturn rc = owner->n33nOpen(&id);
+		const IOReturn rc = owner->n33nOpen(uc, &id);
 		if (rc != kIOReturnSuccess) { uc->release(); return rc; }
 		uc->sessSlot = 0; uc->sessId = id; uc->opened = true;
 		if (!uc->attach(attachTo)) { owner->n33nClose(); uc->opened = false; uc->release(); return kIOReturnInternalError; }
@@ -165,7 +168,14 @@ IOReturn IOAccelNavi48NativeClient::externalMethod(uint32_t selector, IOExternal
 	if (!args || !opened) return kIOReturnNotReady;
 	if (args->structureInputDescriptor != nullptr || args->structureOutputDescriptor != nullptr) return kIOReturnBadArgument;
 #if defined(N33_OBSERVE)
-	if (owner && owner->n33IsObserving()) return n33Dispatch(selector, args);   // W3: the N48N subset over W1/W2/W2V
+	if (owner && owner->n33IsObserving()) {
+		// Run the same session / selector gates as the gfx12 path before dispatching: root (admin) only, the bringup
+		// route, and the selector permitted on it. n33Dispatch then serves only the ten selectors (others are refused).
+		if (!adminClient) return kIOReturnNotPrivileged;
+		if (!n48native::policy::route_selector_ok(route, selector) || !n48native::policy::selector_allowed(adminClient, selector))
+			return kIOReturnNotPrivileged;
+		return n33Dispatch(selector, args);   // the N48N subset over W1/W2/W2V
+	}
 #endif
 	const uint32_t sic = args->scalarInputCount, soc = args->scalarOutputCount, sis = args->structureInputSize, sos = args->structureOutputSize;
 	const uint64_t *si = args->scalarInput;

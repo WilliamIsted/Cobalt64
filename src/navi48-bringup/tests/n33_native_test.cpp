@@ -50,7 +50,7 @@ static void info_cases() {
 	L.gtt_cap = 512ull << 20; L.gtt_max_bo = 1ull << 20; L.pt_cap = 8ull << 20;
 	L.seq_emitted = 5; L.seq_retired = 4;
 	info_fill(&info, L);
-	CHECK(info.abi_version == N48N_ABI_VERSION && info.kext_build == 674);
+	CHECK(info.abi_version == N48N_ABI_VERSION && info.kext_build == 675);
 	CHECK(info.gb_addr_config == 0x343u);
 	CHECK(info.gc_version == 0x000B0002u);                              // gfx11.0.2
 	CHECK(info.vmid == 8u && info.max_ibs == N48N_MAX_IBS);
@@ -214,10 +214,13 @@ static void submit_cases() {
 }
 
 static void gate_cases() {
-	CHECK(may_open(/*cpReady*/true, /*vmLive*/true, /*already*/false) == kOk);
-	CHECK(may_open(false, true, false) == kNotReady);         // K1-K3 not run
-	CHECK(may_open(true, false, false) == kNotReady);         // no W2V VM
-	CHECK(may_open(true, true, true) == kExclusive);          // a client is already open
+	CHECK(may_open(/*cpReady*/true, /*vmLive*/true, /*already*/false, /*boLive*/false, /*mapping*/false) == kOk);
+	CHECK(may_open(false, true, false, false, false) == kNotReady);   // K1-K3 not run
+	CHECK(may_open(true, false, false, false, false) == kNotReady);   // no W2V VM
+	CHECK(may_open(true, true, true, false, false) == kExclusive);    // a client is already open
+	CHECK(may_open(true, true, false, true, false) == kExclusive);    // a legacy n33ctl BO exists -> refuse (ownership)
+	CHECK(may_open(true, true, false, false, true) == kExclusive);    // a legacy VMID-8 mapping exists -> refuse
+	CHECK(may_open(true, true, false, true, true) == kExclusive);
 }
 
 static void domain_cases() {
@@ -294,7 +297,7 @@ static void version_check() {
 		std::ifstream in(p);
 		if (!in) continue;
 		std::stringstream ss; ss << in.rdbuf(); std::string s = ss.str();
-		CHECK(s.find("0.0.674") != std::string::npos);                // CFBundleVersion / ShortVersion
+		CHECK(s.find("0.0.675") != std::string::npos);                // CFBundleVersion / ShortVersion
 		return;
 	}
 	printf("version check skipped: Info.plist not found from the working directory\n");

@@ -75,9 +75,10 @@ public:
 	                 task_t caller = TASK_NULL);   // caller: the user client's task, for W2's bo import only
 	// Stage 3 step 7 W3: the N48N native client on the N33 build. IOAccelNavi48NativeClient dispatches to these when
 	// n33IsObserving(); the pure decisions are n33_native_pure.h. One client at a time. Defined in amd/n33_native.cpp.
-	IOReturn n33nOpen(uint32_t *idOut);
+	IOReturn n33nOpen(IOUserClient *uc, uint32_t *idOut);
 	void     n33nClose();
 	bool     n33nIsOpen() const { return n33NativeOpen; }
+	IOLock  *n33NativeLock();   // the one lock (gN33PspLock) that serialises every n33n* call and the legacy n33Call BO/VM/CP actions
 	IOReturn n33nHello(uint64_t clientAbi, uint64_t flags, uint64_t out[4]);
 	IOReturn n33nQueryInfo(n48n_info *out);
 	IOReturn n33nReadRegs(uint64_t off, uint64_t count, uint64_t instance, uint32_t *out);
@@ -317,7 +318,10 @@ private:
 	n33n::Client n33NativeClient {};
 	bool         n33NativeOpen { false };
 	uint32_t     n33NativeId { 0 };
+	IOUserClient *n33NativeUc { nullptr };                     // the open client, for removeMappingForDescriptor at BoFree / close
+	IOMemoryDescriptor *n33BoUserMd[n33bo::kBoMax] {};         // the ONE descriptor handed to userspace per BO (VRAM: an IODeviceMemory we own; GTT/import: the BO's own, retained)
 	uint32_t n33VmSubmitUser(const n33n::SubmitReq &req, uint64_t *out, uint32_t outCount);   // the caller's IBs, VMID 8, fence = kernel seqno in host page B (as W2V)
+	void     n33NativeUnmapAndRelease(uint32_t h);            // remove the user CPU mappings of BO h and drop our descriptor reference (BoFree / close)
 #endif
 	// --- stages ---
 	bool probeMemSize();

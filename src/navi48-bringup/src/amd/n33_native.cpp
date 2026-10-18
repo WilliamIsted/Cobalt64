@@ -3,7 +3,17 @@
 //  methods. Built ONLY with N33=1 (the whole file is empty otherwise, since the Makefile wildcard compiles it in
 //  every build). The pure decisions are amd/n33_native_pure.h; here they are wired to the W1/W2/W2V kernel code
 //  (n33BoCreate/Import/Free, n33VmMap/Unmap, the step-6 compute queue through a new caller-IB submit). The client
-//  Navi48NativeClient.cpp dispatches to these when n33IsObserving(). One client at a time (the open gate is n33nOpen).
+//  Navi48NativeClient.cpp dispatches to these when n33IsObserving(), root-only. One client at a time (n33nOpen gate).
+//
+//  Serialisation: every method takes the one lock n33Call holds for the legacy BO/VM/CP actions (gN33PspLock, via
+//  n33NativeLock()), so a submit's check-then-kick is atomic against a BO free or VM unmap, and the n33Bo/n33Vm/n33Cp
+//  kernel methods are called with the lock they document ("called under gN33PspLock"). The wait holds the lock across
+//  the bounded (2 s) waitseq poll only.
+//
+//  Ownership: n33nOpen refuses while any legacy n33ctl BO or VMID-8 mapping exists (beyond the VM tree), and the legacy
+//  BO/VM actions are refused while the client is open (n33CallLocked), so every BO and mapping during a session is the
+//  client's. CPU maps are revoked (removeMappingForDescriptor) before a BO is freed or the client closes, so freed VRAM
+//  (which the arena reuses for page tables) can never be written through a stale user mapping.
 //
 //  The submit path keeps tonight's three hardware lessons (the ring kick): the compute queue is a privileged KMD queue
 //  (K1), ACQUIRE_MEM sits before every INDIRECT_BUFFER (ring_build), and a VM fault halts the queue (K6 + cp start
@@ -14,9 +24,21 @@
 #include "amd/n33_native_pure.h"
 #include <IOKit/IODeviceMemory.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>   // n33GmcHost[] is IOBufferMemoryDescriptor* (getBytesNoCopy)
+#include <IOKit/IOUserClient.h>                // removeMappingForDescriptor (revoke CPU maps at BoFree / close)
 #include <string.h>
 
 #define N33NLOG(fmt, ...) N48LOG("n33 w3: " fmt, ##__VA_ARGS__)
+
+namespace {
+// A scope guard for gN33PspLock: a null lock is a no-op (open refuses when the lock does not exist).
+struct N33Lock {
+	IOLock *l;
+	explicit N33Lock(IOLock *x) : l(x) { if (l) IOLockLock(l); }
+	~N33Lock() { if (l) IOLockUnlock(l); }
+	N33Lock(const N33Lock &) = delete;
+	N33Lock &operator=(const N33Lock &) = delete;
+};
+}
 
 // The pure header's codes -> the IOReturn.h values the client returns to userspace.
 static IOReturn n33n_io(n33n::Code c) {
@@ -40,35 +62,59 @@ static IOReturn why_io(uint32_t w) {
 	return kIOReturnNotReady;   // order / GMC not ready / fault / gart / doorbell
 }
 
-IOReturn Navi48Bringup::n33nOpen(uint32_t *idOut) {
-	// The gate: the step-6 compute queue is running (K1-K3) and a W2V VM exists, and no client is already open.
-	const n33n::Code c = n33n::may_open(n33Cp.running, n33Vm.live, n33NativeOpen);
+IOReturn Navi48Bringup::n33nOpen(IOUserClient *uc, uint32_t *idOut) {
+	IOLock *lk0 = n33NativeLock();
+	if (!lk0) return kIOReturnNotReady;   // the lock is allocated at start / first n33Call; without it nothing is serialised
+	N33Lock lk(lk0);
+	// Ownership: no legacy n33ctl BO or VMID-8 mapping may exist at open (the VM tree itself is required: n33Vm.live).
+	bool anyBo = false;  for (uint32_t h = 1; h <= n33bo::kBoMax && !anyBo; h++) anyBo = n33bo::handle_ok(n33Bo, h);
+	bool anyMap = false; for (uint32_t i = 0; i < n33vm::kMapMax && !anyMap; i++) anyMap = n33Vm.map[i].used;
+	const n33n::Code c = n33n::may_open(n33Cp.running, n33Vm.live, n33NativeOpen, anyBo, anyMap);
 	if (c != n33n::kOk) {
-		N33NLOG("open refused: cp running %u, vm live %u, already open %u", n33Cp.running, n33Vm.live, n33NativeOpen);
+		N33NLOG("open refused: cp running %u, vm live %u, already open %u, legacy BO %u, legacy mapping %u",
+		        n33Cp.running, n33Vm.live, n33NativeOpen, anyBo, anyMap);
 		return n33n_io(c);
 	}
 	n33n::client_reset(n33NativeClient);
+	for (uint32_t h = 0; h < n33bo::kBoMax; h++) n33BoUserMd[h] = nullptr;
+	n33NativeUc = uc;
 	n33NativeOpen = true;
 	n33NativeId++;
 	if (idOut) *idOut = n33NativeId;
-	N33NLOG("open: N48N client id %u (VMID %u, queue running, VM live)", n33NativeId, n33n::kVmid);
+	N33NLOG("open: N48N client id %u (VMID %u, queue running, VM live, state clear)", n33NativeId, n33n::kVmid);
 	return kIOReturnSuccess;
 }
 
+// Remove the user CPU mappings of BO h and drop our cached descriptor. Called under the lock, before the memory is freed
+// or reused: removeMappingForDescriptor detaches every mapping from the client's address space, so the range cannot be
+// written after it is freed. For VRAM our descriptor is the IODeviceMemory we made (released here); for GTT it is the
+// BO's own, held by an extra retain we took in n33nMemoryForHandle (released here; n33BoRelease frees the original).
+void Navi48Bringup::n33NativeUnmapAndRelease(uint32_t h) {
+	IOMemoryDescriptor *md = n33BoUserMd[h - 1];
+	if (!md) return;
+	if (n33NativeUc) { IOMemoryMap *m; while ((m = n33NativeUc->removeMappingForDescriptor(md)) != nullptr) m->release(); }
+	n33BoUserMd[h - 1] = nullptr;
+	md->release();
+}
+
 void Navi48Bringup::n33nClose() {
+	IOLock *lk0 = n33NativeLock();
+	N33Lock lk(lk0);
 	if (!n33NativeOpen) return;
-	// Item 3 teardown: unmap every VMID-8 mapping, then free every BO (one client at a time, so these are its own).
+	// Item 3 teardown: unmap every VMID-8 mapping FIRST (so BoFree's code-84 guard passes), revoke CPU maps, free BOs.
 	uint64_t tmp[4];
 	for (uint32_t i = 0; i < n33vm::kMapMax; i++)
 		if (n33Vm.live && n33Vm.map[i].used) (void)n33VmUnmap(n33Vm.map[i].handle, n33Vm.map[i].va, tmp, 4);
 	for (uint32_t h = 1; h <= n33bo::kBoMax; h++)
-		if (n33bo::handle_ok(n33Bo, h)) (void)n33BoFree(h);
+		if (n33bo::handle_ok(n33Bo, h)) { n33NativeUnmapAndRelease(h); (void)n33BoFree(h); }
 	n33n::client_reset(n33NativeClient);
 	n33NativeOpen = false;
-	N33NLOG("close: client torn down (mappings unmapped, BOs freed)");
+	n33NativeUc = nullptr;
+	N33NLOG("close: client torn down (CPU maps removed, mappings unmapped, BOs freed)");
 }
 
 IOReturn Navi48Bringup::n33nHello(uint64_t clientAbi, uint64_t flags, uint64_t out[4]) {
+	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen) return kIOReturnNotReady;
 	const n33n::Code c = n33n::hello_check(clientAbi, flags);
 	if (c != n33n::kOk) return n33n_io(c);
@@ -80,6 +126,7 @@ IOReturn Navi48Bringup::n33nHello(uint64_t clientAbi, uint64_t flags, uint64_t o
 }
 
 IOReturn Navi48Bringup::n33nQueryInfo(n48n_info *out) {
+	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
 	memset(out, 0, sizeof(*out));
 	n33n::InfoLive L {};
@@ -99,6 +146,7 @@ IOReturn Navi48Bringup::n33nQueryInfo(n48n_info *out) {
 }
 
 IOReturn Navi48Bringup::n33nReadRegs(uint64_t off, uint64_t count, uint64_t instance, uint32_t *out) {
+	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
 	const n33n::Code c = n33n::read_regs_check(off, count, instance);
 	if (c != n33n::kOk) return n33n_io(c);
@@ -108,6 +156,7 @@ IOReturn Navi48Bringup::n33nReadRegs(uint64_t off, uint64_t count, uint64_t inst
 }
 
 IOReturn Navi48Bringup::n33nBoCreate(const n48n_gem_create_in *in, uint64_t out[4]) {
+	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
 	uint32_t kind = 0;
 	const n33n::Code c = n33n::domain_to_kind(in->domains, &kind);
@@ -124,14 +173,18 @@ IOReturn Navi48Bringup::n33nBoCreate(const n48n_gem_create_in *in, uint64_t out[
 }
 
 IOReturn Navi48Bringup::n33nBoFree(uint32_t handle) {
+	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
+	if (!n33bo::handle_ok(n33Bo, handle)) return kIOReturnBadArgument;
+	n33NativeUnmapAndRelease(handle);   // revoke the user CPU mappings before the memory is freed / reused
 	return why_io(n33BoFree(handle));
 }
 
 IOReturn Navi48Bringup::n33nBoImportHost(task_t importTask, uint64_t hostVa, uint64_t size, uint64_t flags, uint64_t gpuVa, uint64_t out[4]) {
+	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
 	(void)flags;
-	if (gpuVa != 0) {   // RADV's Darwin backend imports handle-only and maps later with GemVa; map-at-import is not served on N33 yet
+	if (gpuVa != 0) {   // RADV imports handle-only and maps later with GemVa; map-at-import is not served on N33 yet
 		N33NLOG("bo import refused: map-at-import (gpuVa != 0) is not supported on N33; import handle-only and map with GemVa");
 		return kIOReturnUnsupported;
 	}
@@ -147,6 +200,7 @@ IOReturn Navi48Bringup::n33nBoImportHost(task_t importTask, uint64_t hostVa, uin
 }
 
 IOReturn Navi48Bringup::n33nGemVa(const n48n_gem_va *in) {
+	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
 	uint32_t op = 0, vmFlags = 0;
 	const n33n::Code c = n33n::gemva_check(in, &op, &vmFlags);
@@ -159,11 +213,13 @@ IOReturn Navi48Bringup::n33nGemVa(const n48n_gem_va *in) {
 }
 
 IOReturn Navi48Bringup::n33nCtx(const n48n_ctx *in, n48n_ctx *out) {
+	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
 	return n33n_io(n33n::ctx_op(n33NativeClient, in, out));
 }
 
 IOReturn Navi48Bringup::n33nSubmit(const uint8_t *in, uint32_t size, uint64_t *seqOut) {
+	N33Lock lk(n33NativeLock());   // check-then-kick is atomic against a BO free / VM unmap
 	if (!n33NativeOpen) return kIOReturnNotReady;
 	n33n::SubmitReq req {};
 	const n33n::Code c = n33n::submit_check(in, size, n33Vm, n33Bo, n33Vm.live, n33NativeClient, &req);
@@ -180,8 +236,9 @@ IOReturn Navi48Bringup::n33nSubmit(const uint8_t *in, uint32_t size, uint64_t *s
 }
 
 IOReturn Navi48Bringup::n33nWait(uint64_t target, uint64_t timeoutNs, uint64_t out[3]) {
+	N33Lock lk(n33NativeLock());   // held across the bounded (2 s dispatch timeout) poll only
 	if (!n33NativeOpen) return kIOReturnNotReady;
-	(void)timeoutNs;   // n33CpWait uses the step-6 2 s dispatch timeout
+	(void)timeoutNs;
 	uint64_t w[16] = {};
 	const uint32_t rc = n33CpWait((uint32_t)target, w, 16);   // may_waitseq refuses a seqno that is not the outstanding submit
 	if (rc) { out[0] = 0; out[1] = 0; out[2] = n33Cp.seq; return why_io(rc); }
@@ -193,31 +250,36 @@ IOReturn Navi48Bringup::n33nWait(uint64_t target, uint64_t timeoutNs, uint64_t o
 }
 
 IOReturn Navi48Bringup::n33nMemoryForHandle(uint32_t handle, IOOptionBits *options, IOMemoryDescriptor **memory) {
+	N33Lock lk(n33NativeLock());
 	if (!n33NativeOpen || !n33NativeClient.hello) return kIOReturnNotReady;
 	if (!n33bo::handle_ok(n33Bo, handle)) return kIOReturnNotFound;
 	const n33bo::Bo &b = n33Bo.bo[handle - 1];
-	const uint64_t bytes = n33bo::bytes(b);
-	if (b.kind == n33bo::kVram) {
-		if (!n33Bar0Phys) return kIOReturnNotReady;
-		// The BO lives in the slab inside BAR0; hand userspace an IODeviceMemory of that physical window (as the gfx12 path did).
-		IODeviceMemory *dm = IODeviceMemory::withRange(n33Bar0Phys + n33bo::kSlabOff + b.vramOff, bytes);
-		if (!dm) return kIOReturnNoMemory;
-		if (options) *options = kIOMapAnywhere;
-		*memory = dm;   // +1; IOUserClient releases it
-		return kIOReturnSuccess;
+	if (b.kind == n33bo::kImport) return kIOReturnNotPermitted;   // a host import is already in the caller's own address space (as the gfx12 path refuses)
+	// One descriptor per BO, made on the first map and held until BoFree / close (never a fresh one per call), so
+	// IOConnectUnmapMemory64 can find it by identity.
+	if (!n33BoUserMd[handle - 1]) {
+		IOMemoryDescriptor *md = nullptr;
+		if (b.kind == n33bo::kVram) {
+			if (!n33Bar0Phys) return kIOReturnNotReady;
+			md = IODeviceMemory::withRange(n33Bar0Phys + n33bo::kSlabOff + b.vramOff, n33bo::bytes(b));   // the BO's window inside BAR0
+		} else {
+			md = n33BoMd[handle - 1];   // GTT: the BO's own IOBufferMemoryDescriptor
+			if (md) md->retain();       // our cache reference; the BO's own reference stays in n33BoMd
+		}
+		if (!md) return kIOReturnNoMemory;
+		n33BoUserMd[handle - 1] = md;
 	}
-	// GTT / import: the descriptor the BO was made with (IOBufferMemoryDescriptor / the wired caller range).
-	IOMemoryDescriptor *md = n33BoMd[handle - 1];
-	if (!md) return kIOReturnNotFound;
-	md->retain();
-	if (options) *options = 0;
+	IOMemoryDescriptor *md = n33BoUserMd[handle - 1];
+	md->retain();   // the +1 the IOUserClient releases after mapping
+	if (options && b.kind == n33bo::kVram) *options |= kIOMapWriteCombineCache;   // VRAM through BAR0 is write-combined (advisory; the caller's mapFlags win)
 	*memory = md;
 	return kIOReturnSuccess;
 }
 
 // The W3 caller-IB submit kick. It does NOT build or touch the IB bodies (Mesa wrote them into the BOs). The preamble
 // and the wptr/doorbell tail mirror n33CpIbBuildKick (W1/W2/W2V stay byte-identical); only the ring content differs:
-// ACQUIRE_MEM + INDIRECT_BUFFER per caller IB (VMID 8), one RELEASE_MEM to host page B's fence (VMID 0), as W2V.
+// ACQUIRE_MEM + INDIRECT_BUFFER per caller IB (VMID 8), one RELEASE_MEM to host page B's fence (VMID 0), as W2V. It runs
+// with gN33PspLock held (the n33n* caller took it), as every n33Gmc*/n33Cp* step below documents.
 uint32_t Navi48Bringup::n33VmSubmitUser(const n33n::SubmitReq &req, uint64_t *out, uint32_t outCount) {
 	using namespace n33cp;
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };

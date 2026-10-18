@@ -9456,6 +9456,10 @@ IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t in
 	return r;
 }
 
+// W3: the one lock the n33n* native-client methods take (the same lock n33Call holds for every legacy BO/VM/CP action),
+// so a native submit's check-then-kick is atomic against a legacy or native BO free / VM unmap.
+IOLock *Navi48Bringup::n33NativeLock() { return gN33PspLock; }
+
 IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount, task_t caller) {
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
 	if (!rmmio) return kIOReturnNotReady;   // stopping (BAR0 actions check n33Bar0 themselves)
@@ -9850,6 +9854,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	// ---- Step 7 W2: buffer objects (n33bo::, design stage3-step7-w2-design.md). Handles 1 to 8. ----
 	case kN33BoCreate: case kN33BoImport: case kN33BoMap: case kN33BoUnmap: case kN33BoFree: case kN33BoInfo:
 	case kN33BoRead: case kN33BoCopy: case kN33BoFault: {
+		if (n33NativeOpen) { put(0, 0); return kIOReturnNotPermitted; }   // W3 ownership: the N48N native client owns the BO/VM state while open
 		auto u32 = [&](uint32_t i) { return inCount > i ? (in[i] > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)in[i]) : 0u; };
 		auto u64 = [&](uint32_t i) { return inCount > i ? in[i] : 0ull; };
 		uint32_t w = 0;
@@ -9873,6 +9878,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	// ---- Step 7 W2V: a per-process GPU VM in VMID 8 (n33vm::, design stage3-step7-gpuvm-design.md). ----
 	case kN33VmCreate: case kN33VmMap: case kN33VmUnmap: case kN33VmInfo:
 	case kN33VmCopy: case kN33VmDispatch: case kN33VmFault: case kN33VmDestroy: {
+		if (n33NativeOpen) { put(0, 0); return kIOReturnNotPermitted; }   // W3 ownership: refuse legacy VM actions while the native client is open
 		auto u32 = [&](uint32_t i) { return inCount > i ? (in[i] > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)in[i]) : 0u; };
 		auto u64 = [&](uint32_t i) { return inCount > i ? in[i] : 0ull; };
 		uint32_t w = 0;
