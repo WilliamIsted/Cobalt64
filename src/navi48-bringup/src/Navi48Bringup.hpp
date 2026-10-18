@@ -38,6 +38,7 @@
 #include "amd/n33_sdma_pure.h"      // N33 step 5, CP RS64 and SDMA 6.0.2: n33sdma::State, Entry, Rec (pure, no kernel types)
 #include "amd/n33_cp_pure.h"        // N33 step 6, one MEC compute queue: n33cp::State (pure, no kernel types)
 #include "amd/n33_dmub_pure.h"      // N33 stage 3 DMCUB proof: n33dmub::State, RegionInfo (pure, no kernel types)
+#include "amd/n33_ih_pure.h"        // N33 step 4, IH 6.0.2 ring 0: n33ih::State (pure, no kernel types)
 #include "amd/n48log.h"
 #include "amd/rebar_pure.h"   // 0.0.663: Resizable BAR planning (pure)
 #include "amd/amdgpu_init.h"
@@ -230,6 +231,26 @@ private:
 	uint32_t n33DmubInit(uint64_t *out, uint32_t outCount);   // action 63
 	uint32_t n33DmubCmd(uint32_t tpl, uint64_t *out, uint32_t outCount);   // action 64 (QUERY_FEATURE_CAPS)
 	uint32_t n33DmubCheck(uint64_t *out, uint32_t outCount);  // action 65
+	// N33 stage 3 step 4: one IH 6.0.2 ring, polled, then MSI behind n33-ih-msi (n33ih::, Navi48Bringup.cpp). Reached
+	// only through actions 70 to 75; nothing at load or start.
+	n33ih::State   n33Ih {};
+	n33sdma::Rec   n33IhJournal[n33ih::kJournalMax] {};
+	uint32_t       n33IhJournalN { 0 };
+	uint32_t       n33IhIv[n33ih::kIvJournalMax][n33ih::kIvDw] {};   // IV entries as read from the ring
+	n33sdma::Entry n33IhPlanBuf[n33ih::kPlanMax] {};
+	IOWorkLoop             *n33IhWorkLoop { nullptr };   // I3 only: a private work loop and the MSI event source
+	IOInterruptEventSource *n33IhIntSource { nullptr };
+	static void n33IhTrampoline(OSObject *owner, IOInterruptEventSource *src, int count);
+	void     n33IhDrain();                       // the I3 handler, on n33IhWorkLoop, under gN33IhLock
+	uint32_t n33IhRun(uint32_t phase, uint32_t n, uint32_t *bad);
+	uint32_t n33IhRingClear() const;
+	bool     n33IhPciQuiet(uint16_t *cmd, uint16_t *msi, uint16_t *msix) const;
+	uint32_t n33IhTake(uint32_t want, uint32_t wptr, uint32_t *wantN, uint32_t *otherN, uint32_t *first);
+	uint32_t n33IhStart(uint32_t mode, uint64_t *out, uint32_t outCount);   // action 71 (I1)
+	uint32_t n33IhRecv(uint32_t src, uint64_t *out, uint32_t outCount);     // action 72 (I2, I4)
+	uint32_t n33IhArm(uint64_t *out, uint32_t outCount);                    // action 73 (I3)
+	uint32_t n33IhStop(bool unload, uint64_t *out, uint32_t outCount);      // action 74 (I5)
+	void     n33IhDisarm();
 #endif
 	// --- stages ---
 	bool probeMemSize();

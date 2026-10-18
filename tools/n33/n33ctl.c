@@ -41,6 +41,7 @@ static const char *kindName(uint64_t k) {
 	if (k == 16) return "step-6 compute queue pages";
 	if (k == 17) return "step-7 T1 IB page";
 	if (k == 18) return "DMCUB proof DMUB windows";
+	if (k == 19) return "step-4 IH ring";
 	return "?";
 }
 
@@ -128,6 +129,16 @@ static const char *whyName(uint64_t why) {
 	case 209: return "dmub: a DMUB window overlaps a live protected range";
 	case 210: return "dmub: VBIOS image missing or wrong size";
 	case 211: return "dmub: the PSP refused the type-51 DMUB load at this point";
+	case 220: return "ih: out of order (state regs or start before G6, start twice, recv before start or with its queue not ready, "
+	                 "sdma source while the compute queue runs, a follow-up without its first variant's no-IV, a variant repeated "
+	                 "after no IV, arm twice, stop with no ring, journal full)";
+	case 221: return "ih: the IH ring block overlaps a live DMCUB window or another protected range";
+	case 222: return "ih: GC or MMHUB fault status not 0 before the step";
+	case 223: return "ih: latched (an unexpected IV, an overflow, a fault after, or a read-back that did not hold): ih stop, then reload";
+	case 224: return "ih: MSI gate (n33-ih-msi not set, no MSI source, MSI already enabled by another owner, event source not "
+	                 "registered; mode 2: MSI, MSI-X or INTx not confirmed off)";
+	case 225: return "ih: GART slot 2 / host page C not bound or flushed, or the source's host page PTE is not the kext's";
+	case 226: return "ih: not a mode (1, 2), a source (0 to 3) or a journal kind";
 	default:
 		if (why >= 100 && why < 200) { static char b[48]; snprintf(b, sizeof b, "overlaps protected %s", kindName(why - 100)); return b; }
 		return "?";
@@ -200,6 +211,10 @@ static void usage(void) {
 	    "                               cp flags | journal <i> | start <n>: raw, for cp-negative.sh only (flags reads no register)\n"
 	    "  dmub snapshot|reset|init|query|check | load <dcn_3_2_1_dmcub.bin>   stage 3 DMCUB proof (snapshot is read-only)\n"
 	    "                               order: snapshot, load, reset, init, query (QUERY_FEATURE_CAPS = the proof), check\n"
+	    "  ih state | start 1|2 | recv 0..3 | arm | stop   step 4: IH 6.0.2 ring 0 (state is I0, read-only; start 1 polled,\n"
+	    "                               2 polled with ENABLE_INTR 1; recv 0 cp EOP, 1 cp + TIME_STAMP_INT_ENABLE, 2 sdma trap\n"
+	    "                               after cp stop, 3 sdma + TRAP_ENABLE; arm = MSI, boot-arg n33-ih-msi=1 only)\n"
+	    "                               ih flags | journal <i> | iv <i> | journal-kind <k>: flags reads no register; journal-kind is raw, for ih-negative.sh\n"
 	    "  fbsum [bytes]                sha256 of the GOP scanout in VRAM (read-only; default length from status)\n"
 	    "  log                          print the kext's own log (holds every refusal line, unlike the unified log)\n"
 	    "  why <code>                   explain a refusal code from n33ctl log (no kext needed)\n"
@@ -1553,6 +1568,118 @@ static int doDmub(int argc, char **argv) {
 	return 2;
 }
 
+// ---- ih: stage 3 step 4, IH 6.0.2 ring 0 (actions 70-75) ------------------------------------------------------
+// state (I0, read-only) -> start 1 (I1, polled) -> recv 0 (I2, CP EOP on the step-6 queue) [-> recv 1 if no IV] ->
+// [arm (I3, n33-ih-msi=1) -> recv 0/1] -> cp stop -> sdma start, test 1..3 -> recv 2 (I4) [-> recv 3 if no IV] -> stop.
+enum { aIhState = 70, aIhStart = 71, aIhRecv = 72, aIhArm = 73, aIhStop = 74, aIhJournal = 75 };
+static const struct { uint32_t reg; const char *name; } kIhNames[] = {
+	{ 0x1120, "IH_RB_CNTL" }, { 0x1121, "IH_RB_BASE" }, { 0x1122, "IH_RB_BASE_HI" }, { 0x1123, "IH_RB_RPTR" },
+	{ 0x1124, "IH_RB_WPTR" }, { 0x1125, "IH_RB_WPTR_ADDR_HI" }, { 0x1126, "IH_RB_WPTR_ADDR_LO" }, { 0x1127, "IH_DOORBELL_RPTR" },
+	{ 0x1160, "IH_CNTL" }, { 0x1175, "IH_INT_FLOOD_CNTL" }, { 0x117A, "IH_STORM_CLIENT_LIST_CNTL" }, { 0x1191, "IH_MSI_STORM_CTRL" },
+	{ 0x122D, "IH_CHICKEN" }, { 0xE11, "BIF_BX0_INTERRUPT_CNTL" }, { 0xE12, "BIF_BX0_INTERRUPT_CNTL2" },
+	{ 0x3085, "CP_ME1_PIPE0_INT_CNTL" }, { 0x127C, "SDMA0_CNTL" }, { 0x2828, "GCVM_L2_PROTECTION_FAULT_STATUS" },
+	{ 0x1A68C, "MMVM_L2_PROTECTION_FAULT_STATUS" },
+};
+static const char *ihName(uint32_t reg) {
+	static char b[24];
+	for (unsigned i = 0; i < sizeof kIhNames / sizeof kIhNames[0]; i++) if (kIhNames[i].reg == reg) return kIhNames[i].name;
+	snprintf(b, sizeof b, "dword %#x", reg);
+	return b;
+}
+static int ihFlags(void) {
+	uint64_t a = 0, st[15] = {0};
+	if (call(aIhState, &a, 1, st, 15)) return 1;
+	static const char *mode[] = { "none", "polled", "polled+intr" }, *latch[] = { "none", "timeout", "hard" };
+	printf("kext: ring owned %llu running %llu mode %s armed %llu latch %s  G6 %llu GC up %llu  cp running %llu sdma running %llu\n",
+	       st[0] & 1, st[0] >> 1 & 1, st[1] < 3 ? mode[st[1]] : "?", st[0] >> 2 & 1, st[2] < 3 ? latch[st[2]] : "?",
+	       st[0] >> 3 & 1, st[0] >> 4 & 1, st[0] >> 7 & 1, st[0] >> 8 & 1);
+	printf("      rptr %#llx starts %llu sources ok %#llx no-IV %#llx  MSI handler runs %llu (expected %llu)  journal %llu  IVs %llu\n",
+	       st[3], st[4], st[5], st[6], st[7] & 0xFFFFFFFFull, st[7] >> 32, st[8], st[9]);
+	printf("      PCI Command %#llx MSI control %#llx MSI-X control %#llx (quiet %llu)  n33-ih-msi %llu  dummy page %#llx\n",
+	       st[10] & 0xFFFF, st[10] >> 16 & 0xFFFF, st[10] >> 32 & 0xFFFF, st[0] >> 5 & 1, st[11], st[12]);
+	return 0;
+}
+static int ihJournal(uint64_t first, uint64_t count) {
+	static const char *phase[] = { "?", "start", "recv", "arm", "stop" };
+	for (uint64_t i = first; i < first + count; i++) {
+		uint64_t a[2] = { 0, i }, o[7] = {0};
+		if (call(aIhJournal, a, 2, o, 7)) return 1;
+		printf("  %-5s %-34s before %#010llx  after %#010llx  target %#010llx  %s\n", o[0] < 5 ? phase[o[0]] : "?",
+		       ihName((uint32_t)o[2]), o[3], o[4], o[5], ((o[4] ^ o[5]) & o[6]) ? "MISMATCH" : o[6] ? "ok" : "recorded");
+	}
+	return 0;
+}
+static int ihIv(uint64_t i) {
+	uint64_t a[2] = { 1, i }, o[4] = {0};
+	if (call(aIhJournal, a, 2, o, 4)) return 1;
+	uint32_t d[8];
+	for (int k = 0; k < 4; k++) { d[2 * k] = (uint32_t)o[k]; d[2 * k + 1] = (uint32_t)(o[k] >> 32); }
+	printf("  IV %llu: %08x %08x %08x %08x %08x %08x %08x %08x  client %#x src %u ring %#x vmid %u pasid %u data0 %#x\n", i,
+	       d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[0] & 0xFF, d[0] >> 8 & 0xFF, d[0] >> 16 & 0xFF, d[0] >> 24 & 0xF,
+	       d[3] & 0xFFFF, d[4]);
+	return 0;
+}
+static int doIh(int argc, char **argv) {
+	const char *sub = argv[2];
+	uint64_t o[16] = {0};
+	if (!strcmp(sub, "flags") && argc == 3) return ihFlags();
+	if (!strcmp(sub, "state") && argc == 3) {
+		if (ihFlags()) return 1;
+		for (uint64_t i = 1;; i++) {
+			uint64_t a = i;
+			if (call(aIhState, &a, 1, o, 3)) { if (i == 1) printf("ih state: REFUSED by the kext (before G6?)\n"); return i == 1; }
+			printf("  %-34s %#010llx\n", ihName((uint32_t)o[0]), o[1]);
+			if (i >= o[2]) return 0;
+		}
+	}
+	if (!strcmp(sub, "start") && argc == 4) {
+		uint64_t m = num(argv[3]);
+		if (call(aIhStart, &m, 1, o, 16)) { printf("I1 (ih start %llu): REFUSED by the kext\n", m); return 1; }
+		printf("I1 (mode %llu): %s, %llu writes, %llu mismatches, IH_RB_CNTL %#llx (want %#llx), RPTR %#llx WPTR %#llx shadow %#llx "
+		       "(want 0), GC fault %#llx MMHUB fault %#llx, INTERRUPT_CNTL %#llx CNTL2 %#llx, slot 2 PTE %#llx\n", m,
+		       o[1] ? "done" : "FAILED (latched; ih stop)", o[3], o[4], o[5], o[6], o[7], o[8], o[9], o[10], o[11], o[12], o[13], o[15]);
+		if (ihJournal(o[2], o[3])) return 1;
+		printf("display check: confirm the desktop is still on the monitor 60 s from now.\n");
+		return o[1] == 1 ? 0 : 1;
+	}
+	if (!strcmp(sub, "recv") && argc == 4) {
+		uint64_t v = num(argv[3]);
+		static const char *oc[] = { "done", "fence landed, NO IV: the follow-up (recv 1 or 3) is the next go",
+		                            "fence did NOT land: the queue's failure", "FAILED (latched; ih stop)" };
+		if (call(aIhRecv, &v, 1, o, 16)) { printf("ih recv %llu: REFUSED by the kext\n", v); return 1; }
+		printf("recv %llu: %s. fence %#llx (seq %llu) after %llu us, IH_RB_WPTR %#llx after %llu us, rptr %#llx, %llu entries "
+		       "(%llu expected, %llu other), shadow %#llx, GC fault %#llx MMHUB fault %#llx, %s %#llx\n", v, o[2] < 4 ? oc[o[2]] : "?",
+		       o[3], o[4], o[14] & 0xFFFFFFFFull, o[5], o[14] >> 32, o[6], o[7] & 0xFFFF, o[7] >> 16 & 0xFFFF, o[7] >> 32, o[11],
+		       o[12] & 0xFFFFFFFFull, o[12] >> 32, v < 2 ? "CP_HQD_ERROR" : "SDMA ERROR_LOG", o[13]);
+		if (o[7] & 0xFFFF) printf("first IV: dw0 %#010llx (want %s), dw1..2 %#llx, dw3..4 %#llx\n", o[8],
+		                          v < 2 ? "0x0004b514" : "client 0x0a src 0x31", o[9], o[10]);
+		if (v == 1 || v == 3) printf("interrupt enable now %#llx\n", o[15] >> 32);
+		return o[1] == 1 ? 0 : 1;
+	}
+	if (!strcmp(sub, "arm") && argc == 3) {
+		if (call(aIhArm, NULL, 0, o, 7)) { printf("I3 (ih arm): REFUSED by the kext\n"); return 1; }
+		printf("I3: %s, MSI index %llu, IH_RB_CNTL %#llx, MSI control %#llx -> %#llx, PCI Command %#llx\n", o[1] ? "armed" : "FAILED (disarmed)",
+		       o[3], o[4], o[5] & 0xFFFF, o[5] >> 16, o[6]);
+		if (ihJournal(o[2], 1)) return 1;
+		return o[1] == 1 ? 0 : 1;
+	}
+	if (!strcmp(sub, "stop") && argc == 3) {
+		if (call(aIhStop, NULL, 0, o, 7)) { printf("I5 (ih stop): REFUSED by the kext\n"); return 1; }
+		printf("I5: %s, %llu writes, %llu mismatches, IH_RB_CNTL %#llx (want RB_ENABLE 0, ENABLE_INTR 0), was armed %llu\n",
+		       o[1] ? "done" : "FAILED (latched)", o[3], o[4], o[5], o[6]);
+		if (ihJournal(o[2], o[3])) return 1;
+		return o[1] == 1 ? 0 : 1;
+	}
+	if (!strcmp(sub, "journal") && argc == 4) return ihJournal(num(argv[3]), 1);
+	if (!strcmp(sub, "iv") && argc == 4) return ihIv(num(argv[3]));
+	if (!strcmp(sub, "journal-kind") && argc == 4) {   // raw, for ih-negative.sh only
+		uint64_t a[2] = { num(argv[3]), 0 };
+		return call(aIhJournal, a, 2, o, 7);
+	}
+	usage();
+	return 2;
+}
+
 // fbsum: SHA-256 of the GOP scanout in VRAM, read through action 2 (one BAR0 dword per call, read-only).
 // The region is the kext's GOP range from status: HUBP0 address at kext start, pitch px * 4 * height, page rounded.
 // Run before and after card work and compare: a change means something wrote the scanout.
@@ -1654,6 +1781,8 @@ int main(int argc, char **argv) {
 		rc = doCp(argc, argv);
 	} else if (!strcmp(cmd, "dmub") && argc >= 3) {
 		rc = doDmub(argc, argv);
+	} else if (!strcmp(cmd, "ih") && argc >= 3) {
+		rc = doIh(argc, argv);
 	} else if (!strcmp(cmd, "fbsum") && argc <= 3) {
 		rc = fbSum(argc == 3 ? num(argv[2]) : 0);
 	} else if (!strcmp(cmd, "log") && argc == 2) {
