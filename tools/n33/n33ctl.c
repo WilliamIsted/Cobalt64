@@ -43,6 +43,7 @@ static const char *kindName(uint64_t k) {
 	if (k == 18) return "DMCUB proof DMUB windows";
 	if (k == 19) return "step-4 IH ring";
 	if (k == 20) return "step-7 W2 VRAM BO slab";
+	if (k == 21) return "step-7 W2V page-table arena";
 	return "?";
 }
 
@@ -127,6 +128,17 @@ static const char *whyName(uint64_t why) {
 	case 72:  return "step 7 W2: a hub flush did not acknowledge after a map or unmap (the GMC is stopped)";
 	case 73:  return "step 7 W2: gart map / gart unmap into the reserved BO VA window (slots 0x1000..0x1FFF)";
 	case 74:  return "step 7 W2: the VRAM BO slab overlaps a live protected range when first taken";
+	case 75:  return "step 7 W2V: bad argument (VA not canonical/4 KiB aligned/below 0x10000/straddling bit 47, size/offset, flags, PRT/NOALLOC, neither R nor W, bad handle)";
+	case 76:  return "step 7 W2V: out of order (G6 not done or GMC stopped; vm create twice or a vm action before it; a submit outstanding)";
+	case 77:  return "step 7 W2V: CONTEXT8 is not as G6 left it (masked CNTL), or its page-table base changed since vm create";
+	case 78:  return "step 7 W2V: the page-table arena is full (nothing was written)";
+	case 79:  return "step 7 W2V: VA overlaps a VMID-8 mapping; unmap of a (handle, VA) not mapped; or a fault VA that is mapped";
+	case 80:  return "step 7 W2V: a VMID-8 engine-17 invalidate did not acknowledge in 100 ms (the VM is stopped)";
+	case 81:  return "step 7 W2V: the page-table arena overlaps a live protected range when first taken";
+	case 82:  return "step 7 W2V: IB VA not in an R|X VRAM mapping / stream too big; code VA not X-mapped; copy source not R-mapped or destination not W-mapped";
+	case 83:  return "step 7 W2V: SH_MEM_CONFIG or SH_MEM_BASES under the VMID-8 select did not read back";
+	case 84:  return "step 7 W2V: bo free of a BO that still has a VMID-8 mapping (vm unmap it first)";
+	case 85:  return "step 7 W2V: vm fault VA inside the VMID-0 apertures other than the two V6 sentinels";
 	case 200: return "dmub: a DMCUB write before dmub snapshot armed the gate";
 	case 201: return "dmub: HUBP0 is not on the GOP scanout surface";
 	case 202: return "dmub: the N33 framebuffer nub is published";
@@ -228,6 +240,8 @@ static void usage(void) {
 	    "                               ih flags | journal <i> | iv <i> | journal-kind <k>: flags reads no register; journal-kind is raw, for ih-negative.sh\n"
 	    "  bo create vram|gtt <bytes> | import <bytes> | map <h> <va> [flags] | unmap <h> | free <h>   step 7 W2: buffer objects in VMID 0\n"
 	    "  bo info <h> | read <h> <dword> | copy <src> <dst> | fault <va> | import-test <vram h> <va>   (copy/fault return a seqno; retire with cp waitseq)\n"
+	    "  vm create | map <h> <va> [<off> <size> [flags]] | unmap <h> <va> | info [va] | destroy         step 7 W2V: a per-process GPU VM in VMID 8\n"
+	    "  vm copy <ib va> <src va> <dst va> | dispatch <ib va> <code va> <dst va> | fault <ib va> <va>    (return a seqno; retire with cp waitseq)\n"
 	    "  fbsum [bytes]                sha256 of the GOP scanout in VRAM (read-only; default length from status)\n"
 	    "  log                          print the kext's own log (holds every refusal line, unlike the unified log)\n"
 	    "  why <code>                   explain a refusal code from n33ctl log (no kext needed)\n"
@@ -1475,11 +1489,15 @@ static int cpWait(uint64_t seq) {
 	if (o[12] == 1)   // X4b wd: one dword, 0xca11ed47 + seqno at host page B + 0x100
 		printf("  stream wd: host page B: %llu of %llu dword 0xca11ed47 + seqno at +0x100; fence reads %#llx; first data / fence at %lld / %lld us\n",
 		       o[2], o[13], o[3], (long long)(int32_t)(o[11] >> 32), (long long)(int32_t)(o[11] & 0xFFFFFFFFull));
-	else if (o[12] == 3)   // W2 bo copy: out[2] is the count of destination samples that carry the pattern (of out[13] = 16)
-		printf("  stream bo copy: %llu of %llu destination samples carry the pattern; fence reads %#llx\n", o[2], o[13], o[3]);
-	else if (o[12] == 4)   // W2 bo fault: the deliberate fault's status, before and after the clear, and the latched page
-		printf("  stream bo fault: %s; GCVM_L2_PROTECTION_FAULT_STATUS %#llx, logical page %#llx, after the clear %#llx\n",
-		       o[1] ? "fence landed and the expected fault latched" : "NOT the expected fault/fence", o[2], o[13], o[6]);
+	else if (o[12] == 3 || o[12] == 5)   // bo copy (W2) / vm copy (W2V): out[2] is the count of destination samples carrying the pattern (of 16)
+		printf("  stream %s copy: %llu of %llu destination samples carry the pattern; fence reads %#llx\n", o[12] == 5 ? "vm" : "bo", o[2], o[13], o[3]);
+	else if (o[12] == 4 || o[12] == 7)   // bo fault (W2) / vm fault (W2V): gfx11 compute cannot continue past a VM fault, so the queue halts
+		printf("  stream %s fault: %s; GCVM_L2_PROTECTION_FAULT_STATUS %#llx, logical page %#llx, after the clear %#llx\n",
+		       o[12] == 7 ? "vm" : "bo",
+		       o[1] ? "fault latched as expected and the queue halted (recover with cp stop + cp start)" : "NOT the expected fault, or the queue did not halt",
+		       o[2], o[13], o[6]);
+	else if (o[12] == 6)   // vm dispatch (W2V): 32 dwords of 0xca11ed47 + i in the destination BO
+		printf("  stream vm dispatch: %llu of %llu dwords 0xca11ed47 + i in the destination BO; fence reads %#llx\n", o[2], o[13], o[3]);
 	else
 		printf("  stream %s: host page B: %llu of %llu dwords 0xca11ed47 + i; fence reads %#llx; first data / fence at %lld / %lld us\n",
 		       o[12] == 2 ? "dispatch" : "K4", o[2], o[13], o[3], (long long)(int32_t)(o[11] >> 32),
@@ -1818,6 +1836,63 @@ static int doBo(int argc, char **argv) {
 	return 2;
 }
 
+// ---- step 7 W2V: a per-process GPU VM in VMID 8 (n33vm::, design stage3-step7-gpuvm-design.md) ----
+enum { aVmCreate = 48, aVmMap = 49, aVmUnmap = 50, aVmInfo = 51, aVmCopy = 52, aVmDispatch = 53, aVmFault = 54, aVmDestroy = 55 };
+static int doVm(int argc, char **argv) {
+	const char *sub = argv[2];
+	uint64_t o[8] = {0};
+	if (!strcmp(sub, "create") && argc == 3) {
+		if (call(aVmCreate, NULL, 0, o, 8)) { printf("vm create: REFUSED by the kext\n"); return 1; }
+		printf("vm create: root PA %#llx, CONTEXT8_CNTL %#llx, SH_MEM_CONFIG %#llx, SH_MEM_BASES %#llx, BASE %#llx\n", o[1], o[2], o[3], o[4], o[5]);
+		return 0;
+	}
+	if (!strcmp(sub, "map") && (argc == 5 || argc == 7 || argc == 8)) {
+		// vm map <h> <va> [<off> <size> [<flags>]]
+		uint64_t a[5] = { num(argv[3]), num(argv[4]), argc >= 7 ? num(argv[5]) : 0, argc >= 7 ? num(argv[6]) : 0, argc == 8 ? num(argv[7]) : kBoVmRWX };
+		const uint32_t n = argc == 5 ? 2u : argc == 7 ? 4u : 5u;
+		if (call(aVmMap, a, n, o, 8)) { printf("vm map h%llu at %#llx: REFUSED by the kext\n", a[0], a[1]); return 1; }
+		printf("vm map h%llu at VA %#llx: %llu pages, first leaf %#llx, last leaf %#llx\n", a[0], o[1], o[4], o[2], o[3]);
+		return 0;
+	}
+	if (!strcmp(sub, "unmap") && argc == 5) {
+		uint64_t a[2] = { num(argv[3]), num(argv[4]) };
+		if (call(aVmUnmap, a, 2, o, 8)) { printf("vm unmap h%llu at %#llx: REFUSED by the kext\n", a[0], a[1]); return 1; }
+		printf("vm unmap h%llu at VA %#llx: %llu pages\n", a[0], a[1], o[1]); return 0;
+	}
+	if (!strcmp(sub, "info") && (argc == 3 || argc == 4)) {
+		uint64_t a = argc == 4 ? num(argv[3]) : 0, vi[10] = {0};
+		if (call(aVmInfo, argc == 4 ? &a : NULL, argc == 4 ? 1 : 0, vi, 10)) { printf("vm info: REFUSED by the kext\n"); return 1; }
+		printf("vm info: live %llu, CONTEXT8_CNTL %#llx, base %#llx, start %#llx, end %#llx, arena pages %llu, mappings %llu\n",
+		       vi[7], vi[1], vi[2], vi[3], vi[4], vi[5], vi[6]);
+		if (argc == 4) printf("  VA %#llx: leaf %#llx -> pa %#llx\n", a, vi[8], vi[9]);
+		return 0;
+	}
+	if (!strcmp(sub, "copy") && argc == 6) {
+		uint64_t a[3] = { num(argv[3]), num(argv[4]), num(argv[5]) };   // ib va, src va, dst va
+		if (call(aVmCopy, a, 3, o, 2)) { printf("vm copy: REFUSED by the kext\n"); return 1; }
+		printf("vm copy ib %#llx src %#llx dst %#llx: seqno %llu kicked; next go: n33ctl cp waitseq %llu\n", a[0], a[1], a[2], o[1], o[1]);
+		return 0;
+	}
+	if (!strcmp(sub, "dispatch") && argc == 6) {
+		uint64_t a[3] = { num(argv[3]), num(argv[4]), num(argv[5]) };   // ib va, code va, dst va
+		if (call(aVmDispatch, a, 3, o, 2)) { printf("vm dispatch: REFUSED by the kext\n"); return 1; }
+		printf("vm dispatch ib %#llx code %#llx dst %#llx: seqno %llu kicked; next go: n33ctl cp waitseq %llu\n", a[0], a[1], a[2], o[1], o[1]);
+		return 0;
+	}
+	if (!strcmp(sub, "fault") && argc == 5) {
+		uint64_t a[2] = { num(argv[3]), num(argv[4]) };   // ib va, fault va
+		if (call(aVmFault, a, 2, o, 2)) { printf("vm fault: REFUSED by the kext\n"); return 1; }
+		printf("vm fault ib %#llx va %#llx: seqno %llu kicked; next go: n33ctl cp waitseq %llu\n", a[0], a[1], o[1], o[1]);
+		return 0;
+	}
+	if (!strcmp(sub, "destroy") && argc == 3) {
+		if (call(aVmDestroy, NULL, 0, o, 8)) { printf("vm destroy: REFUSED by the kext (BASE %#llx)\n", o[1]); return 1; }
+		printf("vm destroy: CONTEXT8 parked (BASE %#llx)\n", o[1]); return 0;
+	}
+	usage();
+	return 2;
+}
+
 // fbsum: SHA-256 of the GOP scanout in VRAM, read through action 2 (one BAR0 dword per call, read-only).
 // The region is the kext's GOP range from status: HUBP0 address at kext start, pitch px * 4 * height, page rounded.
 // Run before and after card work and compare: a change means something wrote the scanout.
@@ -1923,6 +1998,8 @@ int main(int argc, char **argv) {
 		rc = doIh(argc, argv);
 	} else if (!strcmp(cmd, "bo") && argc >= 3) {
 		rc = doBo(argc, argv);
+	} else if (!strcmp(cmd, "vm") && argc >= 3) {
+		rc = doVm(argc, argv);
 	} else if (!strcmp(cmd, "fbsum") && argc <= 3) {
 		rc = fbSum(argc == 3 ? num(argv[2]) : 0);
 	} else if (!strcmp(cmd, "log") && argc == 2) {

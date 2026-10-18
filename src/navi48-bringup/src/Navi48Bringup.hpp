@@ -40,6 +40,7 @@
 #include "amd/n33_dmub_pure.h"      // N33 stage 3 DMCUB proof: n33dmub::State, RegionInfo (pure, no kernel types)
 #include "amd/n33_ih_pure.h"        // N33 step 4, IH 6.0.2 ring 0: n33ih::State (pure, no kernel types)
 #include "amd/n33_bo_pure.h"        // N33 step 7 W2, buffer objects in VMID 0: n33bo::State (pure, no kernel types)
+#include "amd/n33_vm_pure.h"        // N33 step 7 W2V, a per-process GPU VM in VMID 8: n33vm::State (pure, no kernel types)
 #include "amd/n48log.h"
 #include "amd/rebar_pure.h"   // 0.0.663: Resizable BAR planning (pure)
 #include "amd/amdgpu_init.h"
@@ -273,6 +274,26 @@ private:
 	void     n33BoPrefill(uint32_t seq);
 	uint32_t n33BoLanded(uint32_t seq);
 	void     n33BoStop(bool freeMem);
+	// N33 stage 3 step 7 W2V: a per-process GPU VM in VMID 8, actions 48 to 55 (n33vm::, design stage3-step7-gpuvm-design.md).
+	n33vm::State n33Vm {};
+	uint64_t n33VmVbo() const;                                      // vram_base_offset = MC_VM_FB_OFFSET << 24
+	uint32_t n33VmFlush();                                          // engine-17 invalidate for VMID 8 (100 ms), VMID-8 ack bit
+	uint32_t n33VmArenaCheck();                                     // the arena clear of every live protected range (81)
+	uint32_t n33VmCreate(uint64_t *out, uint32_t outCount);                                                     // 48
+	uint32_t n33VmMap(uint32_t h, uint64_t va, uint64_t off, uint64_t size, uint32_t flags, uint64_t *out, uint32_t outCount);   // 49
+	uint32_t n33VmUnmap(uint32_t h, uint64_t va, uint64_t *out, uint32_t outCount);                             // 50
+	uint32_t n33VmInfo(uint64_t va, bool haveVa, uint64_t *out, uint32_t outCount);                             // 51
+	uint32_t n33VmSubmit(uint32_t stream, uint64_t ibVa, uint64_t aVa, uint64_t bVa, uint64_t *out, uint32_t outCount);   // 52, 53, 54
+	uint32_t n33VmLanded(uint32_t seq);                            // the VM copy/dispatch samples in the destination BO
+	uint32_t n33VmDestroy(uint64_t *out, uint32_t outCount);                                                    // 55
+	void     n33VmStop();                                          // unload: park CONTEXT8 and release the arena
+	// The VM submit context, resolved by n33VmSubmit for n33CpIbBuildKick and the shared wait.
+	uint64_t n33VmSubIbVa { 0 };      // the IB VA (a VRAM BO mapped R|X in VMID 8); the ring's INDIRECT_BUFFER target
+	uint32_t n33VmSubIbBo { 0 };      // that BO's handle
+	uint64_t n33VmSubIbOff { 0 };     // the IB's byte offset inside the BO
+	uint64_t n33VmSubSrcOff { 0 };    // the source BO byte offset (copy)
+	uint64_t n33VmSubDstOff { 0 };    // the destination BO byte offset (copy/dispatch); the handles are n33Bo.copySrc/copyDst
+	uint64_t n33VmSubSrcVa { 0 }, n33VmSubDstVa { 0 }, n33VmSubCodeVa { 0 }, n33VmSubFaultVa { 0 };
 #endif
 	// --- stages ---
 	bool probeMemSize();

@@ -8980,6 +8980,7 @@ void Navi48Bringup::stop(IOService *provider) {
 		n33IhStop(true, nullptr, 0);     // step 4 I5: MSI disarmed and the IH ring off before the queues and the GART go
 		n33CpStop(true, nullptr, 0);     // step 6 D9: the compute queue drained and the MEC halted first
 		n33SdmaStop(true, nullptr, 0);   // step 5 D9: SDMA0 queue 0 off and halted before the GART goes
+		n33VmStop();                     // step 7 W2V D9: park CONTEXT8's page-table base before the GMC stop
 		n33BoStop(n33GmcStop());   // GMC D6: PTEs to the dummy page and flush; then free the W2 BOs' memory iff the flushes acknowledged
 		n33RestoreScanout();       // HUBP0 back on the GOP surface before BAR0 and the registers go away
 		if (n33Bar0Map) { n33Bar0Map->release(); n33Bar0Map = nullptr; n33Bar0 = nullptr; }
@@ -9074,11 +9075,13 @@ enum : uint32_t { kN33Status = 0, kN33RegWrite = 1, kN33Bar0Read = 2, kN33Bar0Wr
                   kN33CpIb = 35, kN33CpSubmit = 36, kN33CpWait = 37, kN33CpXib = 38,
                   kN33BoCreate = 39, kN33BoImport = 40, kN33BoMap = 41, kN33BoUnmap = 42, kN33BoFree = 43,
                   kN33BoInfo = 44, kN33BoRead = 45, kN33BoCopy = 46, kN33BoFault = 47,
+                  kN33VmCreate = 48, kN33VmMap = 49, kN33VmUnmap = 50, kN33VmInfo = 51,
+                  kN33VmCopy = 52, kN33VmDispatch = 53, kN33VmFault = 54, kN33VmDestroy = 55,
                   kN33DmubSnap = 60, kN33DmubReset = 61, kN33DmubLoad = 62, kN33DmubInit = 63,
                   kN33DmubCmd = 64, kN33DmubCheck = 65,
                   kN33IhState = 70, kN33IhStart = 71, kN33IhRecv = 72, kN33IhArm = 73, kN33IhStop = 74, kN33IhJournal = 75 };
-struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch, 15 step-5 SDMA pages, 16 step-6 compute pages, 17 step-7 T1 IB page, 18 our DMUB windows (stage 3 DMCUB proof), 19 the IH ring (step 4), 20 the W2 VRAM BO slab (step 7)
-constexpr unsigned kN33Ranges = 22;   // at most 21 live at once: GOP, 8 CW, 3 REGION, kinds 12 to 20
+struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch, 15 step-5 SDMA pages, 16 step-6 compute pages, 17 step-7 T1 IB page, 18 our DMUB windows (stage 3 DMCUB proof), 19 the IH ring (step 4), 20 the W2 VRAM BO slab (step 7), 21 the W2V page-table arena (step 7)
+constexpr unsigned kN33Ranges = 23;   // at most 22 live at once: GOP, 8 CW, 3 REGION, kinds 12 to 21
 }
 extern "C" {
 extern const uint8_t fw_shader_store_magic_gfx11[];   // src/fw/fw_shader_store_magic_gfx11.c (C linkage), step 6 D6
@@ -9170,7 +9173,8 @@ bool Navi48Bringup::n33MapBar0() {
 // enabled DMCUB window, read live so a window DMCUB moves is still covered.
 static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbBase, uint64_t gopOff, uint64_t gopLen,
                               N33Range *out, unsigned max, bool pspPages, bool smuPage, bool gmcPages, bool sdmaPages,
-                              bool cpPages, bool cpIbPage, bool dmubWindows = false, bool ihRing = false, bool boSlab = false) {
+                              bool cpPages, bool cpIbPage, bool dmubWindows = false, bool ihRing = false, bool boSlab = false,
+                              bool vmArena = false) {
 	unsigned n = 0;
 	auto add = [&](uint64_t gpu, uint64_t len, uint32_t kind) {
 		if (n >= max || gpu < fbBase || len == 0) return;   // below the FB base: not VRAM
@@ -9201,6 +9205,7 @@ static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbBase, uint6
 	if (dmubWindows && n < max) out[n++] = { n33dmub::kDmubOff, n33dmub::kDmubMax, 18 };   // stage 3 DMCUB proof: our owned DMUB window slab
 	if (ihRing && n < max) out[n++] = { n33ih::kRingOff, n33ih::kRingBytes, n33ih::kKind };   // step 4: the IH writes its ring
 	if (boSlab && n < max) out[n++] = { n33bo::kSlabOff, n33bo::kSlabLen, n33bo::kKind };     // step 7 W2: VRAM BOs the GPU maps
+	if (vmArena && n < max) out[n++] = { n33vm::kArenaOff, n33vm::kArenaLen, n33vm::kKind };  // step 7 W2V: the page-table arena the GFXHUB walks
 	return n;
 }
 
@@ -9209,7 +9214,7 @@ bool Navi48Bringup::n33WriteAllowed(uint64_t off, uint64_t len, uint64_t *why) c
 	if (!n33Bar0 || len == 0 || (off & 3) || (len & 3) || len > kN33MaxXfer) { *why = 1; return false; }
 	if (off < kN33WriteFloor || off > n33Bar0Size || len > n33Bar0Size - off) { *why = 2; return false; }
 	N33Range rs[kN33Ranges];
-	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned);
+	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned, n33Vm.live);
 	for (unsigned i = 0; i < n; i++)
 		if (off < rs[i].off + rs[i].len && rs[i].off < off + len) { *why = 100 + rs[i].kind; return false; }   // off + len <= n33Bar0Size here
 	return true;
@@ -9459,7 +9464,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		put(0, n33Bar0Size); put(1, n33FbBase); put(2, n33FbOffset); put(3, n33GopOff); put(4, n33GopLen);
 		put(5, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
 		put(6, rmmio[kN33Hubp0Pitch]); put(7, rmmio[kN33Hubp0FlipCtl]);
-		put(8, n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned));
+		put(8, n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned, n33Vm.live));
 		put(9, n33SurfCfg); put(10, n33Bar0Phys);
 		return kIOReturnSuccess;
 	}
@@ -9468,7 +9473,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	case kN33Protected: {
 		if (!need(1)) return kIOReturnBadArgument;
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned);
+		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned, n33Vm.live);
 		if (in[0] >= n) return kIOReturnNotFound;
 		put(0, rs[in[0]].off); put(1, rs[in[0]].len); put(2, rs[in[0]].kind);
 		return kIOReturnSuccess;
@@ -9862,6 +9867,25 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		if (w) { put(0, w); return kIOReturnNotPermitted; }
 		return kIOReturnSuccess;
 	}
+	// ---- Step 7 W2V: a per-process GPU VM in VMID 8 (n33vm::, design stage3-step7-gpuvm-design.md). ----
+	case kN33VmCreate: case kN33VmMap: case kN33VmUnmap: case kN33VmInfo:
+	case kN33VmCopy: case kN33VmDispatch: case kN33VmFault: case kN33VmDestroy: {
+		auto u32 = [&](uint32_t i) { return inCount > i ? (in[i] > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)in[i]) : 0u; };
+		auto u64 = [&](uint32_t i) { return inCount > i ? in[i] : 0ull; };
+		uint32_t w = 0;
+		switch (action) {
+		case kN33VmCreate:  w = n33VmCreate(out, outCount); break;
+		case kN33VmMap:     w = n33VmMap(u32(0), u64(1), u64(2), u64(3), inCount > 4 ? u32(4) : n33vm::kVmDefault, out, outCount); break;  // h, va, [off, size, flags]
+		case kN33VmUnmap:   w = n33VmUnmap(u32(0), u64(1), out, outCount); break;                                     // h, va
+		case kN33VmInfo:    w = n33VmInfo(u64(0), inCount > 0, out, outCount); break;                                 // [va]
+		case kN33VmCopy:    w = n33VmSubmit(n33cp::kXibVmCopy, u64(0), u64(1), u64(2), out, outCount); break;         // ib va, src va, dst va
+		case kN33VmDispatch:w = n33VmSubmit(n33cp::kXibVmDispatch, u64(0), u64(1), u64(2), out, outCount); break;     // ib va, code va, dst va
+		case kN33VmFault:   w = n33VmSubmit(n33cp::kXibVmFault, u64(0), u64(1), 0, out, outCount); break;             // ib va, fault va
+		case kN33VmDestroy: w = n33VmDestroy(out, outCount); break;
+		}
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
 	case kN33DmubSnap: {          // stage 3 DMCUB proof: read-only snapshot, arms the gate. out: see n33DmubSnap
 		const uint32_t w = n33DmubSnap(out, outCount);
 		if (w) { put(0, w); return kIOReturnNotPermitted; }
@@ -10047,7 +10071,7 @@ uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off
 		if (mc + sz > fbEnd) { N48LOG("n33 psp2: refused SETUP_TMR: MC %#llx +%#llx ends past FB_LOCATION_TOP (%#llx)", mc, sz, fbEnd); return kWhyTmrSize; }
 		pa = kTmrOff + ((uint64_t)(rmmio[n33psp::kMmhubFbOffset] & 0x00FFFFFFu) << 24);   // amdgpu_gmc_vram_pa
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned);
+		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned, n33Vm.live);
 		for (unsigned i = 0; i < n; i++)
 			if (n33psp::overlaps(kTmrOff, sz, rs[i].off, rs[i].len)) {
 				N48LOG("n33 psp2: refused SETUP_TMR: VRAM %#llx +%#llx overlaps protected kind %u at %#llx", kTmrOff, sz, rs[i].kind, rs[i].off);
@@ -10524,7 +10548,7 @@ uint32_t Navi48Bringup::n33SdmaPagesClear() const {
 	if (!n33Bar0 || kOwnedOff < kN33WriteFloor || kOwnedOff + kOwnedLen > n33Bar0Size) return kWhyOverlap;
 	N33Range rs[kN33Ranges];
 	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
-	                                 n33Gmc.tableOwned, false, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned);
+	                                 n33Gmc.tableOwned, false, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned, n33Vm.live);
 	for (unsigned i = 0; i < n; i++)
 		if (kOwnedOff < rs[i].off + rs[i].len && rs[i].off < kOwnedOff + kOwnedLen) {
 			N48LOG("n33 sdma: step-5 pages VRAM %#llx +%#llx overlap protected kind %u at %#llx", kOwnedOff, kOwnedLen, rs[i].kind, rs[i].off);
@@ -11140,24 +11164,41 @@ uint32_t Navi48Bringup::n33CpIbBuildKick(uint32_t stream, uint32_t &seq, uint64_
 	n33Gmc.engineHolds = true;   // D10: gmc restore refused and the host pages leaked from now on
 
 	const uint32_t fenceDw = kHostFence4 / 4;
-	// Write the stream into the IB page: NOP-fill it (R3: a stray fetch past the IB runs NOPs, not a type-0 header),
-	// write the stream at offset 0 (K4's 41 dwords, or X4b's translated wd 13 / dispatch 41), HDP flush, read it back
-	// through BAR0.
-	for (uint64_t o = 0; o < kIbLen; o += 4) w32(kIbOff + o, kNop);
-	for (uint32_t i = 0; i < ibDw; i++) w32(kIbOff + 4ull * i, ib[i]);
-	n33Cp.ibOwned = true;   // kind 17 from now until unload
-	// Pre-fill the result dwords and the fence in host page B, as K4 does, so landing is a fresh write.
-	for (uint32_t i = 0; i < kResultDw; i++) hb[i] = kBefore;
-	hb[fenceDw] = kBefore;
-	if (stream == kXibWd) hb[kHostXibWd / 4] = kBefore;
-	if (stream == kXibBoCopy) n33BoPrefill(seq);   // W2: the source pattern and the destination's before-value
-	n33GmcHdpFlush();
+	const bool vm = is_vm_stream(stream);   // W2V: the IB lives in a VRAM BO reached in VMID 8; the ring carries the fence
+	uint64_t ibVa = g.ib;                   // the VA the ring's INDIRECT_BUFFER points at (VMID 0 for W2/T1, VMID 8 for W2V)
+	uint32_t ibVmid = 0;
 	bool ibOk = true;
-	for (uint32_t i = 0; i < ibDw; i++) if (r32(kIbOff + 4ull * i) != ib[i]) ibOk = false;
+	if (vm) {
+		// W2V: the IB goes into the ib BO's CPU map at its offset (not the T1 kind-17 page); the shader blob and the
+		// destination's before-values were written by n33VmSubmit through the BOs' CPU maps. The fence lands in host
+		// page B (VMID 0) from the ring's RELEASE_MEM. ibVa is the caller's VMID-8 VA.
+		for (uint32_t i = 0; i < ibDw; i++) *n33BoWord(n33VmSubIbBo, n33VmSubIbOff + 4ull * i) = ib[i];
+		hb[fenceDw] = kBefore;
+		n33GmcHdpFlush();
+		for (uint32_t i = 0; i < ibDw; i++) if (*n33BoWord(n33VmSubIbBo, n33VmSubIbOff + 4ull * i) != ib[i]) ibOk = false;
+		ibVa = n33VmSubIbVa;
+		ibVmid = n33vm::kVmid;
+	} else {
+		// Write the stream into the IB page: NOP-fill it (R3: a stray fetch past the IB runs NOPs, not a type-0 header),
+		// write the stream at offset 0 (K4's 41 dwords, or X4b's translated wd 13 / dispatch 41), HDP flush, read it back
+		// through BAR0.
+		for (uint64_t o = 0; o < kIbLen; o += 4) w32(kIbOff + o, kNop);
+		for (uint32_t i = 0; i < ibDw; i++) w32(kIbOff + 4ull * i, ib[i]);
+		n33Cp.ibOwned = true;   // kind 17 from now until unload
+		// Pre-fill the result dwords and the fence in host page B, as K4 does, so landing is a fresh write.
+		for (uint32_t i = 0; i < kResultDw; i++) hb[i] = kBefore;
+		hb[fenceDw] = kBefore;
+		if (stream == kXibWd) hb[kHostXibWd / 4] = kBefore;
+		if (stream == kXibBoCopy) n33BoPrefill(seq);   // W2: the source pattern and the destination's before-value
+		n33GmcHdpFlush();
+		for (uint32_t i = 0; i < ibDw; i++) if (r32(kIbOff + 4ull * i) != ib[i]) ibOk = false;
+	}
 
-	// The ring carries only INDIRECT_BUFFER + NOP pad to 256 dwords; the fence is in the IB, not the ring.
+	// The ring carries INDIRECT_BUFFER then NOP pad to 256 dwords. For W2/T1 the fence is in the IB; for W2V the IB
+	// runs in VMID 8 (where host page B is unmapped), so the ring carries the RELEASE_MEM fence in VMID 0 (D2).
 	uint32_t pk[kSubmitDw];
-	uint32_t len = pkt_indirect_buffer(pk, g.ib, ibDw, 0);
+	uint32_t len = pkt_indirect_buffer(pk, ibVa, ibDw, ibVmid);
+	if (vm) len += pkt_release_mem(pk + len, g.hostB + kHostFence4, seq, true);
 	const uint32_t body = len;
 	len = pad(pk, len);
 	const uint64_t at = ring_off(n33Cp.wptrDw);
@@ -11176,8 +11217,8 @@ uint32_t Navi48Bringup::n33CpIbBuildKick(uint32_t stream, uint32_t &seq, uint64_
 	}
 	n33Cp.seq = seq;
 	N48LOG("n33 cp: IB kick (%s, stream %u, %u-dword IB at %#llx, INDIRECT_BUFFER control %#x), seq %u, PQ_RPTR %#x, "
-	       "wptr %llu, IB read-back %s", db ? "db" : "mmio", stream, ibDw, g.ib, pk[3], seq, rptr0, wp, ibOk ? "ok" : "MISMATCH");
-	put(12, g.ib); put(13, (uint64_t)ibOk | (uint64_t)body << 1 | (uint64_t)ibDw << 8);
+	       "wptr %llu, IB read-back %s", db ? "db" : "mmio", stream, ibDw, ibVa, pk[3], seq, rptr0, wp, ibOk ? "ok" : "MISMATCH");
+	put(12, ibVa); put(13, (uint64_t)ibOk | (uint64_t)body << 1 | (uint64_t)ibDw << 8);
 	return kWhyOk;
 }
 
@@ -11254,6 +11295,15 @@ uint32_t Navi48Bringup::n33CpStreamBuild(uint32_t stream, const n33cp::Geo &g, u
 		return kWhyOk;
 	}
 	if (stream == kXibBoFault) { ibDw = n33bo::fault_stream(ib, n33Bo.faultVa, g.hostB + kHostFence4, seq); return kWhyOk; }
+	// W2V streams: the IB carries no fence (the ring does); the IB runs in VMID 8 at caller VAs resolved by n33VmSubmit.
+	if (stream == kXibVmCopy) {
+		const n33bo::Bo &s = n33Bo.bo[n33Bo.copySrc - 1], &d = n33Bo.bo[n33Bo.copyDst - 1];
+		const uint64_t minBytes = n33bo::bytes(s) < n33bo::bytes(d) ? n33bo::bytes(s) : n33bo::bytes(d);
+		ibDw = n33vm::copy_stream(ib, n33VmSubSrcVa, n33VmSubDstVa, minBytes);
+		return kWhyOk;
+	}
+	if (stream == kXibVmDispatch) { ibDw = n33vm::dispatch_stream(ib, n33VmSubCodeVa, n33VmSubDstVa); return kWhyOk; }
+	if (stream == kXibVmFault) { ibDw = n33vm::fault_stream(ib, n33VmSubFaultVa); return kWhyOk; }
 	uint32_t in[kXibCap], nat[kXibCap], len = 0, eop = 0;
 	const uint32_t n = xib_g103(stream, in, g, seq), nn = xib_native(stream, nat, g, seq);
 	xlat12_ctx ctx;
@@ -11532,6 +11582,10 @@ uint32_t Navi48Bringup::n33BoUnmap(uint32_t h, uint64_t *out, uint32_t outCount)
 uint32_t Navi48Bringup::n33BoFree(uint32_t h) {
 	uint32_t w = n33bo::may_free(n33Bo, h, n33BoGmcReady(), n33Cp.submitPending);
 	if (w) return w;
+	if (n33Vm.live && n33vm::bo_has_mapping(n33Vm, h)) {   // W2V code 84: a VMID-8 mapping still names this BO
+		N48LOG("n33 bo: refused free h%u: it still has a VMID-8 mapping (vm unmap first)", h);
+		return n33vm::kCodeFreeMapped;
+	}
 	const uint32_t kind = n33Bo.bo[h - 1].kind, pages = n33Bo.bo[h - 1].pages;
 	n33BoRelease(h);
 	n33bo::record_free(n33Bo, h);
@@ -11593,6 +11647,279 @@ void Navi48Bringup::n33BoStop(bool freeMem) {
 		if (freeMem) n33BoRelease(i + 1);
 		else { N48LOG("n33 bo: stop: host BO h%u leaked: a hub may still translate to it", i + 1); n33BoMd[i] = nullptr; n33BoMap[i] = nullptr; n33BoCpu[i] = nullptr; }
 	}
+}
+
+// ---- N33 stage 3 step 7 W2V: a per-process GPU VM in VMID 8 (n33vm::, design stage3-step7-gpuvm-design.md) ----------
+// A 4-level gfx11 page table in a kext-owned VRAM arena (kind 21), bound to VMID 8 on the GFXHUB. W2's BOs are mapped at
+// caller-chosen canonical VAs; compute IBs run in VMID 8 (the INDIRECT_BUFFER VMID field) on the step-6 queue, with the
+// ring fence still in VMID 0. Entries are written through the uncached BAR0 window, as the GART table is.
+// The walker's abstract memory over BAR0: a table's "pa" is its VRAM physical address (offset + vbo); BAR0 byte = pa - vbo.
+namespace {
+struct N33VmMem {
+	volatile uint8_t *bar0; uint64_t vbo; uint32_t *next; uint32_t cap;
+	uint64_t rd(uint64_t tablePa, uint32_t idx) { return *reinterpret_cast<volatile uint64_t *>(bar0 + (tablePa - vbo) + (uint64_t)idx * 8); }
+	void wr(uint64_t tablePa, uint32_t idx, uint64_t v) { *reinterpret_cast<volatile uint64_t *>(bar0 + (tablePa - vbo) + (uint64_t)idx * 8) = v; }
+	uint64_t alloc_page() {
+		if (*next >= n33vm::kSentinelPageIdx) return 0;                      // never hand out the sentinel (V6) or beyond
+		const uint32_t idx = (*next)++;
+		const uint64_t off = n33vm::page_off(idx);
+		for (uint64_t o = 0; o < n33gmc::kPage; o += 4) *reinterpret_cast<volatile uint32_t *>(bar0 + off + o) = 0;   // zeroed when handed out
+		return off + vbo;                                                   // the VRAM physical address
+	}
+};
+}
+
+uint64_t Navi48Bringup::n33VmVbo() const { return (uint64_t)(n33GmcIn.fbOffset & 0x00FFFFFFu) << 24; }   // MC_VM_FB_OFFSET << 24
+
+// engine-17 invalidate for VMID 8 on the GFXHUB (D7): HDP flush, request 0x00F80100, poll ACK bit 8 for 100 ms. No
+// semaphore and no private invalidation (GFXHUB only; gmc_v11_0.c:193-198, :295-297). Returns true on ACK.
+uint32_t Navi48Bringup::n33VmFlush() {
+	n33GmcHdpFlush();
+	rmmio[n33vm::kInvEng17Req] = n33vm::kInvReqVmid8;
+	for (int i = 0; i < 10000; i++) {
+		if (rmmio[n33vm::kInvEng17Ack] & n33vm::kInvAckVmid8) return 1;
+		IODelay(10);
+	}
+	N48LOG("n33 vm: engine-17 invalidate for VMID 8 not acknowledged in 100 ms (ack %#x)", rmmio[n33vm::kInvEng17Ack]);
+	return 0;
+}
+
+// The arena must be clear of every live protected range when first taken (refusal 81), as W2 checks its slab.
+uint32_t Navi48Bringup::n33VmArenaCheck() {
+	N33Range rs[kN33Ranges];
+	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
+	                                 n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned,
+	                                 n33Bo.slabOwned, false);   // vmArena false: we are checking the arena is clear of the OTHERS
+	for (unsigned i = 0; i < n; i++)
+		if (n33vm::kArenaOff < rs[i].off + rs[i].len && rs[i].off < n33vm::kArenaOff + n33vm::kArenaLen) {
+			N48LOG("n33 vm: refused create: arena VRAM %#llx +%#llx overlaps protected kind %u at %#llx", n33vm::kArenaOff, n33vm::kArenaLen, rs[i].kind, rs[i].off);
+			return n33vm::kCodeSlab;
+		}
+	return 0;
+}
+
+// Action 48: vm create (design D5). Take and zero the arena root; check CONTEXT8 is as G6 left it; program SH_MEM and the
+// VMID-8 page-table base; HDP flush; engine-17 invalidate. out: 0, root PA, CONTEXT8_CNTL, SH_MEM_CONFIG, SH_MEM_BASES, BASE readback.
+uint32_t Navi48Bringup::n33VmCreate(uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	uint32_t w = n33vm::may_create(n33Vm, n33BoGmcReady(), n33Cp.submitPending);
+	if (w) return w;
+	if (!n33Bar0 || n33vm::kArenaOff + n33vm::kArenaLen > n33Bar0Size) return n33vm::kCodeArg;   // the arena must be inside BAR0
+	if ((w = n33VmArenaCheck())) return w;
+	const uint32_t cntl = rmmio[n33vm::kCtx8Cntl];
+	if (!n33vm::ctx8_cntl_ok(cntl)) { N48LOG("n33 vm: refused create: CONTEXT8_CNTL %#x not as G6 left it (masked want %#x)", cntl, n33vm::kCtxCheckVal); return n33vm::kCodeCtx; }
+	const uint64_t vbo = n33VmVbo();
+	// Zero the park page (index 0) and the root (index 1); every PDB2 entry of the root starts invalid.
+	for (uint64_t o = 0; o < n33gmc::kPage; o += 4) *reinterpret_cast<volatile uint32_t *>(n33Bar0 + n33vm::page_off(n33vm::kParkPageIdx) + o) = 0;
+	for (uint64_t o = 0; o < n33gmc::kPage; o += 4) *reinterpret_cast<volatile uint32_t *>(n33Bar0 + n33vm::page_off(n33vm::kRootPageIdx) + o) = 0;
+	const uint64_t rootPa = n33vm::page_off(n33vm::kRootPageIdx) + vbo;
+	// SH_MEM_CONFIG / SH_MEM_BASES under the VMID-8 select (D6), read back (83).
+	rmmio[n33vm::kGrbmGfxCntl] = n33vm::kGrbmSelVmid8;
+	rmmio[n33vm::kShMemConfig] = n33vm::kShMemConfigVal;
+	rmmio[n33vm::kShMemBases] = n33vm::kShMemBasesVal;
+	const uint32_t cfgBack = rmmio[n33vm::kShMemConfig], basesBack = rmmio[n33vm::kShMemBases];
+	rmmio[n33vm::kGrbmGfxCntl] = 0;
+	if (cfgBack != n33vm::kShMemConfigVal || basesBack != n33vm::kShMemBasesVal) {
+		N48LOG("n33 vm: refused create: SH_MEM read back CONFIG %#x BASES %#x", cfgBack, basesBack);
+		return n33vm::kCodeShMem;
+	}
+	// The VMID-8 page-table base: root PA | VALID (amdgpu_gmc.c:135-150). Write HI then LO.
+	const uint64_t pd = rootPa | 1ull;
+	rmmio[n33vm::kCtx8BaseHi] = (uint32_t)(pd >> 32);
+	rmmio[n33vm::kCtx8BaseLo] = (uint32_t)pd;
+	n33GmcHdpFlush();
+	if (!n33VmFlush()) { n33Vm.stopped = true; return n33vm::kCodeAck; }
+	const uint64_t baseBack = ((uint64_t)rmmio[n33vm::kCtx8BaseHi] << 32) | rmmio[n33vm::kCtx8BaseLo];
+	n33Vm.live = true; n33Vm.stopped = false; n33Vm.rootPa = rootPa; n33Vm.nextPage = n33vm::kFirstFreePageIdx;
+	n33Vm.ctx8BaseAtCreate = baseBack;
+	for (uint32_t i = 0; i < n33vm::kMapMax; i++) n33Vm.map[i] = {};
+	N48LOG("n33 vm: create: root PA %#llx, CONTEXT8_CNTL %#x, SH_MEM_CONFIG %#x, SH_MEM_BASES %#x, BASE readback %#llx",
+	       rootPa, cntl, cfgBack, basesBack, baseBack);
+	put(0, 0); put(1, rootPa); put(2, cntl); put(3, cfgBack); put(4, basesBack); put(5, baseBack);
+	return 0;
+}
+
+// Action 49: vm map h at VA, [off size flags] (design D8). Whole BO when off/size are 0; flags default R|W|X NC.
+uint32_t Navi48Bringup::n33VmMap(uint32_t h, uint64_t va, uint64_t off, uint64_t size, uint32_t flags, uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const bool handleLive = n33bo::handle_ok(n33Bo, h);
+	const uint64_t boBytes = handleLive ? n33bo::bytes(n33Bo.bo[h - 1]) : 0;
+	if (size == 0ull) size = boBytes - (off < boBytes ? off : boBytes);   // whole BO from off
+	uint32_t w = n33vm::may_map(n33Vm, n33BoGmcReady(), n33Cp.submitPending, handleLive, flags, va, off, size, boBytes);
+	if (w) return w;
+	const n33bo::Bo &b = n33Bo.bo[h - 1];
+	const bool system = b.kind != n33bo::kVram;
+	const uint64_t leafBits = n33vm::leaf_flags(system, flags);
+	const uint32_t firstPage = (uint32_t)(off / n33gmc::kPage), pages = (uint32_t)(size / n33gmc::kPage);
+	const uint64_t vbo = n33VmVbo();
+	N33VmMem m { n33Bar0, vbo, &n33Vm.nextPage, n33vm::kArenaPages };
+	// Per-page physical address (GTT/import BOs are not contiguous): BO page firstPage + p.
+	auto pa = [&](uint64_t p) { return n33BoPagePa(h, firstPage + (uint32_t)p); };
+	w = n33vm::pt_map_pages(n33Vm.rootPa, n33vm::va_strip(va), pages, pa, leafBits, m);
+	if (w) { N48LOG("n33 vm: map h%u at VA %#llx: pt_map_pages refused %u (arena page %u/%u)", h, va, w, n33Vm.nextPage, n33vm::kArenaPages); return w; }
+	n33GmcHdpFlush();
+	if (!n33VmFlush()) { n33Vm.stopped = true; return n33vm::kCodeAck; }
+	const uint32_t idx = n33vm::record_map(n33Vm, h, flags, va, size, off);
+	// Read back the first and last leaf (the kext's own walk over BAR0).
+	uint64_t leaf0 = 0, leafN = 0;
+	n33vm::pt_walk(n33Vm.rootPa, n33vm::va_strip(va), m, &leaf0);
+	n33vm::pt_walk(n33Vm.rootPa, n33vm::va_strip(va) + (uint64_t)(pages - 1) * n33gmc::kPage, m, &leafN);
+	N48LOG("n33 vm: map h%u at VA %#llx (off %#llx, %u pages, flags %#x): first leaf %#llx, last leaf %#llx, arena page %u",
+	       h, va, off, pages, flags, leaf0, leafN, n33Vm.nextPage);
+	put(0, 0); put(1, va); put(2, leaf0); put(3, leafN); put(4, pages); put(5, idx);
+	return 0;
+}
+
+// Action 50: vm unmap (handle, VA). Leaves to 0, flush, drop the record. Empty tables are kept (vm destroy reclaims them).
+uint32_t Navi48Bringup::n33VmUnmap(uint32_t h, uint64_t va, uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	uint32_t w = n33vm::may_unmap(n33Vm, n33BoGmcReady(), n33Cp.submitPending, h, va);
+	if (w) return w;
+	const int idx = n33vm::find_map(n33Vm, h, va);
+	const n33vm::Map &mp = n33Vm.map[idx];
+	const uint32_t pages = (uint32_t)(mp.bytes / n33gmc::kPage);
+	const uint64_t vbo = n33VmVbo();
+	N33VmMem m { n33Bar0, vbo, &n33Vm.nextPage, n33vm::kArenaPages };
+	n33vm::pt_unmap(n33Vm.rootPa, n33vm::va_strip(va), pages, m);
+	n33GmcHdpFlush();
+	if (!n33VmFlush()) { n33Vm.stopped = true; return n33vm::kCodeAck; }
+	n33vm::record_unmap(n33Vm, (uint32_t)idx);
+	N48LOG("n33 vm: unmap h%u at VA %#llx (%u pages)", h, va, pages);
+	put(0, 0); put(1, pages);
+	return 0;
+}
+
+// Action 51: vm info [va] (read only). The CONTEXT8 registers, arena pages used, mapping count, and for a VA each level's entry.
+uint32_t Navi48Bringup::n33VmInfo(uint64_t va, bool haveVa, uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	const uint32_t cntl = rmmio[n33vm::kCtx8Cntl];
+	const uint64_t base = ((uint64_t)rmmio[n33vm::kCtx8BaseHi] << 32) | rmmio[n33vm::kCtx8BaseLo];
+	const uint64_t start = ((uint64_t)rmmio[n33vm::kCtx8StartHi] << 32) | rmmio[n33vm::kCtx8StartLo];
+	const uint64_t end = ((uint64_t)rmmio[n33vm::kCtx8EndHi] << 32) | rmmio[n33vm::kCtx8EndLo];
+	uint32_t maps = 0; for (uint32_t i = 0; i < n33vm::kMapMax; i++) maps += n33Vm.map[i].used ? 1 : 0;
+	put(0, 0); put(1, cntl); put(2, base); put(3, start); put(4, end);
+	put(5, n33Vm.live ? n33Vm.nextPage : 0); put(6, maps); put(7, n33Vm.live ? 1 : 0);
+	if (haveVa && n33Vm.live) {
+		const uint64_t vbo = n33VmVbo();
+		N33VmMem m { n33Bar0, vbo, &n33Vm.nextPage, n33vm::kArenaPages };
+		uint64_t leaf = 0;
+		const uint64_t paOut = n33vm::pt_walk(n33Vm.rootPa, n33vm::va_strip(va), m, &leaf);
+		put(8, leaf); put(9, paOut);
+		N48LOG("n33 vm: info VA %#llx: CONTEXT8_CNTL %#x base %#llx, leaf %#llx -> pa %#llx", va, cntl, base, leaf, paOut);
+	} else {
+		N48LOG("n33 vm: info: CONTEXT8_CNTL %#x base %#llx start %#llx end %#llx, %u arena pages, %u mappings", cntl, base, start, end, n33Vm.live ? n33Vm.nextPage : 0, maps);
+	}
+	return 0;
+}
+
+// Actions 52/53/54: vm copy/dispatch/fault. Resolve the VMID-8 VAs to BOs, write the shader blob and pre-fill through the
+// BOs' CPU maps, then submit through W1's path (stream 5/6/7); cp waitseq retires it. D2: the ring carries the fence.
+uint32_t Navi48Bringup::n33VmSubmit(uint32_t stream, uint64_t ibVa, uint64_t aVa, uint64_t bVa, uint64_t *out, uint32_t outCount) {
+	using namespace n33cp;
+	uint32_t w = n33vm::vm_ready(n33Vm, n33BoGmcReady());
+	if (w) return w;
+	// The IB must sit in a VRAM BO mapped R|X in VMID 8.
+	const int ibMap = n33vm::covering_map(n33Vm, ibVa, n33gmc::kPage, n33vm::kVmRead | n33vm::kVmExec);
+	if (ibMap < 0 || n33Bo.bo[n33Vm.map[ibMap].handle - 1].kind != n33bo::kVram) return n33vm::kCodeStream;
+	n33VmSubIbBo = n33Vm.map[ibMap].handle;
+	n33VmSubIbVa = ibVa;
+	n33VmSubIbOff = n33vm::bo_offset_of(n33Vm, (uint32_t)ibMap, ibVa);
+	if (stream == kXibVmFault) {
+		// V6 aliasing sentinels: host page B's GART address + 0xF00 (VMID-0 GART), and the arena sentinel page's
+		// FB-aperture address (both ours and unused). A vm fault VA in the VMID-0 apertures is refused 85 unless it is one.
+		const uint64_t sentinelA = n33gmc::slot_mc(n33cp::kSlotB) + 0xF00;                 // 0x8400001F00
+		const uint64_t sentinelB = n33FbBase + n33vm::page_off(n33vm::kSentinelPageIdx);   // 0x800D7FF000
+		w = n33vm::may_fault(n33Vm, aVa, sentinelA, sentinelB);
+		if (w) return w;
+		n33VmSubFaultVa = aVa;
+	} else if (stream == kXibVmCopy) {
+		const int sMap = n33vm::covering_map(n33Vm, aVa, n33gmc::kPage, n33vm::kVmRead);
+		const int dMap = n33vm::covering_map(n33Vm, bVa, n33gmc::kPage, n33vm::kVmWrite);
+		if (sMap < 0 || dMap < 0) return n33vm::kCodeStream;
+		const uint32_t sh = n33Vm.map[sMap].handle, dh = n33Vm.map[dMap].handle;
+		const uint64_t minBytes = n33bo::bytes(n33Bo.bo[sh - 1]) < n33bo::bytes(n33Bo.bo[dh - 1]) ? n33bo::bytes(n33Bo.bo[sh - 1]) : n33bo::bytes(n33Bo.bo[dh - 1]);
+		if (n33vm::covering_map(n33Vm, aVa, minBytes, n33vm::kVmRead) < 0 || n33vm::covering_map(n33Vm, bVa, minBytes, n33vm::kVmWrite) < 0) return n33vm::kCodeStream;
+		n33Bo.copySrc = sh; n33Bo.copyDst = dh;
+		n33VmSubSrcVa = aVa; n33VmSubDstVa = bVa;
+		n33VmSubSrcOff = n33vm::bo_offset_of(n33Vm, (uint32_t)sMap, aVa);
+		n33VmSubDstOff = n33vm::bo_offset_of(n33Vm, (uint32_t)dMap, bVa);
+	} else {   // kXibVmDispatch: aVa = code VA (X), bVa = dst VA (W)
+		const int cMap = n33vm::covering_map(n33Vm, aVa, fw_shader_store_magic_gfx11_size, n33vm::kVmExec);
+		const int dMap = n33vm::covering_map(n33Vm, bVa, (uint64_t)n33cp::kResultDw * 4, n33vm::kVmWrite);
+		if (cMap < 0 || dMap < 0) return n33vm::kCodeStream;
+		n33Bo.copyDst = n33Vm.map[dMap].handle;
+		n33VmSubCodeVa = aVa; n33VmSubDstVa = bVa;
+		n33VmSubDstOff = n33vm::bo_offset_of(n33Vm, (uint32_t)dMap, bVa);
+		// Write the pinned gfx11 store_magic blob into the code BO at the code VA's offset.
+		const uint32_t ch = n33Vm.map[cMap].handle;
+		const uint64_t codeOff = n33vm::bo_offset_of(n33Vm, (uint32_t)cMap, aVa);
+		const uint32_t *blob = reinterpret_cast<const uint32_t *>(fw_shader_store_magic_gfx11);
+		for (uint64_t i = 0; i < fw_shader_store_magic_gfx11_size / 4; i++) *n33BoWord(ch, codeOff + 4 * i) = blob[i];
+	}
+	// Pre-fill the data BOs through their CPU maps (the submit kick for VM does not).
+	if (stream == kXibVmCopy) {
+		const uint64_t minBytes = n33bo::bytes(n33Bo.bo[n33Bo.copySrc - 1]) < n33bo::bytes(n33Bo.bo[n33Bo.copyDst - 1]) ?
+		                          n33bo::bytes(n33Bo.bo[n33Bo.copySrc - 1]) : n33bo::bytes(n33Bo.bo[n33Bo.copyDst - 1]);
+		for (uint32_t k = 0; k < n33bo::kCopyN; k++) {
+			const uint64_t o = n33bo::copy_off(k, minBytes);
+			*n33BoWord(n33Bo.copySrc, n33VmSubSrcOff + o) = n33bo::pattern(n33Cp.seq + 1, k);
+			*n33BoWord(n33Bo.copyDst, n33VmSubDstOff + o) = n33bo::kCopyBefore;
+		}
+	} else if (stream == kXibVmDispatch) {
+		for (uint32_t i = 0; i < n33cp::kResultDw; i++) *n33BoWord(n33Bo.copyDst, n33VmSubDstOff + 4 * i) = n33cp::kBefore;
+	}
+	n33GmcHdpFlush();
+	w = n33CpSubmit(stream, out, outCount, true);   // W1's gates (62/56/50/57/61); records the submit, cp waitseq retires it
+	if (w) { n33Bo.copySrc = n33Bo.copyDst = 0; n33VmSubFaultVa = 0; }
+	return w;
+}
+
+// The VM copy/dispatch samples, read through the destination BO's CPU map at its offset.
+uint32_t Navi48Bringup::n33VmLanded(uint32_t seq) {
+	const uint32_t dh = n33Bo.copyDst;
+	if (!dh) return 0;
+	if (n33Cp.submitStream == n33cp::kXibVmDispatch) {
+		uint32_t k = 0;
+		for (uint32_t i = 0; i < n33cp::kResultDw; i++) if (*n33BoWord(dh, n33VmSubDstOff + 4 * i) == n33cp::kMagic + i) k++;
+		return k;
+	}
+	const uint32_t sh = n33Bo.copySrc;
+	const uint64_t minBytes = n33bo::bytes(n33Bo.bo[sh - 1]) < n33bo::bytes(n33Bo.bo[dh - 1]) ? n33bo::bytes(n33Bo.bo[sh - 1]) : n33bo::bytes(n33Bo.bo[dh - 1]);
+	uint32_t k = 0;
+	for (uint32_t i = 0; i < n33bo::kCopyN; i++) if (*n33BoWord(dh, n33VmSubDstOff + n33bo::copy_off(i, minBytes)) == n33bo::pattern(seq, i)) k++;
+	return k;
+}
+
+// Action 55: vm destroy (D9). Park CONTEXT8 on the park root, flush, invalidate, then drop every mapping and reclaim the arena.
+uint32_t Navi48Bringup::n33VmDestroy(uint64_t *out, uint32_t outCount) {
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	if (!n33Vm.live) return n33vm::kCodeOrder;
+	if (n33Cp.submitPending) return n33vm::kCodeOrder;
+	const uint64_t vbo = n33VmVbo();
+	const uint64_t park = (n33vm::page_off(n33vm::kParkPageIdx) + vbo) | 1ull;
+	rmmio[n33vm::kCtx8BaseHi] = (uint32_t)(park >> 32);
+	rmmio[n33vm::kCtx8BaseLo] = (uint32_t)park;
+	n33GmcHdpFlush();
+	const bool ack = n33VmFlush() != 0;
+	const uint64_t baseBack = ((uint64_t)rmmio[n33vm::kCtx8BaseHi] << 32) | rmmio[n33vm::kCtx8BaseLo];
+	for (uint32_t i = 0; i < n33vm::kMapMax; i++) n33Vm.map[i] = {};
+	n33Vm.live = false; n33Vm.nextPage = n33vm::kFirstFreePageIdx; n33Vm.rootPa = 0;
+	if (!ack) n33Vm.stopped = true;   // leak-safe: the arena is simply not reused
+	N48LOG("n33 vm: destroy: CONTEXT8 parked on %#llx (ack %u), BASE readback %#llx", park, ack ? 1 : 0, baseBack);
+	put(0, ack ? 0 : n33vm::kCodeAck); put(1, baseBack);
+	return ack ? 0 : n33vm::kCodeAck;
+}
+
+// Unload: if a VM is live, park CONTEXT8 back to its V0 value (reset 0) and invalidate once, then the GMC stop runs as today.
+void Navi48Bringup::n33VmStop() {
+	if (!n33Vm.live || !n33Bar0 || !rmmio) { n33Vm.live = false; return; }
+	rmmio[n33vm::kCtx8BaseHi] = 0;
+	rmmio[n33vm::kCtx8BaseLo] = 0;
+	n33GmcHdpFlush();
+	n33VmFlush();
+	for (uint32_t i = 0; i < n33vm::kMapMax; i++) n33Vm.map[i] = {};
+	n33Vm.live = false; n33Vm.rootPa = 0; n33Vm.nextPage = n33vm::kFirstFreePageIdx;
+	N48LOG("n33 vm: stop: CONTEXT8 page-table base returned to 0 (VMID 8 parked)");
 }
 
 // Stage 2 step 3: run the layout gate, judge the live GOP state, and publish the framebuffer nub.
