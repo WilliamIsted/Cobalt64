@@ -149,9 +149,10 @@ inline uint32_t may_unmap(const State &s, uint32_t h, bool gmcReady, bool submit
 	return kWhyOk;
 }
 inline void record_unmap(State &s, uint32_t h) { Bo &b = s.bo[h - 1]; b.mapped = false; b.va = 0; b.vmFlags = 0; }
-inline uint32_t may_free(const State &s, uint32_t h, bool submitPending) {
+// gmcReady false after a failed flush (GMC stopped): a stale PTE may still name the pages, so they stay until unload.
+inline uint32_t may_free(const State &s, uint32_t h, bool gmcReady, bool submitPending) {
 	if (!handle_ok(s, h)) return kWhyArg;
-	if (s.bo[h - 1].mapped || submitPending) return kWhyOrder;
+	if (!gmcReady || s.bo[h - 1].mapped || submitPending) return kWhyOrder;
 	return kWhyOk;
 }
 inline void record_free(State &s, uint32_t h) {

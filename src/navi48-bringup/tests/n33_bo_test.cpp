@@ -84,7 +84,7 @@ static void lifecycle_cases() {
 	const uint32_t h3 = record_create(s, kGtt, 16, 0);
 	CHECK(h2 == 2 && h3 == 3 && s.hostBytes == 0x10000);
 	// first fit reuses a freed run
-	CHECK(may_free(s, h1, false) == kWhyOk);
+	CHECK(may_free(s, h1, true, false) == kWhyOk);
 	record_free(s, h1);
 	CHECK(vram_place(s, 8, &off) && off == 0);
 	CHECK(vram_place(s, 32, &off) && off == 0x20000);   // 0x0..0x10000 is too small for 128 KiB
@@ -101,12 +101,12 @@ static void lifecycle_cases() {
 	CHECK(may_map(s, h2, kVaBase + 0x100000, kVmDefault, true, false) == kWhyOrder);   // already mapped
 	CHECK(may_map(s, h3, kVaBase + 0xF000, kVmDefault, true, false) == kWhyVa);        // overlaps h2's last page
 	CHECK(may_map(s, h3, kVaBase + 0x10000, kVmDefault, true, false) == kWhyOk);       // just after it
-	CHECK(may_free(s, h2, false) == kWhyOrder);
+	CHECK(may_free(s, h2, true, false) == kWhyOrder);
 	CHECK(may_unmap(s, h3, true, false) == kWhyOrder);   // not mapped
 	CHECK(may_unmap(s, h2, true, true) == kWhyOrder);
 	CHECK(may_unmap(s, h2, true, false) == kWhyOk);
 	record_unmap(s, h2);
-	CHECK(!s.bo[h2 - 1].mapped && may_free(s, h2, true) == kWhyOrder && may_free(s, h2, false) == kWhyOk);
+	CHECK(!s.bo[h2 - 1].mapped && may_free(s, h2, true, true) == kWhyOrder && may_free(s, h2, false, false) == kWhyOrder && may_free(s, h2, true, false) == kWhyOk);
 	CHECK(may_read(s, h2, 0) == kWhyOk && may_read(s, h2, 0x10000 / 4) == kWhyArg && may_read(s, 7, 0) == kWhyArg);
 	record_free(s, h3);
 	CHECK(s.hostBytes == 0);

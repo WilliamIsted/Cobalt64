@@ -11507,7 +11507,7 @@ uint32_t Navi48Bringup::n33BoUnmap(uint32_t h, uint64_t *out, uint32_t outCount)
 }
 
 uint32_t Navi48Bringup::n33BoFree(uint32_t h) {
-	uint32_t w = n33bo::may_free(n33Bo, h, n33Cp.submitPending);
+	uint32_t w = n33bo::may_free(n33Bo, h, n33BoGmcReady(), n33Cp.submitPending);
 	if (w) return w;
 	const uint32_t kind = n33Bo.bo[h - 1].kind, pages = n33Bo.bo[h - 1].pages;
 	n33BoRelease(h);
