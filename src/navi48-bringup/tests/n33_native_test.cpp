@@ -79,8 +79,8 @@ static void read_regs_cases() {
 static void ctx_cases() {
 	Client c{}; n48n_ctx in{}, out{};
 	in.op = N48N_CTX_OP_ALLOC;
-	CHECK(ctx_op(c, &in, &out) == kOk && out.ctx_id == 1u);
-	CHECK(ctx_op(c, &in, &out) == kOk && out.ctx_id == 2u);
+	CHECK(ctx_op(c, &in, &out) == kOk && out.op == 1u && out.ctx_id == 0u);   // the id is in dword0 (Mesa reads drm ctx_out.alloc.ctx_id there)
+	CHECK(ctx_op(c, &in, &out) == kOk && out.op == 2u);
 	CHECK(ctx_valid(c, 1) && ctx_valid(c, 2) && !ctx_valid(c, 3));
 	in.op = N48N_CTX_OP_QUERY_STATE2; in.ctx_id = 1u;
 	CHECK(ctx_op(c, &in, &out) == kOk && out.ctx_id == 0u);            // no reset / guilty
@@ -297,7 +297,7 @@ static void version_check() {
 		std::ifstream in(p);
 		if (!in) continue;
 		std::stringstream ss; ss << in.rdbuf(); std::string s = ss.str();
-		CHECK(s.find("0.0.675") != std::string::npos);                // CFBundleVersion / ShortVersion
+		CHECK(s.find("0.0.676") != std::string::npos);                // CFBundleVersion / ShortVersion
 		return;
 	}
 	printf("version check skipped: Info.plist not found from the working directory\n");

@@ -244,7 +244,7 @@ IOReturn Navi48Bringup::n33nWait(uint64_t target, uint64_t timeoutNs, uint64_t o
 	if (rc) { out[0] = 0; out[1] = 0; out[2] = n33Cp.seq; return why_io(rc); }
 	const bool retired = (w[1] != 0);   // n33CpIbWait put(1, latch == kLatchNone ? 1 : 0)
 	out[0] = retired ? 0ull : 1ull;     // busy
-	out[1] = retired ? 1ull : 0ull;     // retired
+	out[1] = retired ? n33Cp.seq : n33Cp.seq - 1u;   // the last RETIRED seqno, as the ABI and n1c_wait give it (one outstanding submit)
 	out[2] = n33Cp.seq;                 // last emitted
 	return kIOReturnSuccess;
 }

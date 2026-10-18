@@ -132,7 +132,7 @@ inline Code ctx_op(Client &c, const n48n_ctx *in, n48n_ctx *out) {
 	switch (in->op) {
 	case N48N_CTX_OP_ALLOC: {
 		for (uint32_t id = 1; id <= N48N_MAX_CTX; id++)
-			if (!c.ctxUsed[id]) { c.ctxUsed[id] = 1; out->ctx_id = id; return kOk; }
+			if (!c.ctxUsed[id]) { c.ctxUsed[id] = 1; out->op = id; return kOk; }   // the ABI's dword0 (= drm ctx_out.alloc.ctx_id), as native_s1c.cpp:1483
 		return kNoResources;
 	}
 	case N48N_CTX_OP_FREE:
