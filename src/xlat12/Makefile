@@ -24,9 +24,12 @@ TEST_IB_FIXTURES := tests/fixture_r30_blit_ib.h tests/fixture_r44_drawinj.h test
 # MERGE 0.0.489: 0.0.486's test_tdesc_clamp486 #includes the kext's ws_resprov.h (its T6 reachability chain), so an edit to
 # that header must rebuild test_xlat12_ib too (the stale-binary hazard's merge notes name).
 
-.PHONY: all test kextcheck gen clean ibtool scissorcap
+.PHONY: all test kextcheck gen gen-gfx11 clean ibtool scissorcap
 
-all: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b
+# stage-3 step 7 X1: the generated gfx10.3 -> gfx11 table and its headers.
+GFX11_HDRS := xlat12.h xlat12_tables_gfx11.h xlat12_repack_gfx11.h xlat12_provenance_gfx11.h
+
+all: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -54,6 +57,12 @@ $(BUILD)/test_headless: tests/test_headless.c tests/fixture_wsgc1_headless.h tes
 $(BUILD)/test_xlat12_b7b: tests/test_xlat12_b7b.c xlat12_ib.c xlat12_ib.h $(LIBSRC) $(HDRS) | $(BUILD)
 	$(CC) $(CSTD) -O1 -g $(WARN) $(SAN) -DXLAT12_TEST_EXTRA_TBL_ROW -I. tests/test_xlat12_b7b.c xlat12_ib.c $(LIBSRC) -o $@
 
+# stage-3 step 7 X1: compile the gfx11 table in its XLAT12_GFX11 build mode (proves every
+# generated repack_* is referenced, so none trips -Wunused-function) and check its shape. Single
+# file: the test includes the table header and calls no xlat12 API, so it links nothing else.
+$(BUILD)/test_tables_gfx11: tests/test_tables_gfx11.c $(GFX11_HDRS) | $(BUILD)
+	$(CC) $(CSTD) -O1 -g $(WARN) $(SAN) -DXLAT12_GFX11 -I. tests/test_tables_gfx11.c -o $@
+
 #: host census + translation check over a dumped Apple PM4 stream (tri --dump *.bin).
 $(BUILD)/ibtool: tests/ibtool.c xlat12_ib.c xlat12_ib.h $(LIBSRC) $(HDRS) | $(BUILD)
 	$(CC) $(CSTD) -O1 -g $(WARN) -I. tests/ibtool.c xlat12_ib.c $(LIBSRC) -o $@
@@ -68,12 +77,15 @@ $(BUILD)/scissorcap: tests/scissorcap.c xlat12_ib.c xlat12_ib.h $(LIBSRC) $(HDRS
 
 scissorcap: $(BUILD)/scissorcap
 
-test: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b
+test: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11
 	$(BUILD)/test_xlat12
 	$(BUILD)/fuzz_xlat12 200000
 	$(BUILD)/test_xlat12_ib 100000
 	$(BUILD)/test_headless
 	$(BUILD)/test_xlat12_b7b
+	@# stage-3 step 7 X1: the gfx11 table's shape, and its source cross-check against gfx11.json + gc_11_0_0_offset.h.
+	$(BUILD)/test_tables_gfx11
+	python3 tests/test_xlat12_tables_gfx11.py
 	@# an internal design note item 2: tools/gfx-readset.py's generator + xlat12_readset.h regeneration and proof tests.
 	python3 tests/test_xlat12_readset.py
 	@# build 0.0.470 (an internal design note N5): every kDTableAbi row and its ABI-pointer row against
@@ -108,6 +120,11 @@ kextcheck: | $(BUILD)
 gen:
 	python3 gen/gen_tables.py
 	python3 gen/gen_golden.py
+
+#: stage-3 step 7 X1: regenerate only the gfx10.3 -> gfx11 table (reads Mesa + Linux from ../mesa
+# and ../linux; needs no Apple re/ inputs, unlike `make gen`).
+gen-gfx11:
+	python3 gen/gen_tables_gfx11.py
 
 clean:
 	rm -rf $(BUILD)
