@@ -183,7 +183,7 @@ static void mqd_cases() {
 	CHECK(m[133] == 2 && m[134] == 15 && m[135] == 0x111 && m[136] == 0x8008A050u && m[137] == 0 && m[138] == 0);
 	CHECK(m[139] == 0x08A06000u && m[140] == 0x80 && m[141] == 0x08A06020u && m[142] == 0x80);
 	CHECK(m[143] == 0 && d[143] == 0x40000018u && m[144] == 0);
-	CHECK(m[145] == 0x00308509u && m[149] == 0x00300000u && m[162] == 0x100);
+	CHECK(m[145] == 0xC0308509u && m[149] == 0x00300000u && m[162] == 0x100);
 	CHECK(m[165] == 0x8008A040u && m[166] == 0 && m[167] == 0x9 && m[179] == 0 && m[182] == 0 && m[183] == 0);
 	CHECK(m[160] == 0);                                       // hq_status0 left 0, as Linux
 	for (uint32_t i = 0; i < kMqdDw; i++) if (i != 143) CHECK(m[i] == d[i]);
@@ -227,7 +227,7 @@ static void start_cases() {
 		CHECK(r->get(kPqWptrPollCntl) == 0x1u);
 		CHECK(r->get(kEopBase) == 0x8008A040u && r->get(kEopBaseHi) == 0 && r->get(kEopControl) == 0x9);
 		CHECK(r->get(kMqdBase) == 0x08A03000u && r->get(kMqdBaseHi) == 0x80 && r->get(kMqdControl) == 0x100);
-		CHECK(r->get(kPqBase) == 0x8008A050u && r->get(kPqBaseHi) == 0 && r->get(kPqControl) == 0x00308509u);
+		CHECK(r->get(kPqBase) == 0x8008A050u && r->get(kPqBaseHi) == 0 && r->get(kPqControl) == 0xC0308509u);
 		CHECK(r->get(kRptrReport) == 0x08A06000u && r->get(kRptrReportHi) == 0x80);
 		CHECK(r->get(kWptrPoll) == 0x08A06020u && r->get(kWptrPollHi) == 0x80);
 		CHECK(r->get(kPqWptrLo) == 0 && r->get(kPqWptrHi) == 0 && r->get(kHqdVmid) == 0);

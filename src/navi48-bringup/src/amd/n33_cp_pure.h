@@ -87,9 +87,11 @@ constexpr uint32_t kDbControl = (kDbIndex << 2) | kDbEn;     // 0x40000018 (gfx_
 constexpr uint32_t kMecDbLowerValue = 0, kMecDbUpperValue = 0x450;   // gfx_v11_0.c:4139-4142, :4560-4564
 // S2A entry 0 for the CP (nbio_v4_3.c:145-148; AM ip.py:301): enable, AWID 3, offset 0, size 0, AWADDR_31_28 3.
 constexpr uint32_t kS2aValue0 = 1u | (3u << 1) | (3u << 28);   // 0x30000007
-// PQ_CONTROL: QUEUE_SIZE 9 (1024 dwords, order_base_2(4096 / 4) - 1), UNORD, TUNNEL, PRIV, KMD and TMZ 0 (AM's
-// ip.py:367-368, measured working here), RPTR_BLOCK_SIZE and the rest as found.
+// PQ_CONTROL: QUEUE_SIZE 9 (1024 dwords, order_base_2(4096 / 4) - 1), UNORD, TUNNEL and TMZ 0 (AM's ip.py:367-368),
+// RPTR_BLOCK_SIZE and the rest as found. PRIV_STATE and KMD_QUEUE 1, as Linux sets for a kernel queue
+// (gfx_v11_0_compute_mqd_init): with them 0 the CP fetched a VMID-8 IB in VMID 0 (W2V V3a, 2026-10-18).
 constexpr uint32_t kQueueSize = 9;
+constexpr uint32_t kPqValue = kQueueSize | kPqPriv | kPqKmd;
 constexpr uint32_t kPqMask = kPqQueueSize | kPqTmz | kPqUnord | kPqTunnel | kPqPriv | kPqKmd;
 constexpr uint32_t kEopSize = 9;                         // 4 KiB EOP: 2^(9+1) dwords
 constexpr uint32_t kPreloadSize = 0x55;
@@ -304,7 +306,7 @@ inline void mqd_build(uint32_t mode, uint64_t fbBase, uint32_t *m) {
 	m[mqd_dw(kRptrReport)] = lo32(g.rptr) & ~3u; m[mqd_dw(kRptrReportHi)] = hi32(g.rptr) & 0xFFFFu;
 	m[mqd_dw(kWptrPoll)] = lo32(g.wptr) & ~3u; m[mqd_dw(kWptrPollHi)] = hi32(g.wptr) & 0xFFFFu;
 	m[mqd_dw(kPqDoorbell)] = doorbell_control(mode);
-	m[mqd_dw(kPqControl)] = (kPqControlDefault & ~kPqMask) | kQueueSize;
+	m[mqd_dw(kPqControl)] = (kPqControlDefault & ~kPqMask) | kPqValue;
 	m[mqd_dw(kIbControl)] = kIbControlDefault;
 	m[mqd_dw(kMqdControl)] = kMqdControlDefault & ~kMqdVmidMask;
 	m[mqd_dw(kEopBase)] = lo32(g.eop >> 8); m[mqd_dw(kEopBaseHi)] = hi32(g.eop >> 8);
@@ -373,7 +375,7 @@ inline uint32_t k1_plan(uint32_t mode, uint64_t fbBase, Entry *out, uint32_t max
 	p.w(kMqdBase, lo32(g.mqd) & ~3u, all); p.w(kMqdBaseHi, hi32(g.mqd), all);
 	p.rmw(kMqdControl, kMqdVmidMask, 0);
 	p.w(kPqBase, lo32(g.ring >> 8), all); p.w(kPqBaseHi, hi32(g.ring >> 8), all);
-	p.rmw(kPqControl, kPqMask, kQueueSize);
+	p.rmw(kPqControl, kPqMask, kPqValue);
 	p.w(kRptrReport, lo32(g.rptr) & ~3u, all); p.w(kRptrReportHi, hi32(g.rptr) & 0xFFFFu, all);
 	p.w(kWptrPoll, lo32(g.wptr) & ~3u, all); p.w(kWptrPollHi, hi32(g.wptr) & 0xFFFFu, all);
 	if (db) { p.w(kMecDbLower, kMecDbLowerValue, all); p.w(kMecDbUpper, kMecDbUpperValue, all); }
