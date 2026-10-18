@@ -207,8 +207,8 @@ inline uint32_t reply_ret_status(uint32_t replyHeader) { return (replyHeader >> 
 constexpr uint32_t kAutoLoadPollUs = 100000, kStopFwPollUs = 1000000, kCmdPollUs = 100000;
 constexpr uint32_t kPollStepUs = 100;
 
-// ---- Protected-range kinds (added to n33_protected): 18 our DMUB windows, 19 frozen VBIOS DMCUB windows ------------
-constexpr uint32_t kKindOurWindows = 18, kKindFrozenVbios = 19;
+// ---- Protected-range kind (added to n33_protected): 18 our DMUB windows (19 is the IH ring, n33_ih_pure.h) ----------
+constexpr uint32_t kKindOurWindows = 18;
 
 // ---- Refusal reasons (design-pass sec 3.5; 200..211). why is carried as a 64-bit scalar, never truncated ----------
 enum Why : uint32_t {

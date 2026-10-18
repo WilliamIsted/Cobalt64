@@ -9843,7 +9843,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		if (w) { put(0, w); return kIOReturnNotPermitted; }
 		return kIOReturnSuccess;
 	}
-	case kN33IhState: {           // step 4 I0. in: 0 (kext state, PCI config, no register read) or 1 + i (n33ih::kStateRegs[i], after G6)
+	case kN33IhState: {           // step 4 I0. in: 0 (kext state, PCI config; no OSSSYS register, one RLC bootload read once autoload is done) or 1 + i (n33ih::kStateRegs[i], after G6)
 		using namespace n33ih;
 		if (!need(1)) return kIOReturnBadArgument;
 		const bool g6 = (n33Gmc.done >> 6 & 1u) && !n33Gmc.stopped;

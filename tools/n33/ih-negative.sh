@@ -9,7 +9,7 @@
 #
 # The BAR0 writes into the IH ring are refused only once ih start owns it (kind 19, why 119); before that the VRAM is
 # ordinary and a write would land, so only `post` runs them. Each phase first checks the kext's state with `ih flags`,
-# which reads no OSSSYS or GC register, and stops if the state is not the one its expected codes assume.
+# which reads no OSSSYS register (only RLC bootload status, read-only, once autoload is done), and stops if the state is not the one its expected codes assume.
 #
 # Run it with output captured, e.g. ... 2>&1 | tee ~/ScratchPad/opencore-tahoe/ih/ih-neg-pre-output.txt
 set -u
