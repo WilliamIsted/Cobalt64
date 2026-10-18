@@ -17,7 +17,7 @@
 namespace n33n {
 
 // ---- build and identity ------------------------------------------------------------------------------------------
-constexpr uint32_t kKextBuild = 673;                 // 0.0.673 (Hello / QueryInfo report it; the host test pins it to Info.plist)
+constexpr uint32_t kKextBuild = 674;                 // 0.0.674 (Hello / QueryInfo report it; the host test pins it to Info.plist)
 constexpr uint32_t kVmid      = n33vm::kVmid;         // 8: the Darwin backend's and W2V's static VMID
 constexpr uint32_t kGcMajor = 11, kGcMinor = 0, kGcRev = 2;   // gfx11.0.2 (Navi 33); (maj<<16)|(min<<8)|rev
 constexpr uint32_t kGcVersion = (kGcMajor << 16) | (kGcMinor << 8) | kGcRev;   // 0x0B0002
@@ -30,8 +30,15 @@ constexpr uint32_t kIpCompute = 1u, kIpGfx = 0u;
 // ones (CE, SECURE, RESET_GDS, EMIT_MEM_SYNC), is refused.
 constexpr uint32_t kIbFlagsAllowed = N48N_IB_FLAG_PREAMBLE | N48N_IB_FLAG_PREEMPT | N48N_IB_FLAG_TC_WB_NOT_INVALIDATE;
 
+// The ring submit buffer (n33cp::kSubmitDw dwords, padded to 256) holds, per IB, an ACQUIRE_MEM (8 dw, before EVERY
+// INDIRECT_BUFFER - the W2 GL2 lesson) plus an INDIRECT_BUFFER (4 dw), and one RELEASE_MEM (8 dw) at the end. So the
+// ring caps the IB count below N48N_MAX_IBS: (kSubmitDw - 8) / 12.
+constexpr uint32_t kRingPerIbDw = 8u + 4u, kRingTailDw = 8u;
+constexpr uint32_t kMaxRingIbs = (n33cp::kSubmitDw - kRingTailDw) / kRingPerIbDw;   // 20
+static_assert(kMaxRingIbs >= 2u && kMaxRingIbs <= N48N_MAX_IBS, "the ring holds at least two IBs and no more than the ABI cap");
+
 // ---- return codes (kept free of IOReturn; the kext body maps them to the IOReturn.h values) -----------------------
-enum Code : uint32_t { kOk = 0, kBadArg, kUnsupported, kNotReady, kNoResources, kNotPermitted, kNotFound };
+enum Code : uint32_t { kOk = 0, kBadArg, kUnsupported, kNotReady, kNoResources, kNotPermitted, kNotFound, kExclusive };
 
 // ---- the native client's own state (the BO/VM state lives in n33bo::State / n33vm::State) -------------------------
 struct Client {
@@ -40,6 +47,23 @@ struct Client {
 	uint8_t ctxUsed[N48N_MAX_CTX + 1];      // context ids 1..64 (index 0 unused, as the ABI reserves 0)
 };
 inline void client_reset(Client &c) { c = Client{}; }
+
+// ---- newUserClient gate (item 1): one client at a time, only after step 6 K1-K3 ran and a W2V VM exists -----------
+// cpQueueReady: the step-6 compute queue is up and K2/K3 landed this load. vmLive: n33Vm.live (vm create done).
+inline Code may_open(bool cpQueueReady, bool vmLive, bool alreadyOpen) {
+	if (alreadyOpen) return kExclusive;                 // one N48N client at a time on N33
+	if (!cpQueueReady || !vmLive) return kNotReady;
+	return kOk;
+}
+
+// ---- BoCreate domain -> n33bo kind (item 2 / W4) -----------------------------------------------------------------
+// RADV passes GEM domains; VRAM is preferred when both VRAM and GTT are set (a VRAM-with-GTT-fallback BO). A CPU-only
+// or unsupported domain is refused. The kext gives VRAM BOs CPU access for the map path.
+inline Code domain_to_kind(uint64_t domains, uint32_t *kindOut) {
+	if (domains & N48N_GEM_DOMAIN_VRAM) { *kindOut = n33bo::kVram; return kOk; }
+	if (domains & N48N_GEM_DOMAIN_GTT)  { *kindOut = n33bo::kGtt;  return kOk; }
+	return kBadArg;
+}
 
 // ---- Hello (selector 0) ------------------------------------------------------------------------------------------
 inline Code hello_check(uint64_t clientAbi, uint64_t flags) {
@@ -181,7 +205,7 @@ inline Code submit_check(const uint8_t *in, uint32_t size, const n33vm::State &v
 	__builtin_memcpy(&hdr, in, sizeof hdr);
 	const uint32_t n = (size - 32u) / 32u;
 	if (hdr.abi != N48N_ABI_VERSION) return kBadArg;
-	if (hdr.num_ibs != n || n < 1u || n > N48N_MAX_IBS) return kBadArg;
+	if (hdr.num_ibs != n || n < 1u || n > kMaxRingIbs) return kBadArg;   // the ring caps the count (kMaxRingIbs <= N48N_MAX_IBS)
 	if (hdr.flags & ~(uint32_t)N48N_CS_HAS_FENCE) return kBadArg;
 	if (hdr.reserved != 0ull) return kBadArg;
 	if (!ctx_valid(client, hdr.ctx_id)) return kBadArg;
@@ -209,6 +233,21 @@ inline Code submit_check(const uint8_t *in, uint32_t size, const n33vm::State &v
 		req->ib[i].va = ib.va_start; req->ib[i].dw = ib.ib_bytes / 4u;
 	}
 	return kOk;
+}
+
+// ---- the W3 ring content (new stream; W1/W2/W2V streams stay byte-identical) -------------------------------------
+// ACQUIRE_MEM before EVERY INDIRECT_BUFFER (the W2 GL2 lesson), one INDIRECT_BUFFER per caller IB in order at its
+// VMID-8 VA, then one RELEASE_MEM to the fence MC (the caller's fence BO when given, else the kernel seqno fence in
+// host page B, exactly as W2V's ring does). The kext does NOT build or touch the IB bodies (Mesa wrote them into the
+// BOs). Returns the dword count written (<= kSubmitDw - the pad tail); the kext pads to kSubmitDw and kicks.
+inline uint32_t ring_build(uint32_t *p, const SubmitReq &req, uint64_t fenceMc, uint32_t seq) {
+	uint32_t n = 0;
+	for (uint32_t i = 0; i < req.numIbs; i++) {
+		n += n33cp::pkt_acquire_mem(p + n);
+		n += n33cp::pkt_indirect_buffer(p + n, req.ib[i].va, req.ib[i].dw, kVmid);
+	}
+	n += n33cp::pkt_release_mem(p + n, fenceMc, seq, true);   // GL2_WB before the fence, as every n33 ring fence does
+	return n;
 }
 
 } // namespace n33n

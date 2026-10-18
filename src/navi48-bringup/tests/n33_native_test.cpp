@@ -50,7 +50,7 @@ static void info_cases() {
 	L.gtt_cap = 512ull << 20; L.gtt_max_bo = 1ull << 20; L.pt_cap = 8ull << 20;
 	L.seq_emitted = 5; L.seq_retired = 4;
 	info_fill(&info, L);
-	CHECK(info.abi_version == N48N_ABI_VERSION && info.kext_build == 673);
+	CHECK(info.abi_version == N48N_ABI_VERSION && info.kext_build == 674);
 	CHECK(info.gb_addr_config == 0x343u);
 	CHECK(info.gc_version == 0x000B0002u);                              // gfx11.0.2
 	CHECK(info.vmid == 8u && info.max_ibs == N48N_MAX_IBS);
@@ -213,6 +213,63 @@ static void submit_cases() {
 	CHECK(submit_check(buf, sz, vmhi, bohi, true, c, &req) == kOk && req.ib[0].va == hiVa && !req.hasFence);
 }
 
+static void gate_cases() {
+	CHECK(may_open(/*cpReady*/true, /*vmLive*/true, /*already*/false) == kOk);
+	CHECK(may_open(false, true, false) == kNotReady);         // K1-K3 not run
+	CHECK(may_open(true, false, false) == kNotReady);         // no W2V VM
+	CHECK(may_open(true, true, true) == kExclusive);          // a client is already open
+}
+
+static void domain_cases() {
+	uint32_t k = 0xFF;
+	CHECK(domain_to_kind(N48N_GEM_DOMAIN_VRAM, &k) == kOk && k == n33bo::kVram);
+	CHECK(domain_to_kind(N48N_GEM_DOMAIN_GTT, &k) == kOk && k == n33bo::kGtt);
+	CHECK(domain_to_kind(N48N_GEM_DOMAIN_VRAM | N48N_GEM_DOMAIN_GTT, &k) == kOk && k == n33bo::kVram);   // VRAM preferred
+	CHECK(domain_to_kind(N48N_GEM_DOMAIN_CPU, &k) == kBadArg);
+	CHECK(domain_to_kind(0, &k) == kBadArg);
+}
+
+static void ring_cases() {
+	// two IBs at high-half VAs, a caller fence MC: ACQUIRE_MEM + IB per IB, one RELEASE_MEM at the end.
+	SubmitReq req{}; req.numIbs = 2;
+	req.ib[0] = { 0xFFFF800100000000ull, 64u };
+	req.ib[1] = { 0xFFFF800100010000ull, 40u };
+	const uint64_t fenceMc = 0xC000000ull + 0x40;
+	const uint32_t seq = 7;
+	uint32_t p[n33cp::kSubmitDw]; memset(p, 0, sizeof p);
+	const uint32_t n = ring_build(p, req, fenceMc, seq);
+	CHECK(n == 2u * 12u + 8u);                                 // 2*(acquire 8 + ib 4) + release 8 = 32
+	for (uint32_t i = 0; i < 2; i++) {
+		const uint32_t a = i * 12u;                            // ACQUIRE_MEM
+		CHECK(p[a] == n33cp::pkt3(n33cp::kOpAcquireMem, 6));
+		const uint32_t b = a + 8u;                             // INDIRECT_BUFFER
+		CHECK(p[b] == n33cp::pkt3(n33cp::kOpIndirectBuffer, 2));
+		CHECK(p[b + 1] == (n33cp::lo32(req.ib[i].va) & ~3u) && p[b + 2] == n33cp::hi32(req.ib[i].va));
+		CHECK(((p[b + 3] >> 24) & 0xFu) == kVmid);             // INDIRECT_BUFFER runs in VMID 8
+		CHECK((p[b + 3] & 0xFFFFFu) == req.ib[i].dw);          // the caller's IB size
+	}
+	const uint32_t r = 2u * 12u;                               // RELEASE_MEM
+	CHECK(p[r] == n33cp::pkt3(n33cp::kOpReleaseMem, 6));
+	CHECK((p[r + 1] & n33cp::kGl2Wb) != 0u);                   // GL2_WB before the fence
+	CHECK(p[r + 3] == (n33cp::lo32(fenceMc) & ~3u) && p[r + 4] == n33cp::hi32(fenceMc) && p[r + 5] == seq);
+	// the ring never overflows the submit buffer, even at the cap
+	CHECK(kMaxRingIbs * 12u + 8u <= n33cp::kSubmitDw);
+}
+
+static void submit_cap_case() {
+	const uint64_t mapVa = 0x200000ull;
+	n33vm::State vm; n33bo::State bo; make_state(vm, bo, mapVa, 0x10000ull);
+	Client c{}; c.hello = true; c.ctxUsed[1] = 1;
+	uint8_t buf[32 + 32 * N48N_MAX_IBS]; SubmitReq req{};
+	SubmitIb many[N48N_MAX_IBS];
+	for (uint32_t i = 0; i < N48N_MAX_IBS; i++) many[i] = { mapVa, 4u };
+	n48n_cs_in hdr{}; hdr.abi = N48N_ABI_VERSION; hdr.ctx_id = 1; hdr.num_ibs = kMaxRingIbs + 1u;
+	memcpy(buf, &hdr, sizeof hdr);
+	for (uint32_t i = 0; i < kMaxRingIbs + 1u; i++) { n48n_cs_ib ib{}; ib.va_start = mapVa; ib.ib_bytes = 16u; ib.ip_type = kIpCompute; memcpy(buf + 32u + (size_t)i * 32u, &ib, sizeof ib); }
+	CHECK(submit_check(buf, 32u + 32u * (kMaxRingIbs + 1u), vm, bo, true, c, &req) == kBadArg);   // over the ring cap
+	(void)many;
+}
+
 // Part 2: pin the IP types to the Linux uapi header.
 static int header_check(const char *root) {
 	int f = 0;
@@ -237,7 +294,7 @@ static void version_check() {
 		std::ifstream in(p);
 		if (!in) continue;
 		std::stringstream ss; ss << in.rdbuf(); std::string s = ss.str();
-		CHECK(s.find("0.0.673") != std::string::npos);                // CFBundleVersion / ShortVersion
+		CHECK(s.find("0.0.674") != std::string::npos);                // CFBundleVersion / ShortVersion
 		return;
 	}
 	printf("version check skipped: Info.plist not found from the working directory\n");
@@ -245,6 +302,7 @@ static void version_check() {
 
 int main(int argc, char **argv) {
 	hello_cases(); info_cases(); read_regs_cases(); ctx_cases(); gemva_cases(); fence_cases(); submit_cases();
+	gate_cases(); domain_cases(); ring_cases(); submit_cap_case();
 	version_check();
 	if (argc > 1) fails += header_check(argv[1]);
 	else printf("header check skipped: pass the Linux tree root (3857c2fe) as the first argument\n");
