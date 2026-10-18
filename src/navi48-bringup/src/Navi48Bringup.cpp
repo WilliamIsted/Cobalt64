@@ -9160,13 +9160,13 @@ bool Navi48Bringup::n33MapBar0() {
 
 // Every VRAM range that must never be written: the GOP's scanout as found at start and each
 // enabled DMCUB window, read live so a window DMCUB moves is still covered.
-static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbOffset, uint64_t gopOff, uint64_t gopLen,
+static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbBase, uint64_t gopOff, uint64_t gopLen,
                               N33Range *out, unsigned max, bool pspPages, bool smuPage, bool gmcPages, bool sdmaPages,
                               bool cpPages, bool cpIbPage, bool dmubWindows = false) {
 	unsigned n = 0;
 	auto add = [&](uint64_t gpu, uint64_t len, uint32_t kind) {
-		if (n >= max || gpu < fbOffset || len == 0) return;   // below fbOffset: not VRAM
-		uint64_t off = gpu - fbOffset;
+		if (n >= max || gpu < fbBase || len == 0) return;   // below the FB base: not VRAM
+		uint64_t off = gpu - fbBase;   // window addresses are MC (FB base 0x8000000000), not MC_VM_FB_OFFSET
 		uint64_t lo = off > kN33Margin ? off - kN33Margin : 0;
 		out[n++] = { lo & ~0xFFFull, ((off + len + kN33Margin) - (lo & ~0xFFFull) + 0xFFF) & ~0xFFFull, kind };
 	};
@@ -9199,7 +9199,7 @@ bool Navi48Bringup::n33WriteAllowed(uint64_t off, uint64_t len, uint64_t *why) c
 	if (!n33Bar0 || len == 0 || (off & 3) || (len & 3) || len > kN33MaxXfer) { *why = 1; return false; }
 	if (off < kN33WriteFloor || off > n33Bar0Size || len > n33Bar0Size - off) { *why = 2; return false; }
 	N33Range rs[kN33Ranges];
-	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
+	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
 	for (unsigned i = 0; i < n; i++)
 		if (off < rs[i].off + rs[i].len && rs[i].off < off + len) { *why = 100 + rs[i].kind; return false; }   // off + len <= n33Bar0Size here
 	return true;
@@ -9290,10 +9290,10 @@ uint32_t Navi48Bringup::n33DmubReset(uint64_t *out, uint32_t outCount) {
 }
 
 // Is the owned DMUB slab clear of every live protected range? (item 3: overlaps nothing already owned.)
-static bool n33_dmub_windows_clear(const volatile uint32_t *rmmio, uint64_t fbOffset, uint64_t gopOff, uint64_t gopLen,
+static bool n33_dmub_windows_clear(const volatile uint32_t *rmmio, uint64_t fbBase, uint64_t gopOff, uint64_t gopLen,
                                    bool psp, bool smu, bool gmc, bool sdma, bool cp, bool cpIb) {
 	N33Range rs[kN33Ranges];
-	const unsigned n = n33_protected(rmmio, fbOffset, gopOff, gopLen, rs, kN33Ranges, psp, smu, gmc, sdma, cp, cpIb);
+	const unsigned n = n33_protected(rmmio, fbBase, gopOff, gopLen, rs, kN33Ranges, psp, smu, gmc, sdma, cp, cpIb);
 	for (unsigned i = 0; i < n; i++)
 		if (n33dmub::kDmubOff < rs[i].off + rs[i].len && rs[i].off < n33dmub::kDmubOff + n33dmub::kDmubMax)
 			return false;
@@ -9305,7 +9305,7 @@ static bool n33_dmub_windows_clear(const volatile uint32_t *rmmio, uint64_t fbOf
 // reset_release, then poll auto-load (dal_fw + mailbox_rdy) for 100 ms.
 uint32_t Navi48Bringup::n33DmubInit(uint64_t *out, uint32_t outCount) {
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
-	const bool windowsClear = n33_dmub_windows_clear(rmmio, n33FbOffset, n33GopOff, n33GopLen, n33PspPagesOwned(),
+	const bool windowsClear = n33_dmub_windows_clear(rmmio, n33FbBase, n33GopOff, n33GopLen, n33PspPagesOwned(),
 	                              n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned);
 	const bool vbiosOk = (n33Rom && n33RomLen >= n33Dmub.vbiosSize) || n33Dmub.vbiosSize == 0;
 	const uint32_t w = n33dmub::may_init(n33Dmub, n33DmubRgn, windowsClear, vbiosOk);
@@ -9430,7 +9430,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		put(0, n33Bar0Size); put(1, n33FbBase); put(2, n33FbOffset); put(3, n33GopOff); put(4, n33GopLen);
 		put(5, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
 		put(6, rmmio[kN33Hubp0Pitch]); put(7, rmmio[kN33Hubp0FlipCtl]);
-		put(8, n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited));
+		put(8, n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited));
 		put(9, n33SurfCfg); put(10, n33Bar0Phys);
 		return kIOReturnSuccess;
 	}
@@ -9439,7 +9439,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	case kN33Protected: {
 		if (!need(1)) return kIOReturnBadArgument;
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
+		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
 		if (in[0] >= n) return kIOReturnNotFound;
 		put(0, rs[in[0]].off); put(1, rs[in[0]].len); put(2, rs[in[0]].kind);
 		return kIOReturnSuccess;
@@ -9926,7 +9926,7 @@ uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off
 		if (mc + sz > fbEnd) { N48LOG("n33 psp2: refused SETUP_TMR: MC %#llx +%#llx ends past FB_LOCATION_TOP (%#llx)", mc, sz, fbEnd); return kWhyTmrSize; }
 		pa = kTmrOff + ((uint64_t)(rmmio[n33psp::kMmhubFbOffset] & 0x00FFFFFFu) << 24);   // amdgpu_gmc_vram_pa
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
+		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
 		for (unsigned i = 0; i < n; i++)
 			if (n33psp::overlaps(kTmrOff, sz, rs[i].off, rs[i].len)) {
 				N48LOG("n33 psp2: refused SETUP_TMR: VRAM %#llx +%#llx overlaps protected kind %u at %#llx", kTmrOff, sz, rs[i].kind, rs[i].off);
@@ -10401,7 +10401,7 @@ uint32_t Navi48Bringup::n33SdmaPagesClear() const {
 	using namespace n33sdma;
 	if (!n33Bar0 || kOwnedOff < kN33WriteFloor || kOwnedOff + kOwnedLen > n33Bar0Size) return kWhyOverlap;
 	N33Range rs[kN33Ranges];
-	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
+	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
 	                                 n33Gmc.tableOwned, false, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited);
 	for (unsigned i = 0; i < n; i++)
 		if (kOwnedOff < rs[i].off + rs[i].len && rs[i].off < kOwnedOff + kOwnedLen) {
@@ -10676,7 +10676,7 @@ uint32_t Navi48Bringup::n33CpPagesClear() const {
 	using namespace n33cp;
 	if (!n33Bar0 || kOwnedOff < kN33WriteFloor || kOwnedOff + kOwnedLen > n33Bar0Size) return kWhyOverlap;
 	N33Range rs[kN33Ranges];
-	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
+	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
 	                                 n33Gmc.tableOwned, n33Sdma.pagesOwned, false, n33Cp.ibOwned);
 	for (unsigned i = 0; i < n; i++)
 		if (kOwnedOff < rs[i].off + rs[i].len && rs[i].off < kOwnedOff + kOwnedLen) {
@@ -10962,7 +10962,7 @@ uint32_t Navi48Bringup::n33CpIbPageClear() const {
 	using namespace n33cp;
 	if (!n33Bar0 || kIbOff < kN33WriteFloor || kIbOff + kIbLen > n33Bar0Size) return kWhyIbOverlap;
 	N33Range rs[kN33Ranges];
-	const unsigned n = n33_protected(rmmio, n33FbOffset, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
+	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
 	                                 n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, false);
 	for (unsigned i = 0; i < n; i++)
 		if (kIbOff < rs[i].off + rs[i].len && rs[i].off < kIbOff + kIbLen) {
