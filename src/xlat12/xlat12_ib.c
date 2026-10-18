@@ -21,6 +21,7 @@
 #include "xlat12_shader_desc.h"            /*: which identities read a client descriptor (tools/gfx-shader-desc.py) */
 #include "xlat12_readset.h"                /* D4' (an internal design note item 2): GENERATED read-set rows, tools/gfx-readset.py */
 #include "xlat12_scissor.h"                /* build 0.0.499: gfx12 scissor BR is INCLUSIVE - d_scissor */
+#include "xlat12_gfx11.h"                  /* stage 3 step 7 X3: gfx11 destinations and the gfx11 SW_MODE table */
 
 #define PT(h)   (((h) >> 30) & 3u)
 #define PC(h)   (((h) >> 16) & 0x3FFFu)
@@ -100,22 +101,25 @@ static uint32_t plen_at(const uint32_t *in, uint32_t i, uint32_t n)
     return ((uint64_t)i + len <= (uint64_t)n) ? len : 0u;
 }
 
-static int reg_identical(uint32_t dword_index)
+/* X3: `lvl` is the target gfx_level (XLAT12_LEVEL_GFX11 / _GFX12) wherever a register is looked up. */
+static int reg_identical(uint32_t lvl, uint32_t dword_index)
 {
     uint32_t g12 = 0, cls = 0;
     if (dword_index > 0x3FFFFFFFu) return 0;
-    return xlat12_lookup(dword_index << 2, &g12, &cls) && cls == XLAT12_CLS_IDENTICAL;
+    return xlat12_lookup_level(lvl, dword_index << 2, &g12, &cls) && cls == XLAT12_CLS_IDENTICAL;
 }
 
-/* 1 when a compute-typed SET_SH_REG / SET_SH_REG_INDEX covers only proven offsets. */
-static int cs_set_proven(const uint32_t *p, uint32_t len)
+/* 1 when a compute-typed SET_SH_REG / SET_SH_REG_INDEX covers only proven offsets. The offsets were proven by
+ * execution on gfx12 only; on gfx11 each must also be IDENTICAL in the gfx11 table (then verbatim is exactly
+ * what the translation would emit), else the packet goes through the translator. */
+static int cs_set_proven(uint32_t lvl, const uint32_t *p, uint32_t len)
 {
     const uint32_t h = p[0], op = PO(h);
     if (!(PF(h) & 2u) || (op != OP_SET_SH_REG && op != OP_SET_SH_REG_INDEX) || len < 3u) return 0;
     const uint32_t off = p[1] & 0xFFFFu;
     if (op == OP_SET_SH_REG_INDEX && (((p[1] >> 28) & 0xFu) != 3u || (p[1] & 0x0FFF0000u))) return 0;
     for (uint32_t k = 0; k < len - 2u; k++)
-        if (!cs_offset_proven(off + k)) return 0;
+        if (!cs_offset_proven(off + k) || (lvl != XLAT12_LEVEL_GFX12 && !reg_identical(lvl, 0x2c00u + off + k))) return 0;
     return 1;
 }
 
@@ -126,25 +130,25 @@ static int ctxctl_is_proven(const uint32_t *p, uint32_t len)
 }
 
 /* Register-operand check for WRITE_DATA / WAIT_REG_MEM / COPY_DATA: 1 = acceptable as is. */
-static int operand_ok(const uint32_t *p, uint32_t len)
+static int operand_ok(uint32_t lvl, const uint32_t *p, uint32_t len)
 {
     const uint32_t op = PO(p[0]);
     if (op == OP_WRITE_DATA) {
         if (len < 4u) return 0;
         if (((p[1] >> 8) & 0xFu) != 0u) return 1;               /* memory destination */
-        return reg_identical(p[2]);
+        return reg_identical(lvl, p[2]);
     }
     if (op == OP_WAIT_REG_MEM) {
         if (len < 7u) return 0;
         if (((p[1] >> 4) & 3u) == 1u) return 1;                 /* memory space */
-        if (!reg_identical(p[2])) return 0;
-        if (((p[1] >> 6) & 3u) == 1u && !reg_identical(p[3])) return 0;   /* wr_wait_wr_reg */
+        if (!reg_identical(lvl, p[2])) return 0;
+        if (((p[1] >> 6) & 3u) == 1u && !reg_identical(lvl, p[3])) return 0;   /* wr_wait_wr_reg */
         return 1;
     }
     if (op == OP_COPY_DATA) {
         if (len < 6u) return 0;
-        if ((p[1] & 0xFu) == 0u && !reg_identical(p[2])) return 0;
-        if (((p[1] >> 8) & 0xFu) == 0u && !reg_identical(p[4])) return 0;
+        if ((p[1] & 0xFu) == 0u && !reg_identical(lvl, p[2])) return 0;
+        if (((p[1] >> 8) & 0xFu) == 0u && !reg_identical(lvl, p[4])) return 0;
         return 1;
     }
     return 1;
@@ -162,7 +166,7 @@ uint32_t xlat12_ib_walk(const uint32_t *in, uint32_t n)
     return i;
 }
 
-static void count_set_regs(const uint32_t *p, uint32_t len, xlat12_ib_census *c)
+static void count_set_regs(uint32_t lvl, const uint32_t *p, uint32_t len, xlat12_ib_census *c)
 {
     const uint32_t op = PO(p[0]);
     uint32_t base = 0;
@@ -174,12 +178,12 @@ static void count_set_regs(const uint32_t *p, uint32_t len, xlat12_ib_census *c)
     case OP_SET_UCONFIG_REG_INDEX: base = 0xc000u; break;
     default: return;
     }
-    if (cs_set_proven(p, len)) { c->cs_proven_regs += len - 2u; c->regs += len - 2u; return; }
+    if (cs_set_proven(lvl, p, len)) { c->cs_proven_regs += len - 2u; c->regs += len - 2u; return; }
     const uint32_t off = p[1] & 0xFFFFu;
     for (uint32_t k = 0; k + 2u < len; k++) {
         const uint32_t addr = (base + off + k) << 2;
         uint32_t g12 = 0, cls = XLAT12_CLS_UNKNOWN;
-        if (!xlat12_lookup(addr, &g12, &cls)) cls = XLAT12_CLS_UNKNOWN;
+        if (!xlat12_lookup_level(lvl, addr, &g12, &cls)) cls = XLAT12_CLS_UNKNOWN;
         if (cls > XLAT12_CLS_MAX) cls = XLAT12_CLS_UNKNOWN;   /* 0.0.389: MAX is REUSED, which has its own bucket */
         c->reg_cls[cls]++;
         c->regs++;
@@ -188,6 +192,11 @@ static void count_set_regs(const uint32_t *p, uint32_t len, xlat12_ib_census *c)
 }
 
 void xlat12_ib_census_run(const uint32_t *in, uint32_t n, xlat12_ib_census *c)
+{
+    xlat12_ib_census_run_level(XLAT12_LEVEL_GFX12, in, n, c);
+}
+
+void xlat12_ib_census_run_level(uint32_t lvl, const uint32_t *in, uint32_t n, xlat12_ib_census *c)
 {
     if (!c) return;
     for (uint32_t k = 0; k < sizeof *c / sizeof(uint32_t); k++) ((uint32_t *)c)[k] = 0;
@@ -218,7 +227,7 @@ void xlat12_ib_census_run(const uint32_t *in, uint32_t n, xlat12_ib_census *c)
                 else if (op == OP_SET_UCONFIG_REG) c->set_ucfg++;
                 else if (op == OP_SET_SH_REG) { if (PF(h) & 2u) c->set_sh_cs++; else c->set_sh_gfx++; }
                 else c->set_index++;
-                count_set_regs(&in[i], l, c);
+                count_set_regs(lvl, &in[i], l, c);
             } else if (op == OP_COND_EXEC) {
                 c->cond_exec++;
             } else if (op == OP_INDIRECT_BUFFER) {
@@ -227,7 +236,7 @@ void xlat12_ib_census_run(const uint32_t *in, uint32_t n, xlat12_ib_census *c)
                 c->dma_data++;
             } else if (op == OP_WRITE_DATA || op == OP_WAIT_REG_MEM || op == OP_COPY_DATA) {
                 if (op == OP_COPY_DATA) c->copy_data++;
-                if (!operand_ok(&in[i], l)) c->reg_operand_bad++;
+                if (!operand_ok(lvl, &in[i], l)) c->reg_operand_bad++;
             } else if (is_passthrough(op)) {
                 if (is_draw(op)) c->draws++;
                 if (op == OP_DISPATCH_DIRECT) c->dispatches++;
@@ -293,7 +302,7 @@ static void acc_stats(xlat12_stats *t, const xlat12_stats *s)
     t->regs_dropped_legacy_vs += s->regs_dropped_legacy_vs;
 }
 
-static uint32_t tr_region(xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint32_t *out, uint32_t cap,
+static uint32_t tr_region(uint32_t lvl, xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint32_t *out, uint32_t cap,
                           uint32_t *out_len, xlat12_stats *st, uint32_t *err_op, int allowCond)
 {
     uint32_t i = 0, o = 0;
@@ -305,8 +314,8 @@ static uint32_t tr_region(xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint3
         st->err_in_dword = i;
         if (h == XLAT12_IB_NOP || PT(h) == 2u || op == OP_NOP || is_passthrough(op) ||
             (op == OP_CONTEXT_CONTROL && ctxctl_is_proven(&in[i], l)) ||
-            ((op == OP_WRITE_DATA || op == OP_WAIT_REG_MEM || op == OP_COPY_DATA) && operand_ok(&in[i], l)) ||
-            (is_set(op) && cs_set_proven(&in[i], l))) {
+            ((op == OP_WRITE_DATA || op == OP_WAIT_REG_MEM || op == OP_COPY_DATA) && operand_ok(lvl, &in[i], l)) ||
+            (is_set(op) && cs_set_proven(lvl, &in[i], l))) {
             if (cap - o < l) { *err_op = op; return XLAT12_ERR_CAPACITY; }
             for (uint32_t k = 0; k < l; k++) out[o + k] = in[i + k];
             o += l; i += l; continue;
@@ -317,7 +326,7 @@ static uint32_t tr_region(xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint3
         }
         if (is_set(op)) {
             xlat12_stats s1; uint32_t m = 0;
-            const xlat12_status s = xlat12_translate(ctx, &in[i], l, &out[o], cap - o, &m, &s1);
+            const xlat12_status s = xlat12_translate_level(lvl, ctx, &in[i], l, &out[o], cap - o, &m, &s1);
             acc_stats(st, &s1);
             if (s != XLAT12_OK) {
                 *err_op = op; st->err_reg_addr = s1.err_reg_addr; st->err_name = s1.err_name; return s;
@@ -330,7 +339,7 @@ static uint32_t tr_region(xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint3
             if ((uint64_t)i + l + exec > (uint64_t)n || cap - o < 5u) { *err_op = op; return
                 (cap - o < 5u) ? XLAT12_ERR_CAPACITY : XLAT12_IB_ERR_COND_EXEC; }
             uint32_t m = 0;
-            const uint32_t s = tr_region(ctx, &in[i + l], exec, &out[o + 5u], cap - o - 5u, &m, st, err_op, 0);
+            const uint32_t s = tr_region(lvl, ctx, &in[i + l], exec, &out[o + 5u], cap - o - 5u, &m, st, err_op, 0);
             if (s == XLAT12_ERR_TRUNCATED || s == XLAT12_ERR_BAD_PACKET) { *err_op = op; return XLAT12_IB_ERR_COND_EXEC; }
             if (s != 0u) return s;
             if (m > 0x3FFFu) { *err_op = op; return XLAT12_IB_ERR_COND_EXEC; }
@@ -348,6 +357,12 @@ static uint32_t tr_region(xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint3
 uint32_t xlat12_ib_translate(xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint32_t *out,
                              uint32_t cap, uint32_t *out_len, xlat12_stats *stats, uint32_t *err_op)
 {
+    return xlat12_ib_translate_level(XLAT12_LEVEL_GFX12, ctx, in, n, out, cap, out_len, stats, err_op);
+}
+
+uint32_t xlat12_ib_translate_level(uint32_t lvl, xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint32_t *out,
+                                   uint32_t cap, uint32_t *out_len, xlat12_stats *stats, uint32_t *err_op)
+{
     xlat12_stats local;
     uint32_t eop = 0xFFFFFFFFu, len = 0;
     xlat12_stats *st = stats ? stats : &local;
@@ -356,7 +371,8 @@ uint32_t xlat12_ib_translate(xlat12_ctx *ctx, const uint32_t *in, uint32_t n, ui
     if (out_len) *out_len = 0;
     if (err_op) *err_op = 0xFFFFFFFFu;
     if ((!in && n) || (!out && cap)) return XLAT12_ERR_ARG;
-    const uint32_t s = tr_region(ctx, in, n, out, cap, &len, st, &eop, 1);
+    if (lvl != XLAT12_LEVEL_GFX11 && lvl != XLAT12_LEVEL_GFX12) return XLAT12_ERR_ARG;
+    const uint32_t s = tr_region(lvl, ctx, in, n, out, cap, &len, st, &eop, 1);
     if (err_op) *err_op = eop;
     if (s != 0u) return s;
     st->dwords_out = len;
@@ -391,34 +407,46 @@ const char *xlat12_ib_status_name(uint32_t s)
 
 uint32_t xlat12_ib_selftest(void)
 {
-    uint32_t bits = 0, aId = 0, aMv = 0, aRp = 0, gId = 0, gMv = 0, gRp = 0;
-    for (uint32_t i = 0; i < xlat12_table_len(); i++) {
+    return xlat12_ib_selftest_level(XLAT12_LEVEL_GFX12);
+}
+
+uint32_t xlat12_ib_selftest_level(uint32_t lvl)
+{
+    uint32_t bits = 0, aId = 0, aMv = 0, aRp = 0, gId = 0, gMv = 0, gRp = 0, aMvSh = 0, gMvSh = 0;
+    for (uint32_t i = 0; i < xlat12_table_len_level(lvl); i++) {
         uint32_t g10 = 0, g12 = 0, cls = 0; const char *nm = 0;
-        if (!xlat12_table_entry(i, &g10, &g12, &cls, &nm) || g10 < 0x28000u || g10 >= 0x30000u) continue;
+        if (!xlat12_table_entry_level(lvl, i, &g10, &g12, &cls, &nm)) continue;
+        /* X3: gfx11 moves no context register, so its moved control is the first SH one that stays in SH */
+        if (!aMvSh && cls == XLAT12_CLS_MOVED && g10 >= 0xB000u && g10 < 0xC000u && g12 >= 0xB000u && g12 < 0xC000u) {
+            aMvSh = g10; gMvSh = g12;
+        }
+        if (g10 < 0x28000u || g10 >= 0x30000u) continue;
         if (!aId && cls == XLAT12_CLS_IDENTICAL)    { aId = g10; gId = g12; }
         if (!aMv && cls == XLAT12_CLS_MOVED)        { aMv = g10; gMv = g12; }
         if (!aRp && cls == XLAT12_CLS_FIELD_REPACK) { aRp = g10; gRp = g12; }
     }
+    const uint32_t mvBase = aMv ? 0x28000u : 0xB000u;
+    if (!aMv) { aMv = aMvSh; gMv = gMvSh; }
     if (aId && aMv && aRp) {
         const uint32_t hdr = 0xC0016900u;          /* PKT3(SET_CONTEXT_REG, count 1) = offset + one value */
         const uint32_t valRp = 0x400c0041u;
         uint32_t in[9], o[64], n = 0;
         in[0] = hdr; in[1] = (aId - 0x28000u) >> 2; in[2] = 0x11111111u;
-        in[3] = hdr; in[4] = (aMv - 0x28000u) >> 2; in[5] = 0x22222222u;
+        in[3] = mvBase == 0x28000u ? hdr : 0xC0017600u; in[4] = (aMv - mvBase) >> 2; in[5] = 0x22222222u;
         in[6] = hdr; in[7] = (aRp - 0x28000u) >> 2; in[8] = valRp;
         xlat12_ctx ctx; xlat12_stats st;
         ctx.vs_mode = XLAT12_VS_UNKNOWN;
-        if (xlat12_translate(&ctx, in, 9, o, 64, &n, &st) == XLAT12_OK) {
+        if (xlat12_translate_level(lvl, &ctx, in, 9, o, 64, &n, &st) == XLAT12_OK) {
             for (uint32_t i = 0; i < n; ) {
                 const uint32_t h = o[i];
                 if (PT(h) != 3u) break;
                 const uint32_t cnt = PC(h);
-                if (PO(h) == OP_SET_CONTEXT_REG && i + 1u + cnt < n) {
+                if ((PO(h) == OP_SET_CONTEXT_REG || PO(h) == OP_SET_SH_REG) && i + 1u + cnt < n) {
                     for (uint32_t k = 0; k < cnt; k++) {
-                        const uint32_t addr = 0x28000u + ((o[i + 1] + k) << 2), v = o[i + 2 + k];
+                        const uint32_t addr = (PO(h) == OP_SET_SH_REG ? 0xB000u : 0x28000u) + ((o[i + 1] + k) << 2), v = o[i + 2 + k];
                         if (addr == gId && v == 0x11111111u) bits |= 1u;
                         if (addr == gMv && v == 0x22222222u) bits |= 2u;
-                        if (addr == gRp && v == xlat12_repack_value(aRp, valRp)) bits |= 4u;
+                        if (addr == gRp && v == xlat12_repack_value_level(lvl, aRp, valRp)) bits |= 4u;
                     }
                 }
                 i += cnt + 2u;
@@ -426,10 +454,11 @@ uint32_t xlat12_ib_selftest(void)
         }
         {
             const uint32_t clr[2] = { 0xC0001200u, 0u };
-            if (xlat12_translate(&ctx, clr, 2, o, 64, &n, &st) == XLAT12_ERR_MEMLOADED) bits |= 8u;
+            if (xlat12_translate_level(lvl, &ctx, clr, 2, o, 64, &n, &st) == XLAT12_ERR_MEMLOADED) bits |= 8u;
         }
     }
 #ifdef XLAT12_APPLE_FIXTURES   /* control IB captured from Apple: absent from the public tree, bits 16/32/64 then stay 0 and the self-test FAILS (callers refuse) */
+    if (lvl == XLAT12_LEVEL_GFX12) {   /* X3: the r30 control's expected counts are gfx12's; gfx11 has bits 0-3 only */
     {
         xlat12_ib_census c;
         xlat12_ib_census_run(kR30BlitIb, 128, &c);
@@ -448,6 +477,7 @@ uint32_t xlat12_ib_selftest(void)
         if (xlat12_ib_translate(&cx, kR30BlitIb, 128, t2, 256, &len, &xs, &eop) == 0u && len == 125u &&
             xlat12_ib_pad(t2, len, 128) == 0u && xlat12_ib_walk(t2, 128) == 128u) bits |= 64u;
     }
+    }
 #endif
     return bits;
 }
@@ -458,6 +488,13 @@ uint32_t xlat12_ib_selftest(void)
  * ================================================================================================================= */
 
 enum { OP_DRAW_POLICY_NONE = 0 };
+
+/* stage 3 step 7 X3: XLAT12_EXTRA_GFX11 (xlat12_ib.h) makes this translation emit gfx11 instead of gfx12: the
+ * gfx11 table, the gfx11 NGG / ring destinations (xlat12_gfx11.h), the gfx11 SW_MODE table and no scissor adjust. */
+static uint32_t d_lvl(const xlat12_draw_extra *ex)
+{
+    return (ex && (ex->flags & XLAT12_EXTRA_GFX11)) ? XLAT12_LEVEL_GFX11 : XLAT12_LEVEL_GFX12;
+}
 
 /* SET opcode that addresses a gfx12 MMIO byte address, and the packet's dword base. 0 = not a SET-able block. */
 static uint32_t d_set_op(uint32_t a)
@@ -587,12 +624,15 @@ static int d_drop_reused_addr(uint32_t g10)
  * already correct); `inLo` is the gfx10 SW_MODE field's own bit position (5 bits wide on every register that has
  * one); `outLo`/`outW` are the gfx12 field's. Returns 0 (the caller refuses XLAT12_IB_ERR_SWMODE) when the gfx10
  * mode has no gfx12 counterpart - the SAME refusal-direction choice xlat12_desc.h already makes. */
-static int d_swmode_repack(uint32_t v10, uint32_t naive12, uint32_t inLo, uint32_t outLo, uint32_t outW, uint32_t *out12)
+static int d_swmode_repack(uint32_t lvl, uint32_t v10, uint32_t naive12, uint32_t inLo, uint32_t outLo, uint32_t outW,
+                           uint32_t *out12)
 {
     const uint32_t g10Mode = (v10 >> inLo) & 0x1Fu;
     uint32_t g12Mode = 0xFFFFFFFFu;
-    for (uint32_t i = 0; i < XLAT12_SWMODE_MAP_COUNT; i++)
-        if (kXlat12SwModeG10ToG12[i][0] == g10Mode) { g12Mode = kXlat12SwModeG10ToG12[i][1]; break; }
+    if (lvl == XLAT12_LEVEL_GFX11) g12Mode = xlat12_swmode_g10_to_g11(g10Mode);   /* X3: xlat12_gfx11.h */
+    else
+        for (uint32_t i = 0; i < XLAT12_SWMODE_MAP_COUNT; i++)
+            if (kXlat12SwModeG10ToG12[i][0] == g10Mode) { g12Mode = kXlat12SwModeG10ToG12[i][1]; break; }
     if (g12Mode == 0xFFFFFFFFu) return 0;
     const uint32_t outMask = ((1u << outW) - 1u) << outLo;
     *out12 = (naive12 & ~outMask) | ((g12Mode << outLo) & outMask);
@@ -621,6 +661,10 @@ static uint32_t d_reg(const xlat12_draw_profile *pf, const xlat12_draw_extra *ex
 {
     *emit = 0; *stages = 0; *g12 = 0; *v12 = val;
     ds->regs_in++;
+    /* X3: on gfx11 every destination below is the gfx11 one (xlat12_gfx11.h, with the RADV GFX11 citations); the
+     * values are the profile's, so a gfx11 caller hands in a gfx11 profile. */
+    const uint32_t lvl = d_lvl(ex);
+    const int g11 = lvl == XLAT12_LEVEL_GFX11;
     /* legacy-VS slot -> gfx12 NGG slot (radeonsi gfx12: si_state_shaders.cpp:1142 PGM_LO_ES 0xb224, :1147/:1153
      * RSRC1/2_GS; si_descriptors.c:2174 USER_DATA_GS_0 0xb230) */
     switch (g10) {
@@ -629,12 +673,12 @@ static uint32_t d_reg(const xlat12_draw_profile *pf, const xlat12_draw_extra *ex
     /* 0.0.311: the PER-PROGRAM address the resolver gave for the vertex stage bound right now wins over the
      * segment-wide one, because one segment can bind several vertex programs and only some of them are relocated. */
     case 0xb120u: { const uint64_t r = pf->vs_pgm_va ? pf->vs_pgm_va : (ex ? ex->vs_pgm_va : 0ull);
-        *g12 = 0xb224u;                                                                     /* PGM_LO_VS -> PGM_LO_ES */
+        *g12 = g11 ? XLAT12_G11_SPI_SHADER_PGM_LO_ES : 0xb224u;                               /* PGM_LO_VS -> PGM_LO_ES */
         if (r) { *v12 = (uint32_t)(r >> 8); ds->vs_pgm_lo = *v12; ds->overridden++; }
         else { ds->vs_pgm_lo = val; ds->rehomed++; }
         *emit = 1; return 0; }
     case 0xb124u: { const uint64_t r = pf->vs_pgm_va ? pf->vs_pgm_va : (ex ? ex->vs_pgm_va : 0ull);
-        *g12 = 0xb218u;                                                                     /* PGM_HI_VS -> PGM_HI_ES */
+        *g12 = g11 ? XLAT12_G11_SPI_SHADER_PGM_HI_ES : 0xb218u;                               /* PGM_HI_VS -> PGM_HI_ES */
         if (r) { *v12 = (uint32_t)(r >> 40); ds->vs_pgm_hi = *v12; ds->overridden++; }
         else { ds->vs_pgm_hi = val; ds->rehomed++; }
         *emit = 1; return 0; }
@@ -656,8 +700,8 @@ static uint32_t d_reg(const xlat12_draw_profile *pf, const xlat12_draw_extra *ex
         const uint32_t usg = (val >> 1) & 0x1Fu, msb = val & (1u << 27);
         *g12 = 0xb02cu; *v12 = pf->ps_rsrc2 | (usg << 1) | msb;
         ds->ps_user_sgpr = usg | (msb ? 32u : 0u); ds->overridden++; *emit = 1; return 0; }
-    case 0x286ccu: *g12 = 0x2865cu; *v12 = pf->ps_input_ena;  ds->overridden++; *emit = 1; return 0;
-    case 0x286d0u: *g12 = 0x28660u; *v12 = pf->ps_input_addr; ds->overridden++; *emit = 1; return 0;
+    case 0x286ccu: *g12 = g11 ? XLAT12_G11_SPI_PS_INPUT_ENA : 0x2865cu; *v12 = pf->ps_input_ena;  ds->overridden++; *emit = 1; return 0;
+    case 0x286d0u: *g12 = g11 ? XLAT12_G11_SPI_PS_INPUT_ADDR : 0x28660u; *v12 = pf->ps_input_addr; ds->overridden++; *emit = 1; return 0;
     case 0x3096cu: *g12 = 0x3096cu; *v12 = pf->ge_cntl;       ds->overridden++; *emit = 1; return 0;
     /* 0.0.214: Apple's gfx10 binning and NGG subgroup words replaced by radeonsi's gfx12 values for a VS draw
      * (si_state_binning.c:396-406 gfx12 disable path; si_state_shaders.cpp:1189 PRIM_AMP_FACTOR(1)) */
@@ -671,12 +715,13 @@ static uint32_t d_reg(const xlat12_draw_profile *pf, const xlat12_draw_extra *ex
     /* 0.0.216: SPI_SHADER_IDX_FORMAT (gfx10 0x28708 -> gfx12 0x28648). Apple's legacy VS writes 0 = NONE (r48
      * [2a5], [333]); every NGG draw needs IDX0_EXPORT_FORMAT 1COMP for the SQ_EXP_PRIM (20) export (radv_shader.c:1917,
      * radeonsi gfx12 preamble si_state.c:5079). */
-    case 0x28708u: *g12 = 0x28648u;   /* 0.0.224: XLAT12_EXTRA_APPLE_IDXFMT keeps Apple's value (ablation) */
+    case 0x28708u: *g12 = g11 ? XLAT12_G11_SPI_SHADER_IDX_FORMAT : 0x28648u;   /* 0.0.224: XLAT12_EXTRA_APPLE_IDXFMT keeps Apple's value (ablation) */
         *v12 = (ex && (ex->flags & XLAT12_EXTRA_APPLE_IDXFMT)) ? val : pf->spi_shader_idx_format; ds->overridden++; *emit = 1; return 0;
-    case 0x286c4u: ds->dropped_absent++; return 0;   /* SPI_VS_OUT_CONFIG: gfx12 carries it in SPI_SHADER_GS_OUT_CONFIG_PS */
+    case 0x286c4u: ds->dropped_absent++; return 0;   /* SPI_VS_OUT_CONFIG: gfx12 carries it in SPI_SHADER_GS_OUT_CONFIG_PS;
+                                                      * X3: on gfx11 d_synth writes the profile's value here instead */
     case 0x28b54u:                                   /* VGT_SHADER_STAGES_EN: only a plain VS pipeline is translated */
         if ((val & 0x3FFFu) != 0u) { ds->err_reg = g10; return XLAT12_ERR_LEGACY_VS; }
-        *g12 = 0x28a98u; *v12 = pf->vs_stages_en; ds->overridden++; *emit = 1; *stages = 1; return 0;
+        *g12 = g11 ? XLAT12_G11_VGT_SHADER_STAGES_EN : 0x28a98u; *v12 = pf->vs_stages_en; ds->overridden++; *emit = 1; *stages = 1; return 0;
     /* build 0.0.451 item 8: CB_COLORn_ATTRIB3's COLOR_SW_MODE [18:14] (5 bits) -> gfx12 [17:15] (3 bits) -
      * confirmed via decide43's capture (630 draws into the Family A blur surfaces 0x400034000/0x4000ac000, mode
      * 22 ADDR_SW_4KB_D_X, landed on gfx12 raw value 6 instead of 2 ADDR3_4KB_2D). xlat12_tables.h's own
@@ -688,10 +733,11 @@ static uint32_t d_reg(const xlat12_draw_profile *pf, const xlat12_draw_extra *ex
         static const uint32_t kAttrib3G10[8] = { 0x28ee0u, 0x28ee4u, 0x28ee8u, 0x28eecu, 0x28ef0u, 0x28ef4u, 0x28ef8u, 0x28efcu };
         static const uint32_t kAttrib3G12[8] = { 0x28c7cu, 0x28ca0u, 0x28cc4u, 0x28ce8u, 0x28d0cu, 0x28d30u, 0x28d54u, 0x28d78u };
         uint32_t idx = 0; for (uint32_t z = 1; z < 8u; z++) if (kAttrib3G10[z] == g10) idx = z;
-        const uint32_t naive = xlat12_repack_value(g10, val);
+        const uint32_t naive = xlat12_repack_value_level(lvl, g10, val);
         uint32_t fixed = 0;
-        if (!d_swmode_repack(val, naive, 14u, 15u, 3u, &fixed)) { ds->err_reg = g10; ds->err_op = (val >> 14) & 0x1Fu; return XLAT12_IB_ERR_SWMODE; }
-        *g12 = kAttrib3G12[idx]; *v12 = fixed; ds->overridden++; *emit = 1; return 0; }
+        /* X3: gfx11 keeps COLOR_SW_MODE at [18:14] (gfx11.json) and CB_COLORn_ATTRIB3 at the gfx10.3 address */
+        if (!d_swmode_repack(lvl, val, naive, 14u, g11 ? 14u : 15u, g11 ? 5u : 3u, &fixed)) { ds->err_reg = g10; ds->err_op = (val >> 14) & 0x1Fu; return XLAT12_IB_ERR_SWMODE; }
+        *g12 = g11 ? XLAT12_G11_CB_COLOR0_ATTRIB3 + 4u * idx : kAttrib3G12[idx]; *v12 = fixed; ds->overridden++; *emit = 1; return 0; }
     /* DB_Z_INFO / DB_STENCIL_INFO's SW_MODE [8:4] (5 bits) -> gfx12 [8:4] (5 bits, width UNCHANGED - the SAME
      * naive-copy bug as CB_COLORn_ATTRIB3, without a truncation artifact: gfx10's raw enum number was passing
      * straight through unremapped, e.g. mode 22 stayed 22 instead of becoming 2). SUSPECTED, not independently
@@ -700,10 +746,12 @@ static uint32_t d_reg(const xlat12_draw_profile *pf, const xlat12_draw_extra *ex
      * field either, and repack_DB_Z_INFO/repack_DB_STENCIL_INFO (xlat12_repack.h) copy it exactly like every other
      * plain bitfield. */
     case 0x28040u: case 0x28044u: {
-        const uint32_t naive = xlat12_repack_value(g10, val);
+        const uint32_t naive = xlat12_repack_value_level(lvl, g10, val);
         uint32_t fixed = 0;
-        if (!d_swmode_repack(val, naive, 4u, 4u, 5u, &fixed)) { ds->err_reg = g10; ds->err_op = (val >> 4) & 0x1Fu; return XLAT12_IB_ERR_SWMODE; }
-        *g12 = (g10 == 0x28040u) ? 0x28018u : 0x2801cu; *v12 = fixed; ds->overridden++; *emit = 1; return 0; }
+        if (!d_swmode_repack(lvl, val, naive, 4u, 4u, 5u, &fixed)) { ds->err_reg = g10; ds->err_op = (val >> 4) & 0x1Fu; return XLAT12_IB_ERR_SWMODE; }
+        *g12 = g11 ? ((g10 == 0x28040u) ? XLAT12_G11_DB_Z_INFO : XLAT12_G11_DB_STENCIL_INFO)
+                   : ((g10 == 0x28040u) ? 0x28018u : 0x2801cu);
+        *v12 = fixed; ds->overridden++; *emit = 1; return 0; }
     default: break;
     }
     if (d_drop_reused_addr(g10)) { ds->dropped_reused++; return 0; }   /* 0.0.306: see d_drop_reused_addr */
@@ -735,19 +783,20 @@ static uint32_t d_reg(const xlat12_draw_profile *pf, const xlat12_draw_extra *ex
         ds->dropped_unknown_zero++; return 0;
     }
     uint32_t t12 = 0, cls = XLAT12_CLS_UNKNOWN;
-    if (!xlat12_lookup(g10, &t12, &cls)) { ds->err_reg = g10; return XLAT12_ERR_UNKNOWN_REG; }
+    if (!xlat12_lookup_level(lvl, g10, &t12, &cls)) { ds->err_reg = g10; return XLAT12_ERR_UNKNOWN_REG; }
     switch (cls) {
     /* build 0.0.499: both classes a scissor BR row has (MOVED screen, FIELD_REPACK window/generic/viewport) pass
-     * through d_scissor, which leaves every non-scissor register untouched. */
+     * through d_scissor, which leaves every non-scissor register untouched. X3: gfx11 has no scissor rule
+     * (xlat12_scissor.h, "gfx11"). */
     case XLAT12_CLS_IDENTICAL: case XLAT12_CLS_MOVED:
-        *g12 = t12; *emit = 1; return d_scissor(ds, g10, v12, emit);
+        *g12 = t12; *emit = 1; return g11 ? 0u : d_scissor(ds, g10, v12, emit);
     case XLAT12_CLS_FIELD_REPACK:
-        *g12 = t12; *v12 = xlat12_repack_value(g10, val); *emit = 1; return d_scissor(ds, g10, v12, emit);
+        *g12 = t12; *v12 = xlat12_repack_value_level(lvl, g10, val); *emit = 1; return g11 ? 0u : d_scissor(ds, g10, v12, emit);
     /* 0.0.389 (notes 880 H6, 881): a gfx10.3 address gfx12 REUSES for a different register - xlat12_reused.h.
      * Dropping it (the ABSENT behaviour through 0.0.388) left that gfx12 register holding whatever its context
      * slot last held, and gfx12 has no CLEAR_STATE to have reset it. */
-    case XLAT12_CLS_REUSED:
-        *g12 = t12; *v12 = xlat12_repack_value(g10, val); *emit = 1;
+    case XLAT12_CLS_REUSED:   /* gfx12 only: the gfx11 table has no REUSED row */
+        *g12 = t12; *v12 = xlat12_repack_value_level(lvl, g10, val); *emit = 1;
         ds->reused_regs++;
         if (val != 0u) ds->reused_nonzero++;
         return 0;
@@ -762,21 +811,25 @@ static uint32_t d_reg(const xlat12_draw_profile *pf, const xlat12_draw_extra *ex
 static uint32_t d_synth(const xlat12_draw_profile *pf, const xlat12_draw_extra *ex, DEmit *e, xlat12_draw_stats *ds)
 {
     uint32_t s;
+    /* X3: gfx11 has the same NGG block at its own addresses (xlat12_gfx11.h): RSRC4_PS 0xb004, RSRC4_GS 0xb204,
+     * VGT_GS_INSTANCE_CNT 0x28b90, SPI_SHADER_IDX_FORMAT 0x28708; gfx12's SPI_SHADER_GS_OUT_CONFIG_PS is
+     * SPI_VS_OUT_CONFIG on gfx11 (radv_cmd_buffer.c:3466 against :4367), so pf->gs_out_config_ps goes there. */
+    const int g11 = d_lvl(ex) == XLAT12_LEVEL_GFX11;
     d_close(e);
     if ((s = d_add(e, 0x287fcu, 0u, pf->ge_max_output)) != 0u) return s;      /* GE_MAX_OUTPUT_PER_SUBGROUP */
     d_close(e);
-    if ((s = d_add(e, 0xb01cu, 0u, pf->rsrc4_ps)) != 0u) return s;           /* SPI_SHADER_PGM_RSRC4_PS (gfx12) */
+    if ((s = d_add(e, g11 ? XLAT12_G11_SPI_SHADER_PGM_RSRC4_PS : 0xb01cu, 0u, pf->rsrc4_ps)) != 0u) return s;   /* SPI_SHADER_PGM_RSRC4_PS */
     d_close(e);
-    if ((s = d_add(e, 0xb0c4u, 0u, pf->gs_out_config_ps)) != 0u) return s;   /* SPI_SHADER_GS_OUT_CONFIG_PS */
+    if ((s = d_add(e, g11 ? XLAT12_G11_SPI_VS_OUT_CONFIG : 0xb0c4u, 0u, pf->gs_out_config_ps)) != 0u) return s;  /* SPI_SHADER_GS_OUT_CONFIG_PS */
     d_close(e);
-    if ((s = d_add(e, 0xb220u, 0u, pf->rsrc4_gs)) != 0u) return s;           /* SPI_SHADER_PGM_RSRC4_GS (gfx12) */
+    if ((s = d_add(e, g11 ? XLAT12_G11_SPI_SHADER_PGM_RSRC4_GS : 0xb220u, 0u, pf->rsrc4_gs)) != 0u) return s;   /* SPI_SHADER_PGM_RSRC4_GS */
     d_close(e);
     if ((s = d_add(e, 0x3096cu, 0u, pf->ge_cntl)) != 0u) return s;           /* GE_CNTL */
     d_close(e);
     /* 0.0.214: radeonsi gfx12_emit_shader_ngg also writes these for a VS (si_state_shaders.cpp:874-877,
      * :1188 vgt_gs_max_vert_out 1, :1172 VGT_GS_INSTANCE_CNT with gs_num_invocations 0 for a non-GS pipeline) */
     if ((s = d_add(e, 0x28b38u, 0u, pf->gs_max_vert_out)) != 0u) return s;   /* VGT_GS_MAX_VERT_OUT */
-    if ((s = d_add(e, 0x28b3cu, 0u, pf->gs_instance_cnt)) != 0u) return s;   /* VGT_GS_INSTANCE_CNT (contiguous) */
+    if ((s = d_add(e, g11 ? XLAT12_G11_VGT_GS_INSTANCE_CNT : 0x28b3cu, 0u, pf->gs_instance_cnt)) != 0u) return s;   /* VGT_GS_INSTANCE_CNT (contiguous on gfx12 only) */
     d_close(e);
     if ((s = d_add(e, 0x28b4cu, 0u, pf->ngg_subgrp_cntl)) != 0u) return s;   /* GE_NGG_SUBGRP_CNTL */
     d_close(e);
@@ -786,7 +839,7 @@ static uint32_t d_synth(const xlat12_draw_profile *pf, const xlat12_draw_extra *
      * override writes (pf->spi_shader_idx_format, pf->gs_out_prim_type), emitted after every VGT_SHADER_STAGES_EN like the
      * rest of this block. xlat12_ib.h has the values' provenance. */
     if (ex && (ex->flags & XLAT12_EXTRA_SYNTH_IDXPRIM)) {
-        if ((s = d_add(e, 0x28648u, 0u, pf->spi_shader_idx_format)) != 0u) return s;   /* SPI_SHADER_IDX_FORMAT (gfx12) */
+        if ((s = d_add(e, g11 ? XLAT12_G11_SPI_SHADER_IDX_FORMAT : 0x28648u, 0u, pf->spi_shader_idx_format)) != 0u) return s;   /* SPI_SHADER_IDX_FORMAT */
         d_close(e);
         if ((s = d_add(e, 0x30998u, 0u, pf->gs_out_prim_type)) != 0u) return s;        /* VGT_GS_OUT_PRIM_TYPE (gfx12 uconfig) */
         d_close(e);
@@ -805,14 +858,21 @@ static uint32_t d_rings(const xlat12_draw_extra *ex, DEmit *e, xlat12_draw_stats
 {
     uint32_t s;
     const uint32_t n0 = e->n;
+    /* X3: gfx11 (xlat12_gfx11.h): the attribute ring only (ac_cmdbuf_cp.c:303-309; GE_POS/PRIM are GFX12-only, :311),
+     * its SIZE with BIG_PAGE, the ring-offsets GS pair at PGM_LO/HI_GS 0xb220/0xb224 and the HS pair at
+     * 0xb420/0xb424 (radv_queue.c:571-577), and no DB_SPI_VRS_CENTER_LOCATION (gfx11.json has none). */
+    const int g11 = d_lvl(ex) == XLAT12_LEVEL_GFX11;
     d_close(e);
     if (ex->ring_va) {
         const uint64_t a = ex->ring_va;
         if ((s = d_add(e, 0x31110u, 0u, 0x12355123u)) != 0u) return s;                          /* SPI_GS_THROTTLE_CNTL1 */
         if ((s = d_add(e, 0x31114u, 0u, 0x0001544Du)) != 0u) return s;                          /* SPI_GS_THROTTLE_CNTL2 */
         if ((s = d_add(e, 0x31118u, 0u, (uint32_t)(a >> 16))) != 0u) return s;                  /* SPI_ATTRIBUTE_RING_BASE */
-        if ((s = d_add(e, 0x3111cu, 0u, 0x00020015u)) != 0u) return s;   /* SPI_ATTRIBUTE_RING_SIZE MEM_SIZE 0x15 | L1_POLICY */
+        if ((s = d_add(e, 0x3111cu, 0u, g11 ? XLAT12_G11V_ATTRIBUTE_RING_SIZE : 0x00020015u)) != 0u) return s;   /* SPI_ATTRIBUTE_RING_SIZE MEM_SIZE 0x15 | L1_POLICY (| BIG_PAGE on gfx11) */
         d_close(e);
+    }
+    if (ex->ring_va && !g11) {
+        const uint64_t a = ex->ring_va;
         if ((s = d_add(e, 0x309a0u, 0u, (uint32_t)((a + XLAT12_GE_RING_POS_OFF) >> 16))) != 0u) return s;  /* GE_POS_RING_BASE */
         if ((s = d_add(e, 0x309a4u, 0u, 0x00002000u)) != 0u) return s;                          /* GE_POS_RING_SIZE */
         if ((s = d_add(e, 0x309a8u, 0u, (uint32_t)((a + XLAT12_GE_RING_PRIM_OFF) >> 16))) != 0u) return s; /* GE_PRIM_RING_BASE */
@@ -847,8 +907,8 @@ static uint32_t d_rings(const xlat12_draw_extra *ex, DEmit *e, xlat12_draw_stats
          * 0xE000 stride; the fault MOVES to 0x23f0a800a0 +/- -> the pointers are fixed and the next defect is
          * downstream; the fault becomes CPF/CPC -> the IB is malformed and's execution claim is wrong. */
         const uint32_t g0 = e->n;
-        if ((s = d_add(e, 0xb210u, 0u, (uint32_t)ex->gs_sgpr0_va)) != 0u) return s;            /* SPI_SHADER_PGM_LO_GS (dw 0x2c84) */
-        if ((s = d_add(e, 0xb214u, 0u, (uint32_t)(ex->gs_sgpr0_va >> 32))) != 0u) return s;    /* SPI_SHADER_PGM_HI_GS (dw 0x2c85) */
+        if ((s = d_add(e, g11 ? XLAT12_G11_SPI_SHADER_PGM_LO_GS : 0xb210u, 0u, (uint32_t)ex->gs_sgpr0_va)) != 0u) return s;          /* SPI_SHADER_PGM_LO_GS (gfx12 dw 0x2c84) */
+        if ((s = d_add(e, g11 ? XLAT12_G11_SPI_SHADER_PGM_HI_GS : 0xb214u, 0u, (uint32_t)(ex->gs_sgpr0_va >> 32))) != 0u) return s;  /* SPI_SHADER_PGM_HI_GS (gfx12 dw 0x2c85) */
         d_close(e);
         ds->gs_sgpr0_dwords = e->n - g0;
         ds->ring_ptr_stages |= 4u;
@@ -920,7 +980,7 @@ static uint32_t d_rings(const xlat12_draw_extra *ex, DEmit *e, xlat12_draw_stats
      * `vrs_written` is 1 and nothing is added here. Region 0 only (this function's one call site), so either way it
      * precedes the translation's first draw; no stream write can reach 0x28068 afterwards (no table row lands there), and
      * inside a unit d_unit_blockreg refuses any that would. */
-    if (ex->ring_va && !vrs_written) {
+    if (ex->ring_va && !vrs_written && !g11) {
         d_close(e);
         if ((s = d_add(e, XLAT12_G12_DB_SPI_VRS_CENTER_LOCATION, 0u, 0u)) != 0u) return s;   /* DB_SPI_VRS_CENTER_LOCATION = 0 */
         d_close(e);
@@ -1026,6 +1086,31 @@ static int d_policy_g12(uint32_t a)
            a == 0x30980u || a == 0x31128u || a == 0x3112cu;                                         /* 0.0.218 preamble delta */
 }
 
+/* X3: the gfx11 destinations the draw policy itself writes under XLAT12_EXTRA_GFX11 - the same roles as
+ * d_policy_g12, at the gfx11 addresses of xlat12_gfx11.h. Everything else must be a gfx11 table destination. */
+static int d_policy_g11(uint32_t a)
+{
+    return a == XLAT12_G11_SPI_SHADER_PGM_LO_GS || a == XLAT12_G11_SPI_SHADER_PGM_HI_GS ||   /* ring-offsets GS s0:s1 */
+           a == XLAT12_G11_SPI_SHADER_PGM_LO_HS || a == XLAT12_G11_SPI_SHADER_PGM_HI_HS ||   /* ring-offsets HS s0:s1 */
+           (a >= XLAT12_G11_SPI_SHADER_USER_DATA_PS_0 && a <= XLAT12_G11_SPI_SHADER_USER_DATA_PS_31) ||
+           (a >= XLAT12_G11_SPI_SHADER_USER_DATA_HS_0 && a <= XLAT12_G11_SPI_SHADER_USER_DATA_HS_31) ||
+           (a >= XLAT12_G11_COMPUTE_USER_DATA_0 && a <= XLAT12_G11_COMPUTE_USER_DATA_15) ||
+           (a >= XLAT12_G11_SPI_SHADER_USER_DATA_GS_0 && a <= XLAT12_G11_SPI_SHADER_USER_DATA_GS_31) ||
+           a == XLAT12_G11_SPI_SHADER_PGM_LO_ES || a == XLAT12_G11_SPI_SHADER_PGM_HI_ES ||
+           a == XLAT12_G11_SPI_SHADER_PGM_RSRC1_GS || a == XLAT12_G11_SPI_SHADER_PGM_RSRC2_GS ||
+           a == XLAT12_G11_SPI_SHADER_PGM_RSRC3_GS || a == XLAT12_G11_SPI_SHADER_PGM_RSRC4_GS ||
+           a == XLAT12_G11_SPI_SHADER_PGM_RSRC1_PS || a == XLAT12_G11_SPI_SHADER_PGM_RSRC2_PS ||
+           a == XLAT12_G11_SPI_SHADER_PGM_RSRC4_PS || a == XLAT12_G11_SPI_VS_OUT_CONFIG ||
+           a == XLAT12_G11_SPI_PS_INPUT_ENA || a == XLAT12_G11_SPI_PS_INPUT_ADDR ||
+           a == XLAT12_G11_SPI_SHADER_IDX_FORMAT || a == XLAT12_G11_GE_MAX_OUTPUT_PER_SUBGROUP ||
+           a == XLAT12_G11_VGT_GS_MAX_VERT_OUT || a == XLAT12_G11_GE_NGG_SUBGRP_CNTL ||
+           a == XLAT12_G11_VGT_SHADER_STAGES_EN || a == XLAT12_G11_VGT_GS_INSTANCE_CNT ||
+           a == XLAT12_G11_PA_SC_BINNER_CNTL_0 || a == XLAT12_G11_GE_CNTL || a == XLAT12_G11_VGT_GS_OUT_PRIM_TYPE ||
+           (a >= XLAT12_G11_CB_COLOR0_ATTRIB3 && a <= XLAT12_G11_CB_COLOR0_ATTRIB3 + 28u && !(a & 3u)) ||
+           a == XLAT12_G11_DB_Z_INFO || a == XLAT12_G11_DB_STENCIL_INFO ||
+           (a >= XLAT12_G11_SPI_GS_THROTTLE_CNTL1 && a <= XLAT12_G11_SPI_ATTRIBUTE_RING_SIZE);
+}
+
 /* 1 when `a` is the gfx12 destination of some identical / moved / field_repack table entry. */
 static int d_table_g12(uint32_t a)
 {
@@ -1095,16 +1180,33 @@ uint32_t xlat12_ib_tblcache_answer(uint32_t a, int *linear, int *cached)
  * (xlat12_ib_nclear_pkt_ok) - only the translation that carries XLAT12_EXTRA_NCLEAR asks with 1.
  * build 0.0.540 item 5: `tc` 1 (only the translation that carries XLAT12_EXTRA_TBLCACHE) asks d_table_g12's question of its
  * cache; 0 asks d_table_g12 itself, as 0.0.539. */
-static uint32_t d_verify(const uint32_t *out, uint32_t n, uint32_t fill, uint32_t tc, uint32_t *bad_addr, uint32_t *bad_op);
+/* X3: the same question for the gfx11 table (no override rows there). shortcut: a linear walk of 1,828 rows per
+ * register, not cached like d_table_g12_tc; host-only today (X4 runs no draw policy), cache it before the kext
+ * verifies gfx11 draws. */
+static int d_table_g11(uint32_t a)
+{
+    for (uint32_t i = 0; i < xlat12_table_len_level(XLAT12_LEVEL_GFX11); i++) {
+        uint32_t g10 = 0, g11 = 0, cls = 0; const char *nm = 0;
+        if (xlat12_table_entry_level(XLAT12_LEVEL_GFX11, i, &g10, &g11, &cls, &nm) && g11 == a &&
+            (cls == XLAT12_CLS_IDENTICAL || cls == XLAT12_CLS_MOVED || cls == XLAT12_CLS_FIELD_REPACK))
+            return 1;
+    }
+    return 0;
+}
+
+static uint32_t d_verify(uint32_t lvl, const uint32_t *out, uint32_t n, uint32_t fill, uint32_t tc, uint32_t *bad_addr,
+                         uint32_t *bad_op);
 uint32_t xlat12_ib_draw_verify(const uint32_t *out, uint32_t n, uint32_t *bad_addr, uint32_t *bad_op)
 {
-    return d_verify(out, n, 0u, 0u, bad_addr, bad_op);
+    return d_verify(XLAT12_LEVEL_GFX12, out, n, 0u, 0u, bad_addr, bad_op);
 }
 uint32_t xlat12_ib_draw_verify_ex(const uint32_t *out, uint32_t n, uint32_t flags, uint32_t *bad_addr, uint32_t *bad_op)
 {
-    return d_verify(out, n, (flags & XLAT12_EXTRA_NCLEAR) ? 1u : 0u, (flags & XLAT12_EXTRA_TBLCACHE) ? 1u : 0u, bad_addr, bad_op);
+    return d_verify((flags & XLAT12_EXTRA_GFX11) ? XLAT12_LEVEL_GFX11 : XLAT12_LEVEL_GFX12, out, n,
+                    (flags & XLAT12_EXTRA_NCLEAR) ? 1u : 0u, (flags & XLAT12_EXTRA_TBLCACHE) ? 1u : 0u, bad_addr, bad_op);
 }
-static uint32_t d_verify(const uint32_t *out, uint32_t n, uint32_t fill, uint32_t tc, uint32_t *bad_addr, uint32_t *bad_op)
+static uint32_t d_verify(uint32_t lvl, const uint32_t *out, uint32_t n, uint32_t fill, uint32_t tc, uint32_t *bad_addr,
+                         uint32_t *bad_op)
 {
     uint32_t i = 0;
     if (bad_addr) *bad_addr = 0;
@@ -1117,7 +1219,7 @@ static uint32_t d_verify(const uint32_t *out, uint32_t n, uint32_t fill, uint32_
         const uint32_t op = PO(h);
         int ok = 0;
         if (op == OP_CONTEXT_CONTROL) ok = ctxctl_is_proven(&out[i], l);
-        else if (op == OP_WRITE_DATA || op == OP_WAIT_REG_MEM || op == OP_COPY_DATA) ok = operand_ok(&out[i], l);
+        else if (op == OP_WRITE_DATA || op == OP_WAIT_REG_MEM || op == OP_COPY_DATA) ok = operand_ok(lvl, &out[i], l);
         else if (op == OP_DISPATCH_DIRECT) ok = 0;
         else if (op == OP_DMA_DATA) ok = fill && xlat12_ib_nclear_pkt_ok(&out[i], l);   /* build 0.0.535 */
         else if (is_passthrough(op)) ok = 1;
@@ -1129,7 +1231,8 @@ static uint32_t d_verify(const uint32_t *out, uint32_t n, uint32_t fill, uint32_
                 const uint32_t a = (base + off + k) << 2;
                 if (d_set_op(a) != (op == OP_SET_SH_REG_INDEX ? OP_SET_SH_REG :
                                     op == OP_SET_UCONFIG_REG_INDEX ? OP_SET_UCONFIG_REG : op) ||
-                    !(d_policy_g12(a) || (tc ? d_table_g12_tc(a) : d_table_g12(a)))) {
+                    !(lvl == XLAT12_LEVEL_GFX11 ? (d_policy_g11(a) || d_table_g11(a))
+                                                : (d_policy_g12(a) || (tc ? d_table_g12_tc(a) : d_table_g12(a))))) {
                     ok = 0;
                     if (bad_addr) *bad_addr = a;
                 }
@@ -1261,12 +1364,14 @@ typedef struct {
 /*: the in-place position of a value just written to one of the four ring-offsets destinations (last dword emitted).
  * Keyed on the GFX12 address, not the gfx10 one, because the HS pair is a MOVED entry (g12 != g10) while the PS pair is
  * identical - see d_rings for what is done with these. */
-static void d_ptr_note(DPair *p, uint32_t g12, uint32_t pos)
+static void d_ptr_note(DPair *p, uint32_t lvl, uint32_t g12, uint32_t pos)
 {
     if (!p) return;
     uint32_t k;
+    /* X3: the HS pair is PGM_LO/HI_HS at the gfx10.3 address on gfx11 (xlat12_gfx11.h), 0xb410/0xb414 on gfx12 */
+    const uint32_t hsLo = lvl == XLAT12_LEVEL_GFX11 ? XLAT12_G11_SPI_SHADER_PGM_LO_HS : 0xb410u;
     if (g12 == 0xb030u) k = 0u; else if (g12 == 0xb034u) k = 1u;
-    else if (g12 == 0xb410u) k = 2u; else if (g12 == 0xb414u) k = 3u; else return;
+    else if (g12 == hsLo) k = 2u; else if (g12 == hsLo + 4u) k = 3u; else return;
     p->ptr_pos[k] = pos; p->ptr_seen |= 1u << k;
 }
 
@@ -3930,7 +4035,7 @@ static void d_ts_note(xlat12_tex_state *t, uint32_t g10, uint32_t v)
  * (decide44 F77/F54: a 3-dword block write left 100 of the 101 own dwords their four records need, NO_ROOM). */
 static int d_vrs_prefollow(const xlat12_draw_extra *ex, const DPair *pr, uint32_t g12)
 {
-    return g12 == 0x2806cu && ex && ex->ring_va && pr->vrs_state == 0u;
+    return g12 == 0x2806cu && ex && ex->ring_va && pr->vrs_state == 0u && d_lvl(ex) == XLAT12_LEVEL_GFX12;
 }
 
 /* build 0.0.537 fix round item 3 (xhigh review): 1 when the rest of the barrier's region - p[l, rest), the input
@@ -4160,7 +4265,7 @@ static uint32_t d_region(const xlat12_draw_profile *pf, const xlat12_draw_extra 
                 for (uint32_t j = 0; j < cnt2; j++) {
                     const uint32_t g10 = (0xa000u + off + j) << 2;
                     uint32_t t12 = 0, cls = XLAT12_CLS_UNKNOWN;
-                    if (!xlat12_lookup(g10, &t12, &cls) || cls != XLAT12_CLS_ABSENT) {
+                    if (!xlat12_lookup_level(d_lvl(ex), g10, &t12, &cls) || cls != XLAT12_CLS_ABSENT) {
                         ds->err_reg = g10; ds->err_op = op; return XLAT12_ERR_MEMLOADED;
                     }
                 }
@@ -4176,7 +4281,7 @@ static uint32_t d_region(const xlat12_draw_profile *pf, const xlat12_draw_extra 
             return XLAT12_IB_ERR_UNLISTED;
         }
         if (op == OP_WRITE_DATA || op == OP_WAIT_REG_MEM || op == OP_COPY_DATA) {
-            if (!operand_ok(&in[i], l)) return XLAT12_IB_ERR_REG_OPERAND;
+            if (!operand_ok(d_lvl(ex), &in[i], l)) return XLAT12_IB_ERR_REG_OPERAND;
             /* build 0.0.449 item 2 (F2, review of 0.0.448) — THE REGISTER-WRITE HOLE, AS A REFUSAL. Not
              * gated: runs whatever the switches say, like every other refusal-direction rung in this function.
              * 0.0.448 CLEARED the seen bit instead of refusing (which could turn a 0.0.447 REDIRECTED refusal
@@ -4286,7 +4391,7 @@ static uint32_t d_region(const xlat12_draw_profile *pf, const xlat12_draw_extra 
                     ds->regs_emitted++;
                     if (op == OP_SET_SH_REG && g12 == g10) d_ud_note(pr, g10, e->n - 1u);   /*: where this value landed */
                     if (op == OP_SET_SH_REG) d_vsud_note(pr, g10, e->n - 1u);   /* cond 4: the VS half, by gfx10 address */
-                    d_ptr_note(pr, g12, e->n - 1u);   /* */
+                    d_ptr_note(pr, d_lvl(ex), g12, e->n - 1u);   /* */
                     if (U && d_unit_hs_note(U, g12, e->n - 1u)) { ds->err_reg = g10; ds->err_op = XLAT12_UNIT_HS_OVER; return XLAT12_IB_ERR_DRAW_SHAPE; }
                     uint32_t f12 = 0, fv = 0;   /* 0.0.220: the raster/CB delta's follow-on write, in the same packet */
                     if (ex && (ex->flags & XLAT12_EXTRA_RASTER) && d_follow(g10, in[i + 2u + k], &f12, &fv)) {
@@ -4295,7 +4400,7 @@ static uint32_t d_region(const xlat12_draw_profile *pf, const xlat12_draw_extra 
                         if (g10 == 0x28c6cu) ds->raster_follow_view++; else ds->raster_follow_attrib++;   /* */
                     }
                     /* 0.0.389: PA_SC_HISZ_CONTROL beside PA_SC_HIZ_INFO. No flag: see d_hisz_follow. */
-                    if (d_hisz_follow(g12, &f12, &fv)) {
+                    if (d_lvl(ex) == XLAT12_LEVEL_GFX12 && d_hisz_follow(g12, &f12, &fv)) {   /* X3: gfx12-only SC register */
                         if ((s = d_add(e, f12, flags, fv)) != 0u) { ds->err_reg = g10; return s == XLAT12_ERR_CAPACITY ? XLAT12_IB_ERR_TOO_LONG : s; }
                         ds->hisz_control++;
                     }
@@ -4343,7 +4448,7 @@ static uint32_t d_region(const xlat12_draw_profile *pf, const xlat12_draw_extra 
                     ds->regs_emitted++;
                     if (op == OP_SET_SH_REG_INDEX && g12 == g10) d_ud_note(pr, g10, e->n - 1u);   /* */
                     if (op == OP_SET_SH_REG_INDEX) d_vsud_note(pr, g10, e->n - 1u);   /* cond 4 */
-                    d_ptr_note(pr, g12, e->n - 1u);   /* */
+                    d_ptr_note(pr, d_lvl(ex), g12, e->n - 1u);   /* */
                     if (U && d_unit_hs_note(U, g12, e->n - 1u)) { ds->err_reg = g10; ds->err_op = XLAT12_UNIT_HS_OVER; return XLAT12_IB_ERR_DRAW_SHAPE; }   /* build 0.0.480 */
                 }
             }
@@ -4510,7 +4615,13 @@ d_r2d_pass:
                              XLAT12_EXTRA_DESC_INV_APPLE_HEAD | XLAT12_EXTRA_TABLE_REUSE | XLAT12_EXTRA_VS_KNOWN |
                              XLAT12_EXTRA_UNIT | XLAT12_EXTRA_CS_ELIDE | XLAT12_EXTRA_DCC_STRIP | XLAT12_EXTRA_DRAW_ELIDE |
                              XLAT12_EXTRA_NCLEAR | XLAT12_EXTRA_RECT2D | XLAT12_EXTRA_PWS |
-                             XLAT12_EXTRA_TBLCACHE)))   /* build 0.0.540 item 5 */
+                             XLAT12_EXTRA_TBLCACHE | XLAT12_EXTRA_GFX11)))   /* build 0.0.540 item 5; X3 GFX11 */
+        D_R2D_RET(XLAT12_ERR_ARG);
+    /* X3: gfx11 takes only the three NGG-word switches, which d_reg / d_synth carry to gfx11. Every other switch is
+     * gfx12 state (the preamble / raster deltas, gfx12 descriptors, the gfx1201 table and unit machinery, PWS, the
+     * table cache) with no gfx11 port: refused, never emitted at gfx12 addresses into a gfx11 stream. */
+    if (ex && (ex->flags & XLAT12_EXTRA_GFX11) &&
+        (ex->flags & ~(XLAT12_EXTRA_GFX11 | XLAT12_EXTRA_APPLE_IDXFMT | XLAT12_EXTRA_APPLE_OUTPRIM | XLAT12_EXTRA_SYNTH_IDXPRIM)))
         D_R2D_RET(XLAT12_ERR_ARG);   /* 0.0.219: 0x2 retired; 0.0.224: 0x8 / 0x10 ablation;: 0x20;: 0x40;: 0x80;: 0x400;: 0x800; D4-PRIME.md item 3: 0x1000; build 0.0.448 item 1: 0x2000; build 0.0.453 item 5: 0x4000; build 0.0.454 item 1: 0x8000; build 0.0.455 item 1: 0x10000; build 0.0.480: 0x20000; build 0.0.487: 0x40000; build 0.0.488: 0x80000 (merge 0.0.489: both kept); build 0.0.500: 0x100000 */
     /* build 0.0.500: the draw elide acts only at the table step's refusal, and only for an enabled row class. */
     if (ex && (ex->flags & XLAT12_EXTRA_DRAW_ELIDE) &&
@@ -4939,7 +5050,7 @@ d_r2d_pass:
     i = n;
     ds->err_op = 0xFFFFFFFFu; ds->err_in_dword = 0;
     uint32_t badA = 0, badOp = 0;
-    if (d_verify(out, n, (ex && (ex->flags & XLAT12_EXTRA_NCLEAR)) ? 1u : 0u, (ex && (ex->flags & XLAT12_EXTRA_TBLCACHE)) ? 1u : 0u,
+    if (d_verify(d_lvl(ex), out, n, (ex && (ex->flags & XLAT12_EXTRA_NCLEAR)) ? 1u : 0u, (ex && (ex->flags & XLAT12_EXTRA_TBLCACHE)) ? 1u : 0u,
                  &badA, &badOp) != 0u) {
         ds->err_reg = badA; ds->err_op = badOp;
         if (U && U->pool) (void)xlat12_pool_undo(U->pool);   /* build 0.0.480: a refused unit leaves no pool record behind */

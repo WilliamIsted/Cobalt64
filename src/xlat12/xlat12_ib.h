@@ -86,6 +86,10 @@ uint32_t xlat12_ib_walk(const uint32_t *in, uint32_t n);
 
 /* Census over in[0..n) (n is normally xlat12_ib_walk's result). */
 void xlat12_ib_census_run(const uint32_t *in, uint32_t n, xlat12_ib_census *c);
+/* stage 3 step 7 X3: the census classifying registers by the gfx_level table (XLAT12_LEVEL_GFX11 or _GFX12; any
+ * other level classifies every register UNKNOWN). On gfx11 a compute SET counts as proven only when every register
+ * in it is also IDENTICAL in the gfx11 table. xlat12_ib_census_run is the gfx12 form. */
+void xlat12_ib_census_run_level(uint32_t gfx_level, const uint32_t *in, uint32_t n, xlat12_ib_census *c);
 
 /* Blank: out[0..n) = in with every non-proven packet replaced by NOPs. *kept / *blanked count
  * packets. Returns 0, or XLAT12_ERR_TRUNCATED / XLAT12_ERR_BAD_PACKET on a malformed stream. */
@@ -95,6 +99,11 @@ uint32_t xlat12_ib_blank(const uint32_t *in, uint32_t n, uint32_t *out, uint32_t
  * failing opcode, stats->err_reg_addr the register where known. */
 uint32_t xlat12_ib_translate(xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint32_t *out,
                              uint32_t cap, uint32_t *out_len, xlat12_stats *stats, uint32_t *err_op);
+/* X3: the same for a chosen target: SET_* packets through xlat12_translate_level(gfx_level), register operands
+ * (WRITE_DATA / WAIT_REG_MEM / COPY_DATA) and the proven compute SETs checked against that level's table. Any
+ * other gfx_level is XLAT12_ERR_ARG. xlat12_ib_translate is the gfx12 form. */
+uint32_t xlat12_ib_translate_level(uint32_t gfx_level, xlat12_ctx *ctx, const uint32_t *in, uint32_t n, uint32_t *out,
+                                   uint32_t cap, uint32_t *out_len, xlat12_stats *stats, uint32_t *err_op);
 
 /* In-place layout: NOP-fill buf[len..target). Returns 0, or XLAT12_IB_ERR_TOO_LONG if len > target. */
 uint32_t xlat12_ib_pad(uint32_t *buf, uint32_t len, uint32_t target);
@@ -108,6 +117,9 @@ const char *xlat12_ib_status_name(uint32_t s);
  * 5 its blank (9 packets kept, the dispatch NOPed), 6 its translation (128 -> 125, pads to 128). */
 #define XLAT12_IB_SELFTEST_ALL 0x7Fu
 uint32_t xlat12_ib_selftest(void);
+/* X3: bits 0-3 against the gfx_level table; bits 4-6 (the r30 control, gfx12 counts) only for XLAT12_LEVEL_GFX12. */
+#define XLAT12_IB_SELFTEST_TABLE 0x0Fu
+uint32_t xlat12_ib_selftest_level(uint32_t gfx_level);
 
 /* ---- The milestone-2 DRAW policy ----------------------------------------------------------------
  * Apple's render encoder emits a gfx10 LEGACY-VS pipeline (r44/r45: VGT_SHADER_STAGES_EN 0x00810000, PRIMGEN_EN 0,
@@ -1488,6 +1500,16 @@ static inline int xlat12_ib_pws_acquire_ok(const uint32_t *p, uint32_t l)
  * table is const, so a built cache never goes stale. OFF (the flag unset): d_verify calls d_table_g12 exactly as 0.0.539; not one
  * output dword, counter or return code changes, ON or OFF (the answers are the same function). */
 #define XLAT12_EXTRA_TBLCACHE      0x1000000u
+/* stage 3 step 7 X3 — THE GFX11 TARGET. With this flag the draw policy emits gfx11 PM4 (Navi 33, gfx1102) instead of
+ * gfx12: registers through the gfx11 table (xlat12_tables_gfx11.h); the legacy-VS -> NGG re-home, the synthesized NGG
+ * block and the ring block at the gfx11 addresses of xlat12_gfx11.h (with their RADV GFX11 citations); SW_MODE through
+ * kXlat12SwModeG10ToG11; no scissor BR adjust (gfx11's BR is exclusive like gfx10.3's, xlat12_scissor.h); no GE_POS /
+ * GE_PRIM rings, no DB_SPI_VRS_CENTER_LOCATION and no PA_SC_HISZ_CONTROL (gfx12-only registers); the output verifier
+ * walks the gfx11 table and d_policy_g11. The PROFILE is the caller's and is written as given: under this flag its
+ * fields are gfx11 register values, and gs_out_config_ps is the gfx11 SPI_VS_OUT_CONFIG value (gfx12 folds that
+ * register into SPI_SHADER_GS_OUT_CONFIG_PS). It combines only with XLAT12_EXTRA_APPLE_IDXFMT, _APPLE_OUTPRIM and
+ * _SYNTH_IDXPRIM; any other switch with it is XLAT12_ERR_ARG. xlat12_ib_draw_verify_ex reads it too. */
+#define XLAT12_EXTRA_GFX11         0x2000000u
 #define XLAT12_TC_CAP              1024u
 /* For tests: the linear walk's and the cache's answers for gfx12 byte address `a` (*linear, *cached: 1 = allowed by the table),
  * building the cache if it is not built; returns the cache's state (2 = built and used; anything else = the cache answered from the

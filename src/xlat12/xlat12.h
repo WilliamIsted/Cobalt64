@@ -67,7 +67,8 @@ typedef enum {
                                       * and encoder_named_4vp are real Apple RenderEncoder captures that write
                                       * CB_COLOR0_ATTRIB3 mode 9 (ADDR_SW_64KB_S) through this exact path and expect
                                       * XLAT12_OK - refusing real, currently-working traffic would have been worse
-                                      * than the mistranslation bug this item fixes. */
+                                      * than the mistranslation bug this item fixes. X3: on gfx11 the table is
+                                      * kXlat12SwModeG10ToG11 (xlat12_gfx11.h). */
     XLAT12_ERR_SCISSOR         = 12  /* build 0.0.499: a PA_SC_{SCREEN,WINDOW,GENERIC,VPORT_n}_SCISSOR_BR
                                       * write with BR_X or BR_Y == 0. gfx12's BR is INCLUSIVE (xlat12_scissor.h, with
                                       * the mesa quotes), so every other BR is emitted -1; a 0 cannot be, without also
@@ -138,10 +139,10 @@ enum { XLAT12_LEVEL_GFX11 = 11, XLAT12_LEVEL_GFX12 = 12 };
 
 /* xlat12_translate with the target chosen per call: gfx12 (xlat12_tables.h, the behaviour above) or
  * gfx11 (xlat12_tables_gfx11.h, the full gfx10.3 SET_* set). Any other gfx_level is XLAT12_ERR_ARG.
- * gfx11 differs from gfx12 only in the table and in three gfx12-only rules it skips: no REUSED
- * override, no inclusive-scissor BR adjust, and SW_MODE fields pass only mode 0 (ERR_SWMODE
- * otherwise, until X3 adds a gfx11 swizzle table). The NGG rule is unchanged: gfx11 has no
- * hardware VS stage either. The lookup/introspection functions below are gfx12 only. */
+ * gfx11 differs from gfx12 in the table and in three gfx12-only rules: no REUSED override, no
+ * inclusive-scissor BR adjust (gfx11 keeps gfx10.3's exclusive BR, xlat12_scissor.h), and SW_MODE
+ * fields go through kXlat12SwModeG10ToG11 (xlat12_gfx11.h; a mode gfx11 lacks is ERR_SWMODE).
+ * The NGG rule is unchanged: gfx11 has no hardware VS stage either. */
 xlat12_status xlat12_translate_level(uint32_t gfx_level, xlat12_ctx *ctx, const uint32_t *in, uint32_t in_dwords,
                                      uint32_t *out, uint32_t out_cap,
                                      uint32_t *out_dwords, xlat12_stats *stats);
@@ -155,6 +156,16 @@ uint32_t xlat12_repack_value(uint32_t g10_addr, uint32_t value);
 /* Table introspection for tests and integration probes. */
 uint32_t xlat12_table_len(void);
 int xlat12_table_entry(uint32_t i, uint32_t *g10, uint32_t *g12, uint32_t *cls, const char **name);
+
+/* X3: the four functions above for a chosen gfx_level (XLAT12_LEVEL_GFX11 or _GFX12); `dst` is that
+ * level's address. The unsuffixed forms are the gfx12 ones. Any other level: 0 (lookup, table_entry,
+ * table_len) or the value unchanged (repack_value). Like xlat12_repack_value, the repack is the
+ * generated field copy only: SW_MODE renaming and the scissor rule are xlat12_translate_level's. */
+int xlat12_lookup_level(uint32_t gfx_level, uint32_t g10_addr, uint32_t *out_dst, uint32_t *out_cls);
+uint32_t xlat12_repack_value_level(uint32_t gfx_level, uint32_t g10_addr, uint32_t value);
+uint32_t xlat12_table_len_level(uint32_t gfx_level);
+int xlat12_table_entry_level(uint32_t gfx_level, uint32_t i, uint32_t *g10, uint32_t *dst, uint32_t *cls,
+                             const char **name);
 
 const char *xlat12_status_name(xlat12_status s);
 

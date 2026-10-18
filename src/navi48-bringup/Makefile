@@ -143,7 +143,8 @@ $(BUILD)/%.o: %.c
 # compiler fact, not a hand-maintained one. The explicit header list below is kept too, so the FIRST build (before
 # any .d file exists) is still correct.
 $(BUILD)/xlat12.o: $(XLAT12_DIR)/xlat12.c $(XLAT12_DIR)/xlat12.h $(XLAT12_DIR)/xlat12_tables.h $(XLAT12_DIR)/xlat12_repack.h \
-                 $(XLAT12_DIR)/xlat12_scissor.h
+                 $(XLAT12_DIR)/xlat12_scissor.h $(XLAT12_DIR)/xlat12_tables_gfx11.h $(XLAT12_DIR)/xlat12_repack_gfx11.h \
+                 $(XLAT12_DIR)/xlat12_gfx11.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 -include $(BUILD)/xlat12.d
@@ -151,7 +152,7 @@ $(BUILD)/xlat12_ib.o: $(XLAT12_DIR)/xlat12_ib.c $(XLAT12_DIR)/xlat12_ib.h $(XLAT
                     $(XLAT12_DIR)/xlat12_desc.h $(XLAT12_DIR)/xlat12_shader_ids.h $(XLAT12_DIR)/xlat12_shader_ids_candidates.h \
                     $(XLAT12_DIR)/xlat12_abi_ptrs.h $(XLAT12_DIR)/xlat12_readset.h $(XLAT12_DIR)/xlat12_shader_desc.h \
                     $(XLAT12_DIR)/xlat12_reused.h $(XLAT12_DIR)/xlat12_provenance.h $(XLAT12_DIR)/xlat12_scissor.h \
-                    $(XLAT12_DIR)/xlat12_dtable_rows.inc
+                    $(XLAT12_DIR)/xlat12_dtable_rows.inc $(XLAT12_DIR)/xlat12_gfx11.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 -include $(BUILD)/xlat12_ib.d

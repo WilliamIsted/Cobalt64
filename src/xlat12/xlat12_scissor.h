@@ -38,6 +38,15 @@
  * (repack for window/generic/viewport - gfx10's 15-bit fields widened to 16 - or the unchanged MOVED value for the screen
  * scissor, whose gfx10 fields are already [15:0]/[31:16]); only BR_X and BR_Y change, each by exactly -1.
  *
+ * gfx11 (stage 3 step 7 X3): NO rule - gfx11 keeps gfx10.3's EXCLUSIVE BR, so both translators skip this file's
+ * adjust for XLAT12_LEVEL_GFX11 / XLAT12_EXTRA_GFX11. Checked in Mesa bffd9194: radv_cmd_buffer.c:4597-4615 applies
+ * `BR_X(maxx - 1)` only under `gfx_level >= GFX12` and writes `BR_X(maxx)` otherwise (the viewport scissors);
+ * :11341-11354 writes the window scissor `BR_X(maxx)` on the GFX11 packed path against `maxx - 1 /+ inclusive +/` on
+ * GFX12; ac_cmdbuf.c:494-498, the GFX11 graphics preamble, sets PA_SC_GENERIC_SCISSOR_BR to 16384, the exclusive full
+ * range (gfx12: 65535 "inclusive bounds", :732-733). The registers are the same on both: gfx103.json and gfx11.json give
+ * PA_SC_SCREEN/WINDOW/GENERIC/VPORT_n_SCISSOR_TL/BR the same addresses and fields (the gfx11 table rows are IDENTICAL).
+ * gfx11's empty scissor is therefore gfx10's own (BR <= TL), and a BR of 0 passes through.
+ *
  * Pure and header-only (static inline) so xlat12.c's generic path and xlat12_ib.c's draw policy share ONE rule without a
  * new exported symbol (the kextcheck's undefined-symbol allow-list is unchanged). No state, no register or memory write. */
 #ifndef XLAT12_SCISSOR_H

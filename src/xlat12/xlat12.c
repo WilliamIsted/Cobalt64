@@ -13,6 +13,8 @@
 #include "xlat12_desc.h"
 /* build 0.0.499: the gfx12 INCLUSIVE scissor bottom-right rule, shared with xlat12_ib.c's d_reg. */
 #include "xlat12_scissor.h"
+/* X3: kXlat12SwModeG10ToG11 (the gfx10.3 -> gfx11 SW_MODE rule). */
+#include "xlat12_gfx11.h"
 
 /* PM4 type-3 header (Mesa src/amd/common/sid.h:276-289 @4519cc56):
  * [31:30] type=3, [29:16] count = body dwords - 1, [15:8] opcode, [7:0] flags
@@ -111,6 +113,42 @@ uint32_t xlat12_repack_value(uint32_t g10_addr, uint32_t value)
 }
 
 uint32_t xlat12_table_len(void) { return XLAT12_TABLE_LEN; }
+
+int xlat12_lookup_level(uint32_t gfx_level, uint32_t g10_addr, uint32_t *out_dst, uint32_t *out_cls)
+{
+    Row r;
+    if ((gfx_level != XLAT12_LEVEL_GFX11 && gfx_level != XLAT12_LEVEL_GFX12) || !row_of(gfx_level, g10_addr, &r)) return 0;
+    if (out_dst) *out_dst = r.dst;
+    if (out_cls) *out_cls = r.cls;
+    return 1;
+}
+
+uint32_t xlat12_repack_value_level(uint32_t gfx_level, uint32_t g10_addr, uint32_t value)
+{
+    Row r;
+    if ((gfx_level != XLAT12_LEVEL_GFX11 && gfx_level != XLAT12_LEVEL_GFX12) || !row_of(gfx_level, g10_addr, &r) ||
+        !r.repack)
+        return value;
+    return (r.cls == XLAT12_CLS_FIELD_REPACK || r.cls == XLAT12_CLS_REUSED) ? r.repack(value) : value;
+}
+
+uint32_t xlat12_table_len_level(uint32_t gfx_level)
+{
+    return gfx_level == XLAT12_LEVEL_GFX11 ? XLAT12_TABLE_LEN_GFX11 : gfx_level == XLAT12_LEVEL_GFX12 ? XLAT12_TABLE_LEN : 0u;
+}
+
+int xlat12_table_entry_level(uint32_t gfx_level, uint32_t i, uint32_t *g10, uint32_t *dst, uint32_t *cls,
+                             const char **name)
+{
+    if (gfx_level == XLAT12_LEVEL_GFX12) return xlat12_table_entry(i, g10, dst, cls, name);
+    if (gfx_level != XLAT12_LEVEL_GFX11 || i >= XLAT12_TABLE_LEN_GFX11) return 0;
+    const Xlat12EntryGfx11 *e = &kXlat12TableGfx11[i];   /* no override rows on gfx11 (row_of) */
+    if (g10) *g10 = e->g10;
+    if (dst) *dst = e->g11;
+    if (cls) *cls = e->cls;
+    if (name) *name = e->name;
+    return 1;
+}
 
 int xlat12_table_entry(uint32_t i, uint32_t *g10, uint32_t *g12, uint32_t *cls, const char **name)
 {
@@ -280,14 +318,16 @@ static xlat12_status decide(uint32_t gfx_level, xlat12_ctx *ctx, xlat12_stats *s
     case XLAT12_CLS_IDENTICAL:
     case XLAT12_CLS_MOVED:
     case XLAT12_CLS_FIELD_REPACK:
-    case XLAT12_CLS_REUSED:
-        /* shortcut: gfx11 has no SW_MODE table yet (X3), and its encoding differs from gfx10 for some modes
-         * (gfx11addrlib.cpp SwizzleModeTable: 28-31 are 256KB_*_X, several are reserved). So only mode 0
-         * (linear on both) passes; any other refuses until X3. Checked for every class: DB_Z_INFO and
-         * DB_STENCIL_INFO are IDENTICAL on gfx11, CB_COLORn_ATTRIB3 FIELD_REPACK. */
-        if (gfx_level == XLAT12_LEVEL_GFX11) {
-            const uint32_t lo = g10_swmode_lo(g10);
-            if (lo != 0xFFu && ((*val >> lo) & 0x1Fu) != 0u) {
+    case XLAT12_CLS_REUSED: {
+        /* X3: gfx11 SW_MODE through kXlat12SwModeG10ToG11 (xlat12_gfx11.h), refusing a mode gfx11 lacks.
+         * Checked for every class: DB_Z_INFO and DB_STENCIL_INFO are IDENTICAL on gfx11, CB_COLORn_ATTRIB3
+         * FIELD_REPACK. The field sits at the same bits on gfx11 (gfx11.json: [18:14], [8:4]); the mode is
+         * written back after the repack below. */
+        uint32_t sw11 = 0xFFFFFFFFu;
+        const uint32_t sw11lo = gfx_level == XLAT12_LEVEL_GFX11 ? g10_swmode_lo(g10) : 0xFFu;
+        if (sw11lo != 0xFFu) {
+            sw11 = xlat12_swmode_g10_to_g11((*val >> sw11lo) & 0x1Fu);
+            if (sw11 == 0xFFFFFFFFu) {
                 st->err_reg_addr = g10; st->err_name = ent->name;
                 return XLAT12_ERR_SWMODE;
             }
@@ -345,7 +385,8 @@ static xlat12_status decide(uint32_t gfx_level, xlat12_ctx *ctx, xlat12_stats *s
         /* build 0.0.499: a scissor BOTTOM-RIGHT is exclusive on gfx10.3 and INCLUSIVE on gfx12
          * (xlat12_scissor.h, with the mesa quotes): BR_X/BR_Y -1 on the value the row above already produced, or
          * REFUSE when a component is 0 (fail-closed: it cannot be made inclusive without rewriting its TL). */
-        /* gfx11 keeps the gfx10.3 exclusive BR (radv_cmd_buffer.c:4597: the -1 is GFX12-only), so no adjust. */
+        if (sw11lo != 0xFFu) *val = (*val & ~(0x1Fu << sw11lo)) | (sw11 << sw11lo);
+        /* gfx11 keeps the gfx10.3 exclusive BR (xlat12_scissor.h, "gfx11"), so no adjust. */
         if (gfx_level == XLAT12_LEVEL_GFX12) {
             uint32_t s12 = *val;
             const uint32_t sr = xlat12_scissor_br_g12(g10, *val, &s12);
@@ -357,6 +398,7 @@ static xlat12_status decide(uint32_t gfx_level, xlat12_ctx *ctx, xlat12_stats *s
         }
         *emit = 1;
         return XLAT12_OK;
+    }
     default:
         st->err_reg_addr = g10; st->err_name = ent->name;
         return XLAT12_ERR_UNKNOWN_REG;

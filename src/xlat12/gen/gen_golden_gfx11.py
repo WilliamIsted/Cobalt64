@@ -11,8 +11,10 @@ The oracle is gen_golden.py's oracle with the gfx11 rules of xlat12_translate_le
   - classes by name and field list, as gen_golden.py / gen_tables.py classify()
   - no REUSED rows: gfx11.json names no register at 0x28b94 / 0x28b98 (checked below)
   - legacy-VS: the same NGG rule as gfx12 (gfx11.json has no SPI_SHADER_*_VS register)
-  - SW_MODE (CB_COLORn_ATTRIB3.COLOR_SW_MODE, DB_Z_INFO / DB_STENCIL_INFO.SW_MODE): mode 0 only,
-    any other refuses ERR_SWMODE (no gfx11 swizzle table until X3)
+  - SW_MODE (CB_COLORn_ATTRIB3.COLOR_SW_MODE, DB_Z_INFO / DB_STENCIL_INFO.SW_MODE), X3: a mode passes
+    unchanged when addrlib's Gfx10Lib and Gfx11Lib SwizzleModeTables (parsed here from the .cpp sources,
+    not from xlat12_gfx11.h) give it the same non-empty flag row with no flag in a column the two tables
+    name differently (gfx10 "Var" vs gfx11 "256KB"); any other mode refuses ERR_SWMODE
   - no scissor BR adjust (the inclusive BR is GFX12-only, radv_cmd_buffer.c:4597)
 
 Also emitted:
@@ -84,6 +86,30 @@ def op_for(a):
     if UCF <= a < 0x40000: return OP_UCF
     return None
 
+def addrlib_table(path, cls):
+    """{mode: (flags...)} and the column names of addrlib's <cls>::SwizzleModeTable in one .cpp file."""
+    src = open(path).read()
+    m = re.search(r"const SwizzleModeFlags %s::SwizzleModeTable\[ADDR_SW_MAX_TYPE\] =\s*\{//([^\n]*)\n(.*?)\n\};" % cls, src, re.S)
+    if not m: die("no %s::SwizzleModeTable in %s" % (cls, path))
+    cols = m.group(1).split()
+    rows = re.findall(r"\{\{([0-9,\s]+)\}\}", m.group(2))
+    if len(rows) != 33: die("%s: %d SwizzleModeTable rows, expected ADDR_SW_MAX_TYPE 33" % (path, len(rows)))
+    return {k: tuple(int(x) for x in r.split(",")) for k, r in enumerate(rows)}, cols
+
+def swmode_ok_set(mesa):
+    addrlib = os.path.join(mesa, "..", "addrlib", "src")
+    t10, c10 = addrlib_table(os.path.join(addrlib, "gfx10", "gfx10addrlib.cpp"), "Gfx10Lib")
+    t11, c11 = addrlib_table(os.path.join(addrlib, "gfx11", "gfx11addrlib.cpp"), "Gfx11Lib")
+    if len(c10) != len(c11) or len(c10) != len(t10[0]): die("SwizzleModeTable column headers differ in length")
+    differ = [k for k in range(len(c10)) if c10[k] != c11[k]]
+    ok = set()
+    for mode in range(32):                         # the field is 5 bits
+        a, b = t10[mode], t11[mode]
+        if any(a) and a == b and not any(a[k] or b[k] for k in differ): ok.add(mode)
+    return ok
+
+SWMODE_OK = None   # set in main()
+
 def oracle(D10, D11, stream, ngg):
     """Independent re-implementation of xlat12_translate_level(XLAT12_LEVEL_GFX11, ...)."""
     PRIMGEN = [f for f in D10.fields("VGT_SHADER_STAGES_EN") if f[0] == "PRIMGEN_EN"][0][1]
@@ -107,7 +133,7 @@ def oracle(D10, D11, stream, ngg):
                 if cls == "legacy_vs":
                     if ngg or v == 0: st["legacy"] += 1; continue
                     return ("ERR_VS_MODE_UNKNOWN", a10, out, st, ngg)
-                if a10 in SWMODE_LO and (v >> SWMODE_LO[a10]) & 0x1F:
+                if a10 in SWMODE_LO and ((v >> SWMODE_LO[a10]) & 0x1F) not in SWMODE_OK:
                     return ("ERR_SWMODE", a10, out, st, ngg)
                 if a10 == VSE:
                     if not (v >> PRIMGEN) & 1: return ("ERR_LEGACY_VS", a10, out, st, ngg)
@@ -164,6 +190,9 @@ def main():
     ap.add_argument("--mesa", default=G11.DEF_MESA)
     args = ap.parse_args()
     D10, D11 = DB(os.path.join(args.mesa, "gfx103.json")), DB(os.path.join(args.mesa, "gfx11.json"))
+    global SWMODE_OK
+    SWMODE_OK = swmode_ok_set(args.mesa)
+    print("SW_MODE passed unchanged gfx10.3 -> gfx11 (addrlib):", sorted(SWMODE_OK))
     for a in (0x28b94, 0x28b98):          # the gfx12 REUSED addresses: gfx11 must leave them empty
         if a in D11.addr: die("gfx11.json names %s at 0x%05x: a gfx11 REUSED row is needed" % (D11.addr[a], a))
 
@@ -174,7 +203,7 @@ def main():
                          st=r[3], ngg_in=ngg_in, ngg_out=r[4], note=note))
     for nm, note, ngg, stream in read_gfx12_inputs():
         add(nm, stream, ngg, note + " [gfx11]")
-        if nm.startswith("encoder_"):   # the encoder writes tiled SW_MODEs: also run it past the X3 stub
+        if nm.startswith("encoder_"):   # the encoder writes tiled SW_MODEs: also the linear-only form (X2's)
             add(nm + "_swlinear", zero_swmode(stream), ngg, note + " [gfx11, SW_MODE fields zeroed]")
 
     vse = D10.name["VGT_SHADER_STAGES_EN"]["map"]["at"]
@@ -200,8 +229,14 @@ def main():
         "VGT_GS_OUT_PRIM_TYPE: context -> uconfig address and field repack in one register")
     add("swmode_linear", ctxp(db_z, [0x00000003]) + ctxp(cb_a3, [0x00000000]), True,
         "DB_Z_INFO / CB_COLOR0_ATTRIB3 with SW_MODE 0 (linear): translated")
-    add("swmode_tiled_refused", ctxp(cb_a3, [9 << 14]), True,
-        "CB_COLOR0_ATTRIB3 COLOR_SW_MODE 9: refused until X3 adds the gfx11 swizzle table")
+    add("swmode_tiled", ctxp(cb_a3, [9 << 14]) + ctxp(db_z, [(22 << 4) | 3]), True,
+        "CB_COLOR0_ATTRIB3 COLOR_SW_MODE 9 64KB_S, DB_Z_INFO SW_MODE 22 4KB_D_X: on both tables, passed unchanged")
+    for mode, why in ((1, "256B_S: Reserved on gfx11"), (23, "4KB_R_X: Reserved on gfx11"),
+                      (28, "gfx10 VAR_Z_X vs gfx11 256KB_Z_X"), (31, "gfx10 VAR_R_X vs gfx11 256KB_R_X"),
+                      (12, "Reserved on gfx10")):
+        add("swmode_%d_refused" % mode, ctxp(cb_a3, [mode << 14]), True,
+            "CB_COLOR0_ATTRIB3 COLOR_SW_MODE %d (%s): refused" % (mode, why))
+    add("swmode_23_db_refused", ctxp(db_z, [(23 << 4) | 3]), True, "DB_Z_INFO SW_MODE 23: refused")
 
     # one single-register case per gfx10.3 SET_* register, 3 values
     cases = []

@@ -779,10 +779,41 @@ static const uint32_t g11_swmode_linear_in[] = {
 static const uint32_t g11_swmode_linear_exp[] = {
   0xc0016900, 0x00000010, 0x00000003, 0xc0016900, 0x000003b8, 0x00000000,
 };
-static const uint32_t g11_swmode_tiled_refused_in[] = {
-  0xc0016900, 0x000003b8, 0x00024000,
+static const uint32_t g11_swmode_tiled_in[] = {
+  0xc0016900, 0x000003b8, 0x00024000, 0xc0016900, 0x00000010, 0x00000163,
 };
-static const uint32_t g11_swmode_tiled_refused_exp[] = { 0
+static const uint32_t g11_swmode_tiled_exp[] = {
+  0xc0016900, 0x000003b8, 0x00024000, 0xc0016900, 0x00000010, 0x00000163,
+};
+static const uint32_t g11_swmode_1_refused_in[] = {
+  0xc0016900, 0x000003b8, 0x00004000,
+};
+static const uint32_t g11_swmode_1_refused_exp[] = { 0
+};
+static const uint32_t g11_swmode_23_refused_in[] = {
+  0xc0016900, 0x000003b8, 0x0005c000,
+};
+static const uint32_t g11_swmode_23_refused_exp[] = { 0
+};
+static const uint32_t g11_swmode_28_refused_in[] = {
+  0xc0016900, 0x000003b8, 0x00070000,
+};
+static const uint32_t g11_swmode_28_refused_exp[] = { 0
+};
+static const uint32_t g11_swmode_31_refused_in[] = {
+  0xc0016900, 0x000003b8, 0x0007c000,
+};
+static const uint32_t g11_swmode_31_refused_exp[] = { 0
+};
+static const uint32_t g11_swmode_12_refused_in[] = {
+  0xc0016900, 0x000003b8, 0x00030000,
+};
+static const uint32_t g11_swmode_12_refused_exp[] = { 0
+};
+static const uint32_t g11_swmode_23_db_refused_in[] = {
+  0xc0016900, 0x00000010, 0x00000173,
+};
+static const uint32_t g11_swmode_23_db_refused_exp[] = { 0
 };
 
 static const GoldenVec11 kGolden11[] = {
@@ -792,11 +823,11 @@ static const GoldenVec11 kGolden11[] = {
   { "static_nav2_unknown", "same stream, ctx UNKNOWN: the non-zero RSRC4_VS index write must be refused [gfx11]", g11_static_nav2_unknown_in, 120, g11_static_nav2_unknown_exp, 0, "ERR_VS_MODE_UNKNOWN", 0x0b104, 0, 0, 48, 35, 0, 5, 7, 0, 28, 0, 0 },
   { "static_named_ngg", "WriteStaticHwRegs minus the two RSRC4 index writes; ctx seeded NGG [gfx11]", g11_static_named_ngg_in, 114, g11_static_named_ngg_exp, 96, "OK", 0x00000, 1, 1, 48, 36, 0, 4, 7, 1, 28, 0, 0 },
   { "static_named_unknown", "same, ctx UNKNOWN: the non-zero RSRC4_VS (legacy-VS) index write must be refused [gfx11]", g11_static_named_unknown_in, 114, g11_static_named_unknown_exp, 0, "ERR_VS_MODE_UNKNOWN", 0x0b104, 0, 0, 47, 35, 0, 4, 7, 0, 27, 0, 0 },
-  { "encoder_faithful_nav2", "WriteRenderEncoderHwCtxRegs exactly as emitted for 1 viewport/1 scissor (Navi2x): refused at the first unnamed register [gfx11]", g11_encoder_faithful_nav2_in, 419, g11_encoder_faithful_nav2_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 25, 10, 0, 3, 11, 0, 7, 2, 0 },
+  { "encoder_faithful_nav2", "WriteRenderEncoderHwCtxRegs exactly as emitted for 1 viewport/1 scissor (Navi2x): refused at the first unnamed register [gfx11]", g11_encoder_faithful_nav2_in, 419, g11_encoder_faithful_nav2_exp, 0, "ERR_SWMODE", 0x28ee4, 1, 1, 45, 16, 0, 6, 22, 0, 14, 4, 0 },
   { "encoder_faithful_nav2_swlinear", "WriteRenderEncoderHwCtxRegs exactly as emitted for 1 viewport/1 scissor (Navi2x): refused at the first unnamed register [gfx11, SW_MODE fields zeroed]", g11_encoder_faithful_nav2_swlinear_in, 419, g11_encoder_faithful_nav2_swlinear_exp, 0, "ERR_UNKNOWN_REG", 0x28060, 1, 1, 167, 52, 0, 26, 88, 0, 58, 16, 0 },
-  { "encoder_faithful_nav1", "same with isNavi2xBased=0: the unconditional x3 @0x283c0 run still refuses [gfx11]", g11_encoder_faithful_nav1_in, 409, g11_encoder_faithful_nav1_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 25, 10, 0, 3, 11, 0, 7, 2, 0 },
+  { "encoder_faithful_nav1", "same with isNavi2xBased=0: the unconditional x3 @0x283c0 run still refuses [gfx11]", g11_encoder_faithful_nav1_in, 409, g11_encoder_faithful_nav1_exp, 0, "ERR_SWMODE", 0x28ee8, 1, 1, 65, 22, 0, 9, 33, 0, 21, 6, 0 },
   { "encoder_faithful_nav1_swlinear", "same with isNavi2xBased=0: the unconditional x3 @0x283c0 run still refuses [gfx11, SW_MODE fields zeroed]", g11_encoder_faithful_nav1_swlinear_in, 409, g11_encoder_faithful_nav1_swlinear_exp, 0, "ERR_UNKNOWN_REG", 0x283c0, 1, 1, 200, 84, 0, 27, 88, 0, 74, 16, 0 },
-  { "encoder_named_nav2", "encoder minus the three packets carrying registers no gfx10.3 source names [gfx11]", g11_encoder_named_nav2_in, 407, g11_encoder_named_nav2_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 25, 10, 0, 3, 11, 0, 7, 2, 0 },
+  { "encoder_named_nav2", "encoder minus the three packets carrying registers no gfx10.3 source names [gfx11]", g11_encoder_named_nav2_in, 407, g11_encoder_named_nav2_exp, 0, "ERR_SWMODE", 0x28ee4, 1, 1, 45, 16, 0, 6, 22, 0, 14, 4, 0 },
   { "encoder_named_nav2_swlinear", "encoder minus the three packets carrying registers no gfx10.3 source names [gfx11, SW_MODE fields zeroed]", g11_encoder_named_nav2_swlinear_in, 407, g11_encoder_named_nav2_swlinear_exp, 319, "OK", 0x00000, 1, 1, 239, 124, 0, 27, 88, 0, 84, 16, 0 },
   { "encoder_named_4vp", "encoder minus unnamed packets, 4 viewports / 4 scissors [gfx11]", g11_encoder_named_4vp_in, 437, g11_encoder_named_4vp_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 25, 10, 0, 3, 11, 0, 7, 2, 0 },
   { "encoder_named_4vp_swlinear", "encoder minus unnamed packets, 4 viewports / 4 scissors [gfx11, SW_MODE fields zeroed]", g11_encoder_named_4vp_swlinear_in, 437, g11_encoder_named_4vp_swlinear_exp, 349, "OK", 0x00000, 1, 1, 269, 154, 0, 27, 88, 0, 84, 16, 0 },
@@ -806,7 +837,13 @@ static const GoldenVec11 kGolden11[] = {
   { "ngg_learnt_drops_legacy_vs", "NGG learnt in the same stream: non-zero legacy-VS writes then dropped", g11_ngg_learnt_drops_legacy_vs_in, 7, g11_ngg_learnt_drops_legacy_vs_exp, 3, "OK", 0x00000, 0, 1, 3, 0, 0, 1, 0, 2, 1, 0, 0 },
   { "moved_and_repacked", "VGT_GS_OUT_PRIM_TYPE: context -> uconfig address and field repack in one register", g11_moved_and_repacked_in, 3, g11_moved_and_repacked_exp, 3, "OK", 0x00000, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0 },
   { "swmode_linear", "DB_Z_INFO / CB_COLOR0_ATTRIB3 with SW_MODE 0 (linear): translated", g11_swmode_linear_in, 6, g11_swmode_linear_exp, 6, "OK", 0x00000, 1, 1, 2, 1, 0, 1, 0, 0, 2, 0, 0 },
-  { "swmode_tiled_refused", "CB_COLOR0_ATTRIB3 COLOR_SW_MODE 9: refused until X3 adds the gfx11 swizzle table", g11_swmode_tiled_refused_in, 3, g11_swmode_tiled_refused_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "swmode_tiled", "CB_COLOR0_ATTRIB3 COLOR_SW_MODE 9 64KB_S, DB_Z_INFO SW_MODE 22 4KB_D_X: on both tables, passed unchanged", g11_swmode_tiled_in, 6, g11_swmode_tiled_exp, 6, "OK", 0x00000, 1, 1, 2, 1, 0, 1, 0, 0, 2, 0, 0 },
+  { "swmode_1_refused", "CB_COLOR0_ATTRIB3 COLOR_SW_MODE 1 (256B_S: Reserved on gfx11): refused", g11_swmode_1_refused_in, 3, g11_swmode_1_refused_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "swmode_23_refused", "CB_COLOR0_ATTRIB3 COLOR_SW_MODE 23 (4KB_R_X: Reserved on gfx11): refused", g11_swmode_23_refused_in, 3, g11_swmode_23_refused_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "swmode_28_refused", "CB_COLOR0_ATTRIB3 COLOR_SW_MODE 28 (gfx10 VAR_Z_X vs gfx11 256KB_Z_X): refused", g11_swmode_28_refused_in, 3, g11_swmode_28_refused_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "swmode_31_refused", "CB_COLOR0_ATTRIB3 COLOR_SW_MODE 31 (gfx10 VAR_R_X vs gfx11 256KB_R_X): refused", g11_swmode_31_refused_in, 3, g11_swmode_31_refused_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "swmode_12_refused", "CB_COLOR0_ATTRIB3 COLOR_SW_MODE 12 (Reserved on gfx10): refused", g11_swmode_12_refused_in, 3, g11_swmode_12_refused_exp, 0, "ERR_SWMODE", 0x28ee0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { "swmode_23_db_refused", "DB_Z_INFO SW_MODE 23: refused", g11_swmode_23_db_refused_in, 3, g11_swmode_23_db_refused_exp, 0, "ERR_SWMODE", 0x28040, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
 };
 #define GOLDEN11_COUNT (sizeof(kGolden11)/sizeof(kGolden11[0]))
 
@@ -3476,19 +3513,19 @@ static const RegCase11 kRegCases11[] = {
   { 0x28edc, "CB_COLOR7_ATTRIB2", 0xb08ec21c, "OK", { 0xc0016900, 0x000003b7, 0xb08ec21c }, 3 },
   { 0x28ee0, "CB_COLOR0_ATTRIB3", 0xffffffff, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
   { 0x28ee0, "CB_COLOR0_ATTRIB3", 0x5a582b45, "OK", { 0xc0016900, 0x000003b8, 0x42002b45 }, 3 },
-  { 0x28ee0, "CB_COLOR0_ATTRIB3", 0x296ca8e0, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
+  { 0x28ee0, "CB_COLOR0_ATTRIB3", 0x296ca8e0, "OK", { 0xc0016900, 0x000003b8, 0x0104a8e0 }, 3 },
   { 0x28ee4, "CB_COLOR1_ATTRIB3", 0xffffffff, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
   { 0x28ee4, "CB_COLOR1_ATTRIB3", 0x5a582b41, "OK", { 0xc0016900, 0x000003b9, 0x42002b41 }, 3 },
-  { 0x28ee4, "CB_COLOR1_ATTRIB3", 0xa24a8fa4, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
+  { 0x28ee4, "CB_COLOR1_ATTRIB3", 0xa24a8fa4, "OK", { 0xc0016900, 0x000003b9, 0x02028fa4 }, 3 },
   { 0x28ee8, "CB_COLOR2_ATTRIB3", 0xffffffff, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
   { 0x28ee8, "CB_COLOR2_ATTRIB3", 0x5a582b4d, "OK", { 0xc0016900, 0x000003ba, 0x42002b4d }, 3 },
   { 0x28ee8, "CB_COLOR2_ATTRIB3", 0x1b287668, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
   { 0x28eec, "CB_COLOR3_ATTRIB3", 0xffffffff, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
   { 0x28eec, "CB_COLOR3_ATTRIB3", 0x5a582b49, "OK", { 0xc0016900, 0x000003bb, 0x42002b49 }, 3 },
-  { 0x28eec, "CB_COLOR3_ATTRIB3", 0x94065d2c, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
+  { 0x28eec, "CB_COLOR3_ATTRIB3", 0x94065d2c, "OK", { 0xc0016900, 0x000003bb, 0x00065d2c }, 3 },
   { 0x28ef0, "CB_COLOR4_ATTRIB3", 0xffffffff, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
   { 0x28ef0, "CB_COLOR4_ATTRIB3", 0x5a582b55, "OK", { 0xc0016900, 0x000003bc, 0x42002b55 }, 3 },
-  { 0x28ef0, "CB_COLOR4_ATTRIB3", 0x0ce443f0, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
+  { 0x28ef0, "CB_COLOR4_ATTRIB3", 0x0ce443f0, "OK", { 0xc0016900, 0x000003bc, 0x000443f0 }, 3 },
   { 0x28ef4, "CB_COLOR5_ATTRIB3", 0xffffffff, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
   { 0x28ef4, "CB_COLOR5_ATTRIB3", 0x5a582b51, "OK", { 0xc0016900, 0x000003bd, 0x42002b51 }, 3 },
   { 0x28ef4, "CB_COLOR5_ATTRIB3", 0x85c22ab4, "ERR_SWMODE", { 0x00000000, 0x00000000, 0x00000000 }, 0 },
