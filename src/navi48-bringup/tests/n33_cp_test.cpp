@@ -260,7 +260,7 @@ static void stop_cases() {
 	CHECK(k6_plan(kModeNone, f, false, m, kPlanMax, &nm) == kWhyArg);
 	CHECK(k6_plan(kModeMmio, f, false, m, kPlanMax, &nm) == kWhyOk);
 	CHECK(k6_plan(kModeDb, f, false, d, kPlanMax, &nd) == kWhyOk);
-	CHECK(nm == 15 && nd == 19);
+	CHECK(nm == 16 && nd == 20);
 	CHECK(m[0].reg == kGrbmGfxCntl && m[0].value == kSelQ0);
 	CHECK(m[1].op == kOpPoll && m[1].reg == kHqdActive && m[1].value == 0);
 	CHECK(m[2].op == kOpWIfSet && m[2].reg == kDequeue && m[2].value == 1);
@@ -277,9 +277,10 @@ static void stop_cases() {
 	r.v[kS2aEntry0] = 0x02000040u;
 	r.run(s, ns);
 	r.v[kPqRptr] = 256; r.v[kPqWptrLo] = 256;
+	r.v[kHqdError] = 0x80000;                              // a faulted queue: K6 must clear TC_UTCL1_ERROR
 	r.run(d, nd);
 	CHECK(!r.resetRan && !r.busy);
-	CHECK(r.get(kHqdActive) == 0 && r.get(kPqRptr) == 0 && r.get(kPqWptrLo) == 0 && r.get(kPqDoorbell) == 0 && r.get(kDequeue) == 0);
+	CHECK(r.get(kHqdActive) == 0 && r.get(kPqRptr) == 0 && r.get(kPqWptrLo) == 0 && r.get(kPqDoorbell) == 0 && r.get(kDequeue) == 0 && r.get(kHqdError) == 0);
 	CHECK(r.get(kPqStatus) == 0 && r.get(kMecDbLower) == 0x110 && r.get(kMecDbUpper) == 0xFFC && r.get(kS2aEntry0) == 0x02000040u);
 	CHECK(r.get(kCpMecRs64Cntl) == 0x44000000u && r.get(kGrbmGfxCntl) == 0);
 	// A queue that does not drain: the reset stage runs, then the second poll sees it go.

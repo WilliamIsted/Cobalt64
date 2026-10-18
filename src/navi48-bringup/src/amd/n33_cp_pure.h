@@ -406,6 +406,7 @@ inline uint32_t k6_plan(uint32_t mode, const Found &f, bool unload, Entry *out, 
 	p.add(kOpWIfBusy, kSpiQueueReset, all, 1, 0);
 	p.add(kOpPoll, kHqdActive, kActive, ms, 0);            // a timeout is tolerated, as AM's (ip.py:452-453)
 	p.w(kDequeue, 0, 0);
+	p.w(kHqdError, 0, all);                                // a VM fault latches TC_UTCL1_ERROR here; K1 refuses while set (Linux reloads 0 from the MQD, amdgpu_amdkfd_gfx_v11.c:198-200)
 	p.w(kPqRptr, 0, 0);
 	p.w(kPqWptrLo, 0, all); p.w(kPqWptrHi, 0, all);
 	p.w(kPqDoorbell, 0, all);
