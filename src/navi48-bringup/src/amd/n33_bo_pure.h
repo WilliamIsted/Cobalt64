@@ -232,4 +232,17 @@ inline bool fault_match(uint32_t status, uint32_t addrLo, uint32_t addrHi, uint6
 	       addrLo == (uint32_t)(va >> 12) && (addrHi & 0xFu) == (uint32_t)((va >> 44) & 0xFu);
 }
 
+// ---- What a VM fault does to the MEC compute queue on gfx11 (hardware, task README "bo fault"; sources) --------------
+// A VM fault on a compute (MEC) queue is FATAL on gfx11 and the queue cannot continue: the only CP UTCL1 error-halt-disable
+// is CP_DEBUG.CPG_UTCL1_ERROR_HALT_DISABLE, which is the graphics ring (CPG). gc_11_0_0_sh_mask.h has no CPC/compute
+// equivalent, and gfx_v11_0.c:6721-6725 treats a compute/user-queue fault as fatal, leaving the HQD halted for a per-queue
+// reset. So the deliberate fault latches GCVM_L2_PROTECTION_FAULT_STATUS correctly AND halts the queue: CP_HQD_ERROR latches
+// TC_UTCL1_ERROR (bit 19, 0x80000) and the IB's RELEASE_MEM fence never lands. The W2 design's R3 (redirect to the dummy
+// page so the queue carries on) is wrong for the compute queue. The correct result is a correctly latched, cleared fault
+// and a halted queue; a K6 drain then recovers it (a fence that landed would mean the queue continued, which it does not).
+constexpr uint32_t kHqdErrTcUtcl1 = 0x80000u;   // CP_HQD_ERROR.TC_UTCL1_ERROR (gc_11_0_0_sh_mask.h:17714, :17728)
+inline bool fault_pass(bool match, uint32_t statusAfterClear, bool queueHalted) {
+	return match && statusAfterClear == 0 && queueHalted;
+}
+
 } // namespace n33bo

@@ -11196,7 +11196,8 @@ uint32_t Navi48Bringup::n33CpIbWait(uint32_t stream, uint32_t seq, uint64_t wp, 
 	auto landed = [&]() {
 		if (stream == kXibWd) return (uint32_t)(hb[kHostXibWd / 4] == xib_wd_value(seq));
 		if (stream == kXibBoCopy) return n33BoLanded(seq);   // W2: destination samples, read through its CPU map
-		if (stream == kXibBoFault) return 0u;                // W2: stores nothing anyone reads
+		if (stream == kXibVmCopy || stream == kXibVmDispatch) return n33VmLanded(seq);   // W2V: through the destination BO's CPU map
+		if (is_fault_stream(stream)) return 0u;              // a fault stores nothing anyone reads
 		uint32_t k = 0; for (uint32_t i = 0; i < kResultDw; i++) k += hb[i] == kMagic + i; return k;
 	};
 	const uint32_t limit = timeout_us(3);   // the 2 s dispatch timeout
@@ -11222,7 +11223,7 @@ uint32_t Navi48Bringup::n33CpIbWait(uint32_t stream, uint32_t seq, uint64_t wp, 
 	rmmio[kGrbmGfxCntl] = 0;
 	const uint32_t fault = rmmio[kGcFaultStatus], cpc = rmmio[kCpcStatus], slot = r32(kRptrSlot), ip = rmmio[kMecInstrPntr];
 	// W2's fault stream expects a GC fault: the queue's health is judged without it, and n33CpWait judges the fault.
-	const TestRead r = { seen, rptr_at(rptr, wp), (active & kActive) != 0, stream == kXibBoFault ? 0u : fault, err, rptr != rptr0 };
+	const TestRead r = { seen, rptr_at(rptr, wp), (active & kActive) != 0, is_fault_stream(stream) ? 0u : fault, err, rptr != rptr0 };
 	const uint32_t latch = outcome(r);
 	N48LOG("n33 cp: IB wait (%s, stream %u, seq %u) -> page B: %s after %u us, data %u/%u (first %d us), fence %s (first %d us), "
 	       "PQ_RPTR %#x (want %#x), wptr %llu, rptr slot %#x, ACTIVE %#x, HQD_ERROR %#x, INSTR_PNTR %#x, "
@@ -11327,21 +11328,39 @@ uint32_t Navi48Bringup::n33CpWait(uint32_t seq, uint64_t *out, uint32_t outCount
 	const uint32_t latch = n33CpIbWait(stream, n33Cp.submitSeq, n33Cp.submitWp, n33Cp.submitRptr0, hb, out, outCount);
 	record_waitseq(n33Cp, latch);
 	if (outCount > 13) { out[12] = stream; out[13] = xib_want(stream); }   // which stores out[2] counts (X4b)
-	if (stream == kXibBoFault) {
-		// W2: the fault the write to the unmapped VA must have latched, then Linux's clear (gmc_v11_0.c:133-134: one RMW
-		// setting CLEAR_PROTECTION_FAULT_STATUS_ADDR). out[1] retired and matched, out[2] status, out[6] status after the
-		// clear, out[13] the logical page address (HI32 << 32 | LO32).
+	if (is_fault_stream(stream)) {
+		// W2/W2V: the write to the unmapped VA must have latched the fault AND halted the queue (gfx11 compute cannot
+		// continue past a VM fault: no CPC halt-disable exists, gfx_v11_0.c:6721; n33_bo_pure.h). Read the status twice:
+		// the first is the dummy read Linux does on the GFXHUB for the fast GRBM interface (gmc_v11_0.c:126-133). Then
+		// Linux's clear (gmc_v11_0.c:133-134: one RMW setting CLEAR_PROTECTION_FAULT_STATUS_ADDR). The queue is left
+		// halted; a cp stop (K6) then a cp start recovers it. For W2V the fault VA is the VMID-8 VA and the latched VMID
+		// in the status must be 8. out[1] pass, out[2] status, out[6] status after the clear, out[8] CP_HQD_ERROR, out[13]
+		// the logical page address (HI32 << 32 | LO32).
+		const bool vmFault = stream == kXibVmFault;
+		const uint64_t faultVa = vmFault ? n33VmSubFaultVa : n33Bo.faultVa;
+		(void)rmmio[kGcFaultStatus];                          // dummy read (fast GRBM), gmc_v11_0.c:126-133
 		const uint32_t st = rmmio[kGcFaultStatus], lo = rmmio[kGcFaultAddrLo], hi = rmmio[kGcFaultAddrHi];
-		const bool match = n33bo::fault_match(st, lo, hi, n33Bo.faultVa);
+		const bool match = vmFault ? n33vm::fault_match(st, lo, hi, faultVa) : n33bo::fault_match(st, lo, hi, faultVa);
 		rmmio[n33bo::kFaultCntl] = rmmio[n33bo::kFaultCntl] | n33bo::kFaultClear;
 		const uint32_t after = rmmio[kGcFaultStatus];
-		N48LOG("n33 bo: fault at VA %#llx: status %#x (RW %u, VMID %u, CID %#x), page %#x:%#x, %s; after the clear status %#x",
-		       n33Bo.faultVa, st, (st & n33bo::kStatusRw) ? 1 : 0, (st & n33bo::kStatusVmidMask) >> n33bo::kStatusVmidShift,
-		       (st & n33bo::kStatusCidMask) >> n33bo::kStatusCidShift, hi, lo, match ? "as expected" : "NOT the expected fault", after);
-		if (outCount > 13) { out[1] = latch == kLatchNone && match; out[2] = st; out[6] = after; out[13] = (uint64_t)hi << 32 | lo; }
-		n33Bo.faultVa = 0;
+		const uint32_t hqdErr = outCount > 8 ? (uint32_t)out[8] : 0;   // CP_HQD_ERROR, read by n33CpIbWait above
+		const bool halted = latch != kLatchNone && hqdErr != 0;        // the expected fatal fault halted the MEC queue
+		const bool pass = n33bo::fault_pass(match, after, halted);
+		// The fault was the intended outcome and has been handled: do not keep a hard latch, so a cp stop (K6) and then a
+		// cp start re-init the HQD and a W1 cycle can prove the queue is reusable (W2 design R3, Q-W2a recovery).
+		if (pass) n33Cp.latch = kLatchNone;
+		N48LOG("n33 %s: fault at VA %#llx: status %#x (RW %u, VMID %u, CID %#x), page %#x:%#x, %s; HQD_ERROR %#x (queue %s), "
+		       "after the clear status %#x", vmFault ? "vm" : "bo",
+		       faultVa, st, (st & n33bo::kStatusRw) ? 1 : 0, (st & n33bo::kStatusVmidMask) >> n33bo::kStatusVmidShift,
+		       (st & n33bo::kStatusCidMask) >> n33bo::kStatusCidShift, hi, lo,
+		       pass ? "fault latched as expected, queue halted (recover with cp stop + cp start)"
+		            : match ? "fault latched but the queue did not halt as gfx11 compute should" : "NOT the expected fault",
+		       hqdErr, halted ? "halted" : "not halted", after);
+		if (outCount > 13) { out[1] = pass; out[2] = st; out[6] = after; out[13] = (uint64_t)hi << 32 | lo; }
+		n33Bo.faultVa = 0; n33VmSubFaultVa = 0;
 	}
 	if (stream == kXibBoCopy) n33Bo.copySrc = n33Bo.copyDst = 0;
+	if (stream == kXibVmCopy || stream == kXibVmDispatch) { n33Bo.copySrc = n33Bo.copyDst = 0; }
 	return kWhyOk;
 }
 

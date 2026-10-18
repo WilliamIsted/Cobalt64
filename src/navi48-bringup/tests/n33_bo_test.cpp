@@ -180,6 +180,13 @@ static void stream_cases() {
 	CHECK(!fault_match(0, 0x8401FFF, 0, fva) && !fault_match(1, 0x8401FFF, 0, fva));         // nothing, or a read
 	CHECK(!fault_match(kStatusRw | (1u << 20), 0x8401FFF, 0, fva));                            // VMID 1
 	CHECK(!fault_match(kStatusRw, 0x8401FFE, 0, fva) && !fault_match(kStatusRw, 0x8401FFF, 1, fva));
+	// gfx11 compute cannot continue past a VM fault (no CPC halt-disable): the correct result is a matched, cleared fault
+	// AND a halted queue. A fence that landed (queue not halted) would be wrong.
+	CHECK(kHqdErrTcUtcl1 == 0x80000u);
+	CHECK(fault_pass(true, 0, true));                 // latched + cleared + queue halted
+	CHECK(!fault_pass(false, 0, true));               // the fault did not match
+	CHECK(!fault_pass(true, kStatusRw, true));        // status did not clear
+	CHECK(!fault_pass(true, 0, false));               // the queue did not halt (it would mean it continued, which it cannot)
 }
 
 // ---- Part 2: the Linux headers --------------------------------------------------------------------------------------
@@ -297,8 +304,13 @@ static int header_check(const char *root) {
 	bad += expect(gcMask, "GCVM_L2_PROTECTION_FAULT_STATUS__CID__SHIFT", kStatusCidShift, "gc_11_0_0_sh_mask.h");
 	bad += expect(gcMask, "GCVM_L2_PROTECTION_FAULT_ADDR_LO32__LOGICAL_PAGE_ADDR_LO32_MASK", 0xFFFFFFFFull, "gc_11_0_0_sh_mask.h");
 	bad += expect(gcMask, "GCVM_L2_PROTECTION_FAULT_ADDR_HI32__LOGICAL_PAGE_ADDR_HI4_MASK", 0xF, "gc_11_0_0_sh_mask.h");
-	printf("header check: 7 PTE bits, MTYPE, PTE layout, 3 VM flags, COPY_DATA, 4 fault registers, 8 fault fields: %s\n",
-	       bad ? "FAILED" : "all match");
+	// gfx11 compute-fault recovery: CP_HQD_ERROR.TC_UTCL1_ERROR is the bit the MEC queue latches on a VM fault, and the
+	// ONLY CP UTCL1 error-halt-disable is CPG (graphics), not CPC (compute), so the compute queue cannot continue.
+	bad += expect(gcMask, "CP_HQD_ERROR__TC_UTCL1_ERROR_MASK", kHqdErrTcUtcl1, "gc_11_0_0_sh_mask.h");
+	if (gcMask.find("CP_DEBUG__CPG_UTCL1_ERROR_HALT_DISABLE_MASK") == gcMask.end()) { printf("FAIL: no CPG halt-disable\n"); bad++; }
+	if (gcMask.find("CP_DEBUG__CPC_UTCL1_ERROR_HALT_DISABLE_MASK") != gcMask.end()) { printf("FAIL: a CPC halt-disable exists; gfx11 compute fault may be recoverable after all\n"); bad++; }
+	printf("header check: 7 PTE bits, MTYPE, PTE layout, 3 VM flags, COPY_DATA, 4 fault registers, 8 fault fields, "
+	       "CP_HQD_ERROR TC_UTCL1 + no CPC halt-disable: %s\n", bad ? "FAILED" : "all match");
 	return bad;
 }
 
