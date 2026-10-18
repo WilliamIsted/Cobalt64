@@ -42,6 +42,20 @@ IOReturn IOAccelNavi48NativeClient::create(Navi48Bringup *owner, IOService *atta
 	// The gate, exclusivity and the fresh tree. Nothing has been attached yet, so a refusal is a plain release.
 	// 0.0.627 (G2): the open returns this client's session (slot, id); the WindowServer note is set by the open itself (`hangtest` refuses by name while one is open).
 	amdgpu::N1cRef ref { 0u, 0u };
+#if defined(N33_OBSERVE)
+	// W3 (step 7): on the N33 build the open and every selector go through owner->n33n* (the native bridge over W1/W2/W2V),
+	// not the gfx12 engine. The per-open gate (K1-K3 ran, a W2V VM exists, one client at a time) is in n33nOpen.
+	if (owner->n33IsObserving()) {
+		uint32_t id = 0;
+		const IOReturn rc = owner->n33nOpen(&id);
+		if (rc != kIOReturnSuccess) { uc->release(); return rc; }
+		uc->sessSlot = 0; uc->sessId = id; uc->opened = true;
+		if (!uc->attach(attachTo)) { owner->n33nClose(); uc->opened = false; uc->release(); return kIOReturnInternalError; }
+		if (!uc->start(attachTo))  { uc->detach(attachTo); owner->n33nClose(); uc->opened = false; uc->release(); return kIOReturnInternalError; }
+		*handler = uc;
+		return kIOReturnSuccess;
+	}
+#endif
 	const IOReturn rc = amdgpu::n1c_open(*owner->bringupContext(), uc->wsSession, &ref);
 	if (rc != kIOReturnSuccess) { uc->release(); return rc; }
 	uc->sessSlot = ref.slot; uc->sessId = ref.id;
@@ -119,11 +133,17 @@ bool IOAccelNavi48NativeClient::start(IOService *provider) {
 
 // Cleanup is idempotent (n1c_close), and runs from every path the contract names: clientClose, clientDied (which calls clientClose) and stop.
 void IOAccelNavi48NativeClient::stop(IOService *provider) {
+#if defined(N33_OBSERVE)
+	if (opened && owner && owner->n33IsObserving()) { owner->n33nClose(); opened = false; super::stop(provider); return; }
+#endif
 	if (opened) { n48disp_on_ws_client_closed(wsSession); amdgpu::n1c_unmap_for_close(amdgpu::N1cRef{ sessSlot, sessId }, this); amdgpu::n1c_close(amdgpu::N1cRef{ sessSlot, sessId }, "stop"); opened = false; }   // 0.0.617 (K1); 0.0.627: keyed on THIS session being WindowServer's
 	super::stop(provider);
 }
 
 IOReturn IOAccelNavi48NativeClient::clientClose() {
+#if defined(N33_OBSERVE)
+	if (opened && owner && owner->n33IsObserving()) { owner->n33nClose(); opened = false; terminate(); return kIOReturnSuccess; }
+#endif
 	if (opened) { n48disp_on_ws_client_closed(wsSession); amdgpu::n1c_unmap_for_close(amdgpu::N1cRef{ sessSlot, sessId }, this); amdgpu::n1c_close(amdgpu::N1cRef{ sessSlot, sessId }, "clientClose"); opened = false; terminate(); }   // 0.0.617 (K1): the WindowServer client's close disarms an armed display pipe FIRST, with no lock held (0.0.627: keyed on THIS session being WindowServer's)
 	return kIOReturnSuccess;
 }
@@ -132,6 +152,9 @@ IOReturn IOAccelNavi48NativeClient::clientMemoryForType(UInt32 type, IOOptionBit
 	if (!memory) return kIOReturnBadArgument;
 	*memory = nullptr;
 	if (!opened) return kIOReturnNotReady;
+#if defined(N33_OBSERVE)
+	if (owner && owner->n33IsObserving()) return owner->n33nMemoryForHandle((uint32_t)type, options, memory);   // W3: CPU map of a VRAM/GTT BO
+#endif
 	return amdgpu::n1c_memory_for_handle(amdgpu::N1cRef{ sessSlot, sessId }, (uint32_t)type, options, memory);
 }
 
@@ -141,6 +164,9 @@ IOReturn IOAccelNavi48NativeClient::externalMethod(uint32_t selector, IOExternal
 	(void)dispatch; (void)target; (void)reference;
 	if (!args || !opened) return kIOReturnNotReady;
 	if (args->structureInputDescriptor != nullptr || args->structureOutputDescriptor != nullptr) return kIOReturnBadArgument;
+#if defined(N33_OBSERVE)
+	if (owner && owner->n33IsObserving()) return n33Dispatch(selector, args);   // W3: the N48N subset over W1/W2/W2V
+#endif
 	const uint32_t sic = args->scalarInputCount, soc = args->scalarOutputCount, sis = args->structureInputSize, sos = args->structureOutputSize;
 	const uint64_t *si = args->scalarInput;
 	uint64_t *so = args->scalarOutput;
@@ -293,3 +319,56 @@ IOReturn IOAccelNavi48NativeClient::externalMethod(uint32_t selector, IOExternal
 	}
 	return kIOReturnBadArgument;   // an unknown selector on the native client: nothing falls through to IOUserClient's dispatch
 }
+
+#if defined(N33_OBSERVE)
+// W3 (step 7): the N48N subset on the N33 build. Same shape rules as the gfx12 switch above (scalar counts and struct
+// sizes EXACTLY, every struct inline), but the ten selectors go to owner->n33n* (the native bridge over W1/W2/W2V).
+// Selectors outside the ten (ReadRegs is one of them; the scanout / DAL / mode set is not) are refused: the N33 build
+// has no display/mode engine behind them.
+IOReturn IOAccelNavi48NativeClient::n33Dispatch(uint32_t selector, IOExternalMethodArguments *args) {
+	const uint32_t sic = args->scalarInputCount, soc = args->scalarOutputCount, sis = args->structureInputSize, sos = args->structureOutputSize;
+	const uint64_t *si = args->scalarInput;
+	uint64_t *so = args->scalarOutput;
+	auto shape = [&](uint32_t wSic, uint32_t wSoc, uint32_t wSis, uint32_t wSos) {
+		return sic == wSic && soc == wSoc && sis == wSis && sos == wSos &&
+		       (wSis == 0 || args->structureInput != nullptr) && (wSos == 0 || args->structureOutput != nullptr);
+	};
+	switch (selector) {
+	case N48N_SEL_HELLO:
+		if (!shape(2, 4, 0, 0)) return kIOReturnBadArgument;
+		return owner->n33nHello(si[0], si[1], so);
+	case N48N_SEL_QUERYINFO:
+		if (!shape(0, 0, 0, sizeof(n48n_info))) return kIOReturnBadArgument;
+		return owner->n33nQueryInfo(static_cast<n48n_info *>(args->structureOutput));
+	case N48N_SEL_READREGS:
+		if (sic != 3 || soc != 0 || sis != 0) return kIOReturnBadArgument;
+		if (si[1] < 1 || si[1] > 16 || sos != (uint32_t)si[1] * 4u || args->structureOutput == nullptr) return kIOReturnBadArgument;
+		return owner->n33nReadRegs(si[0], si[1], si[2], static_cast<uint32_t *>(args->structureOutput));
+	case N48N_SEL_BOCREATE:
+		if (!shape(0, 4, sizeof(n48n_gem_create_in), 0)) return kIOReturnBadArgument;
+		return owner->n33nBoCreate(static_cast<const n48n_gem_create_in *>(args->structureInput), so);
+	case N48N_SEL_BOFREE:
+		if (!shape(1, 0, 0, 0)) return kIOReturnBadArgument;
+		return owner->n33nBoFree((uint32_t)si[0]);
+	case N48N_SEL_GEMVA:
+		if (!shape(0, 0, sizeof(n48n_gem_va), 0)) return kIOReturnBadArgument;
+		return owner->n33nGemVa(static_cast<const n48n_gem_va *>(args->structureInput));
+	case N48N_SEL_CTX:
+		if (!shape(0, 0, sizeof(n48n_ctx), sizeof(n48n_ctx))) return kIOReturnBadArgument;
+		return owner->n33nCtx(static_cast<const n48n_ctx *>(args->structureInput), static_cast<n48n_ctx *>(args->structureOutput));
+	case N48N_SEL_SUBMIT:
+		if (sic != 0 || soc != 1 || sos != 0 || sis < 32u + 32u || sis > 32u + 32u * N48N_MAX_IBS || args->structureInput == nullptr)
+			return kIOReturnBadArgument;
+		return owner->n33nSubmit(static_cast<const uint8_t *>(args->structureInput), sis, so);
+	case N48N_SEL_WAITSEQ:
+		if (!shape(3, 3, 0, 0)) return kIOReturnBadArgument;
+		return owner->n33nWait(si[0], si[1], so);
+	case N48N_SEL_BO_IMPORT_HOST:
+		if (!shape(4, 4, 0, 0)) return kIOReturnBadArgument;
+		if (!n48native::policy::import_caller_ok(current_task(), task)) return kIOReturnNotPermitted;   // only a thread of the opening task
+		return owner->n33nBoImportHost(task, si[0], si[1], si[2], si[3], so);
+	default:
+		return kIOReturnBadArgument;   // the scanout / DAL / mode selectors are not served on the N33 build
+	}
+}
+#endif

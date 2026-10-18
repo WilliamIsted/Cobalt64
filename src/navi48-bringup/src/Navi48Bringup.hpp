@@ -41,6 +41,9 @@
 #include "amd/n33_ih_pure.h"        // N33 step 4, IH 6.0.2 ring 0: n33ih::State (pure, no kernel types)
 #include "amd/n33_bo_pure.h"        // N33 step 7 W2, buffer objects in VMID 0: n33bo::State (pure, no kernel types)
 #include "amd/n33_vm_pure.h"        // N33 step 7 W2V, a per-process GPU VM in VMID 8: n33vm::State (pure, no kernel types)
+#if defined(N33_OBSERVE)
+#include "amd/n33_native_pure.h"    // N33 step 7 W3, the N48N user-client subset: n33n::Client / SubmitReq (pure; brings in Navi48NativeABI.h)
+#endif
 #include "amd/n48log.h"
 #include "amd/rebar_pure.h"   // 0.0.663: Resizable BAR planning (pure)
 #include "amd/amdgpu_init.h"
@@ -70,6 +73,22 @@ public:
 	uint32_t n33ScanoutTo(bool ours);   // the self-flip; called only by n33_fb_scanout, under its lock
 	IOReturn n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount,
 	                 task_t caller = TASK_NULL);   // caller: the user client's task, for W2's bo import only
+	// Stage 3 step 7 W3: the N48N native client on the N33 build. IOAccelNavi48NativeClient dispatches to these when
+	// n33IsObserving(); the pure decisions are n33_native_pure.h. One client at a time. Defined in amd/n33_native.cpp.
+	IOReturn n33nOpen(uint32_t *idOut);
+	void     n33nClose();
+	bool     n33nIsOpen() const { return n33NativeOpen; }
+	IOReturn n33nHello(uint64_t clientAbi, uint64_t flags, uint64_t out[4]);
+	IOReturn n33nQueryInfo(n48n_info *out);
+	IOReturn n33nReadRegs(uint64_t off, uint64_t count, uint64_t instance, uint32_t *out);
+	IOReturn n33nBoCreate(const n48n_gem_create_in *in, uint64_t out[4]);
+	IOReturn n33nBoFree(uint32_t handle);
+	IOReturn n33nBoImportHost(task_t task, uint64_t hostVa, uint64_t size, uint64_t flags, uint64_t gpuVa, uint64_t out[4]);
+	IOReturn n33nGemVa(const n48n_gem_va *in);
+	IOReturn n33nCtx(const n48n_ctx *in, n48n_ctx *out);
+	IOReturn n33nSubmit(const uint8_t *in, uint32_t size, uint64_t *seqOut);
+	IOReturn n33nWait(uint64_t target, uint64_t timeoutNs, uint64_t out[3]);
+	IOReturn n33nMemoryForHandle(uint32_t handle, IOOptionBits *options, IOMemoryDescriptor **memory);
 #endif
 	// Navi48Ttl answers Apple's queryHwBlockRegisterBase straight out of this.
 	const IpDiscovery      &ipDisc() const { return ipDiscovery; }
@@ -294,6 +313,11 @@ private:
 	uint64_t n33VmSubSrcOff { 0 };    // the source BO byte offset (copy)
 	uint64_t n33VmSubDstOff { 0 };    // the destination BO byte offset (copy/dispatch); the handles are n33Bo.copySrc/copyDst
 	uint64_t n33VmSubSrcVa { 0 }, n33VmSubDstVa { 0 }, n33VmSubCodeVa { 0 }, n33VmSubFaultVa { 0 };
+	// W3 (step 7): the N48N native client's own state (one client at a time) and the caller-IB submit kick.
+	n33n::Client n33NativeClient {};
+	bool         n33NativeOpen { false };
+	uint32_t     n33NativeId { 0 };
+	uint32_t n33VmSubmitUser(const n33n::SubmitReq &req, uint64_t *out, uint32_t outCount);   // the caller's IBs, VMID 8, fence = kernel seqno in host page B (as W2V)
 #endif
 	// --- stages ---
 	bool probeMemSize();

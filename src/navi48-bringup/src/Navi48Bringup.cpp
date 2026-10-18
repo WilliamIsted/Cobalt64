@@ -7147,7 +7147,10 @@ IOReturn Navi48Bringup::newUserClient(task_t owningTask, void *securityID, UInt3
                                       OSDictionary *properties, IOUserClient **handler) {
 	if (!handler) return kIOReturnBadArgument;
 #if defined(N33_OBSERVE)
-	if (n33Observing && type == N48N_UC_TYPE) return kIOReturnNotPermitted;   // observe build: legacy (admin-only) client only
+	// W3 (step 7): on the N33 build the N48N client is the native W3 bridge (IOAccelNavi48NativeClient dispatches to the
+	// n33n* engine). The per-open gate (step 6 K1-K3 ran and a W2V VM exists, one client at a time) is in n33nOpen.
+	if (n33Observing && type == N48N_UC_TYPE)
+		return IOAccelNavi48NativeClient::create(this, this, n48native::policy::kRouteBringup, owningTask, securityID, type, properties, handler);
 #endif
 	// NATIVE S1c (0.0.601): type 'N48N' is the native user client; every other type is the legacy Navi48UserClient, exactly as before.
 	if (type == N48N_UC_TYPE) return IOAccelNavi48NativeClient::create(this, this, n48native::policy::kRouteBringup, owningTask, securityID, type, properties, handler);   // 0.0.656 (G6): the Navi48Bringup route (WindowServer, root tools); the accelerator route is Navi48MetalNub's native_open
@@ -11241,6 +11244,7 @@ uint32_t Navi48Bringup::n33CpIbWait(uint32_t stream, uint32_t seq, uint64_t wp, 
 		if (stream == kXibBoCopy) return n33BoLanded(seq);   // W2: destination samples, read through its CPU map
 		if (stream == kXibVmCopy || stream == kXibVmDispatch) return n33VmLanded(seq);   // W2V: through the destination BO's CPU map
 		if (is_fault_stream(stream)) return 0u;              // a fault stores nothing anyone reads
+		if (stream == kXibVmUser) return 0u;                 // W3: the kext judges only the fence and queue health; Mesa reads its own BO
 		uint32_t k = 0; for (uint32_t i = 0; i < kResultDw; i++) k += hb[i] == kMagic + i; return k;
 	};
 	const uint32_t limit = timeout_us(3);   // the 2 s dispatch timeout

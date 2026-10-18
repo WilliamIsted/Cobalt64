@@ -54,6 +54,10 @@ private:
 	uint64_t       appKey { 0 };            // 0.0.641: the opener's executable-name key (Navi48AppKey.h) when admitted as an APP; the strike count's key
 	uint32_t       sessSlot { 0 };          // 0.0.627 (G2): this client's session (amdgpu::N1cRef): slot 0..3 = VMID 8..11 ...
 	uint32_t       sessId { 0 };            // ... and the id of its open (0 = none). Every engine call carries both; a stale pair is refused.
+#if defined(N33_OBSERVE)
+	// W3 (step 7): on the N33 build the N48N client dispatches the ten selectors to owner->n33n* (the native bridge).
+	IOReturn n33Dispatch(uint32_t selector, IOExternalMethodArguments *args);
+#endif
 };
 
 #endif /* Navi48NativeClient_hpp */
