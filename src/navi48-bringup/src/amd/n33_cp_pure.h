@@ -241,8 +241,11 @@ enum Why : uint32_t {
 	                     // bytes, or the NBIO doorbell aperture not enabled
 	kWhyArg = 60,        // not a test number (1 to 5) or a mode (mmio, db)
 	kWhyBlob = 61,       // the embedded gfx11 shader blob is not the pinned one (size or sha256)
-	kWhyIbOrder = 62,    // T1 (step 7): cp ib before cp start, or before a plain ring packet (K2/K3) succeeded since the start
+	kWhyIbOrder = 62,    // T1 (step 7): cp ib or cp submit before cp start, before a plain ring packet (K2/K3) succeeded
+	                     // since the start, or (cp submit) while a previous submit has not been waited on
 	kWhyIbOverlap = 63,  // T1: the IB page overlaps a live DMCUB window or another protected range
+	kWhyNoSubmit = 64,   // W1 (step 7): cp waitseq with no outstanding cp submit in this load, or a seqno that is not
+	                     // the outstanding one
 };
 
 // ---- Plans (step 5's Entry and read-back rule, plus three ops of its own) ---------------------------------------
@@ -348,6 +351,10 @@ struct State {
 	uint32_t k1Grbm;        // GRBM_STATUS at the end of K1, for the dispatch tests' busy check
 	bool k5aDataAll;        // K5a's 32 VRAM dwords all landed without GL2_WB
 	bool ibOwned;           // T1 (step 7): cp ib took the IB page (kind 17); kept until unload, like pagesOwned
+	bool submitPending;     // W1 (step 7): a cp submit is outstanding (kicked, not yet waited); one at a time
+	uint32_t submitSeq;     // W1: the RELEASE_MEM seqno cp submit returned
+	uint64_t submitWp;      // W1: the ring wptr after that submit, for cp waitseq's rptr_at check
+	uint32_t submitRptr0;   // W1: CP_HQD_PQ_RPTR just before the submit kick, for cp waitseq's rptrMoved check
 };
 
 // K1's MEC check (code 55): C1 leaves 0x40000000; a K6 in this load leaves pipe 0 active as well.
@@ -364,7 +371,7 @@ inline uint32_t may_start(const State &s, uint32_t mode, bool gcUp, bool c1, boo
 	return kWhyOk;
 }
 inline void record_start(State &s, uint32_t mode, bool ok) {
-	s.running = true; s.mode = mode; s.wptrDw = 0; s.testsOk = 0; s.starts++; s.k5aDataAll = false;
+	s.running = true; s.mode = mode; s.wptrDw = 0; s.testsOk = 0; s.starts++; s.k5aDataAll = false; s.submitPending = false;
 	if (!ok) s.latch = kLatchHard;
 }
 
@@ -417,10 +424,40 @@ inline void record_ib(State &s, uint32_t latch) {
 	if (latch > s.latch) s.latch = latch;
 }
 
+// W1 (step 7): cp submit is T1's INDIRECT_BUFFER kick as the first half of the winsys submit->wait contract. It needs
+// the same state as cp ib (may_ib), plus only one submit outstanding at a time: a second submit before cp waitseq is
+// out of order (62). For W1 the submitted IB is still T1's kext-built K4 stream; a caller-named BO IB comes with W2/W3.
+inline uint32_t may_submit(const State &s) {
+	uint32_t w = may_ib(s);
+	if (w) return w;
+	if (s.submitPending) return kWhyIbOrder;
+	return kWhyOk;
+}
+// cp waitseq polls the outstanding submit's RELEASE_MEM fence. It needs the queue running, a submit outstanding and the
+// seqno to be that submit's; a stale or wrong seqno is refused (64), not silently waited on.
+inline uint32_t may_waitseq(const State &s, uint32_t seq) {
+	if (!s.running) return kWhyIbOrder;
+	if (!s.submitPending || seq != s.submitSeq) return kWhyNoSubmit;
+	return kWhyOk;
+}
+// record_submit: the ring grew by one 256-dword submission (as record_ib), the fence seqno is live and one submit is
+// outstanding. wp is the post-kick wptr and rptr0 the pre-kick CP_HQD_PQ_RPTR, both kept for cp waitseq.
+inline void record_submit(State &s, uint32_t seq, uint64_t wp, uint32_t rptr0) {
+	s.wptrDw += kSubmitDw; s.seq = seq;
+	s.submitPending = true; s.submitSeq = seq; s.submitWp = wp; s.submitRptr0 = rptr0;
+}
+// record_waitseq: the wait consumed the outstanding submit; the latch is carried exactly as record_ib carries it (a
+// timeout marks the mode, a hard failure latches). The wptr already grew at submit, so it is not advanced again.
+inline void record_waitseq(State &s, uint32_t latch) {
+	s.submitPending = false;
+	if (latch == kLatchTimeout) s.timedOut |= 1u << s.mode;
+	if (latch > s.latch) s.latch = latch;
+}
+
 // K6: allowed whenever the queue runs, latched or not. A stop clears a timeout-only latch; a hard latch stays.
 inline uint32_t may_stop(const State &s) { return s.running ? kWhyOk : kWhyOrder; }
 inline void record_stop(State &s, bool ok) {
-	s.running = false; s.wptrDw = 0; s.testsOk = 0;
+	s.running = false; s.wptrDw = 0; s.testsOk = 0; s.submitPending = false;
 	if (s.latch == kLatchTimeout) s.latch = kLatchNone;
 	if (!ok) s.latch = kLatchHard;
 }

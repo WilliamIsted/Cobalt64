@@ -207,7 +207,11 @@ private:
 	uint32_t n33CpTest(uint32_t n, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpStop(bool unload, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpIbPageClear() const;
+	uint32_t n33CpIbBuildKick(uint32_t &seq, uint64_t &wp, uint32_t &rptr0, volatile uint32_t *&hb, uint64_t *out, uint32_t outCount);
+	uint32_t n33CpIbWait(uint32_t seq, uint64_t wp, uint32_t rptr0, volatile uint32_t *hb, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpIb(uint64_t *out, uint32_t outCount);
+	uint32_t n33CpSubmit(uint64_t *out, uint32_t outCount);        // W1 (step 7): the winsys submit half of cp ib
+	uint32_t n33CpWait(uint32_t seq, uint64_t *out, uint32_t outCount);   // W1 (step 7): the winsys waitseq half
 #endif
 	// --- stages ---
 	bool probeMemSize();

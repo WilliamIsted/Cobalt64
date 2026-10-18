@@ -62,6 +62,8 @@ pre)
 	t "cp test 9"                                  32 60 cp test 9
 	t "cp test 1 before start"                     32 54 cp test 1
 	t "cp ib before start"                         35 62 cp ib
+	t "cp submit before start"                     36 62 cp submit
+	t "cp waitseq before start"                    37 62 cp waitseq 1
 	t "cp stop with no queue"                      33 54 cp stop
 	t "raw write to CP_MEC_RS64_CNTL"               1 6  regwrite 0xc904 0
 	t "raw write to CP_HQD_ACTIVE"                  1 6  regwrite 0x320b 1
@@ -73,6 +75,7 @@ pre)
 gc)
 	t "cp start db before gmc g6"                  31 54 cp start db
 	t "cp ib before start"                         35 62 cp ib
+	t "cp submit before start"                     36 62 cp submit
 	;;
 post)
 	t "BAR0 write to the compute ring"              3 116 w 0x8a05000 0
@@ -86,6 +89,8 @@ post)
 	t "cp test 3 before test 2"                    32 54 cp test 3
 	t "cp test 9"                                  32 60 cp test 9
 	t "cp ib before a ring packet (K2/K3)"         35 62 cp ib
+	t "cp submit before a ring packet (K2/K3)"     36 62 cp submit
+	t "cp waitseq with no submit outstanding"      37 64 cp waitseq 1
 	t "sdma start mmio while the compute queue runs" 25 "44|43" sdma start mmio
 	t "raw write to CP_HQD_PQ_WPTR_LO"              1 6  regwrite 0x323f 0x100
 	t "raw write to CP_MEC_RS64_CNTL"               1 6  regwrite 0xc904 0x40000000

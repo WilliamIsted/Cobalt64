@@ -419,6 +419,60 @@ static void t1_cases() {
 	CHECK(r.latch == kLatchTimeout && r.timedOut == (1u << kModeMmio) && r.wptrDw == wp0 + 2 * kSubmitDw);
 }
 
+// W1 (step 7): the cp submit / cp waitseq gates and bookkeeping, the winsys submit->wait split of cp ib.
+static void w1_cases() {
+	CHECK(kWhyNoSubmit == 64);
+	// may_submit: the same gate as may_ib, plus one submit outstanding at a time.
+	State s = {};
+	CHECK(may_submit(s) == kWhyIbOrder);                   // not running
+	record_start(s, kModeMmio, true);
+	CHECK(may_submit(s) == kWhyIbOrder);                   // running but no ring packet landed yet
+	record_test(s, 1, kLatchNone, false);                  // K2
+	CHECK(may_submit(s) == kWhyOk);
+	CHECK(!s.submitPending && may_waitseq(s, 1) == kWhyNoSubmit);   // running, nothing outstanding
+	// A submit: wptr grows by one 256-dword submission (as record_ib), the seqno is live, one submit outstanding.
+	const uint64_t wp0 = s.wptrDw;
+	record_submit(s, 7, wp0 + kSubmitDw, 0x40);
+	CHECK(s.submitPending && s.submitSeq == 7 && s.submitWp == wp0 + kSubmitDw && s.submitRptr0 == 0x40);
+	CHECK(s.seq == 7 && s.wptrDw == wp0 + kSubmitDw);
+	CHECK(may_submit(s) == kWhyIbOrder);                   // a second submit before waitseq is out of order
+	CHECK(may_waitseq(s, 6) == kWhyNoSubmit && may_waitseq(s, 8) == kWhyNoSubmit);   // a wrong seqno is refused
+	CHECK(may_waitseq(s, 7) == kWhyOk);                    // the outstanding one
+	// waitseq retires: the submit is consumed, the wptr is not advanced again, another submit is allowed.
+	record_waitseq(s, kLatchNone);
+	CHECK(!s.submitPending && s.latch == kLatchNone && s.wptrDw == wp0 + kSubmitDw);
+	CHECK(may_waitseq(s, 7) == kWhyNoSubmit && may_submit(s) == kWhyOk);
+	record_submit(s, 8, s.wptrDw + kSubmitDw, 0x80);
+	CHECK(s.submitPending && may_waitseq(s, 8) == kWhyOk);
+	// A timeout on wait marks the mode and consumes the submit; a hard failure latches.
+	record_waitseq(s, kLatchTimeout);
+	CHECK(!s.submitPending && s.timedOut == (1u << kModeMmio) && s.latch == kLatchTimeout);
+	State h = {};
+	record_start(h, kModeDb, true);
+	record_test(h, 1, kLatchNone, false);
+	record_submit(h, 1, kSubmitDw, 0);
+	record_waitseq(h, kLatchHard);
+	CHECK(!h.submitPending && h.latch == kLatchHard);
+	// A latched queue refuses a submit with 56 (kWhyLatched), as may_ib does, not 62.
+	State l = {};
+	record_start(l, kModeMmio, true);
+	record_test(l, 1, kLatchNone, false);
+	record_test(l, 1, kLatchHard, false);
+	CHECK(may_submit(l) == kWhyLatched);
+	// cp stop abandons an outstanding submit.
+	State c = {};
+	record_start(c, kModeDb, true);
+	record_test(c, 1, kLatchNone, false);
+	record_submit(c, 1, kSubmitDw, 0);
+	record_stop(c, true);
+	CHECK(!c.submitPending && !c.running);
+	// A fresh start clears any stale pending flag.
+	State f = {};
+	f.submitPending = true;
+	record_start(f, kModeMmio, true);
+	CHECK(!f.submitPending);
+}
+
 // ---- Part 2: the Linux headers --------------------------------------------------------------------------------
 typedef std::map<std::string, unsigned long long> Defs;
 static bool load_defs(const std::string &path, Defs &d) {
@@ -587,6 +641,7 @@ static int header_check(const char *root) {
 int main(int argc, char **argv) {
 	placement_cases(); shader_cases(); packet_cases(); mqd_cases(); start_cases(); stop_cases(); gate_cases(); outcome_cases();
 	t1_cases();
+	w1_cases();
 	if (argc > 1) fails += header_check(argv[1]);
 	else printf("header check skipped: pass the Linux tree root (3857c2fe) as the first argument\n");
 	if (fails) { printf("%d FAILED\n", fails); return 1; }

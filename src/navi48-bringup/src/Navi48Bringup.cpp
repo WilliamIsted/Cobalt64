@@ -9065,7 +9065,7 @@ enum : uint32_t { kN33Status = 0, kN33RegWrite = 1, kN33Bar0Read = 2, kN33Bar0Wr
                   kN33GfxRs64 = 23, kN33SdmaState = 24, kN33SdmaStart = 25, kN33SdmaTest = 26, kN33SdmaStop = 27,
                   kN33SdmaRecord = 28,
                   kN33CpState = 29, kN33CpHqd = 30, kN33CpStart = 31, kN33CpTest = 32, kN33CpStop = 33, kN33CpRecord = 34,
-                  kN33CpIb = 35 };
+                  kN33CpIb = 35, kN33CpSubmit = 36, kN33CpWait = 37 };
 struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch, 15 step-5 SDMA pages, 16 step-6 compute pages, 17 step-7 T1 IB page
 constexpr unsigned kN33Ranges = 21;   // 18 kinds can be live at once
 }
@@ -9578,6 +9578,17 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	}
 	case kN33CpIb: {              // T1 (step 7): K4's dispatch run from a VRAM IB through INDIRECT_BUFFER. out: see n33CpIb
 		const uint32_t w = n33CpIb(out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33CpSubmit: {          // W1 (step 7): submit T1's IB onto the compute HQD, return a seqno. out: see n33CpSubmit
+		const uint32_t w = n33CpSubmit(out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	case kN33CpWait: {            // W1 (step 7): in: seqno. Poll the outstanding submit's fence. out: see n33CpWait
+		if (!need(1)) return kIOReturnBadArgument;
+		const uint32_t w = n33CpWait(in[0] > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)in[0], out, outCount);
 		if (w) { put(0, w); return kIOReturnNotPermitted; }
 		return kIOReturnSuccess;
 	}
@@ -10712,25 +10723,25 @@ uint32_t Navi48Bringup::n33CpIbPageClear() const {
 	return kWhyOk;
 }
 
-// T1 (step 7): the K4 store_magic dispatch, moved into a VRAM indirect buffer and reached by an INDIRECT_BUFFER packet
-// from the step-6 compute queue, instead of inline in the ring. Design: stage3-step7-command-design.md "The first
-// sub-step T1". Needs the queue running and a plain ring packet (K2/K3) already landed since the start (code 62). The IB
-// page is kind 17 once this runs. The byte stream in the IB is byte-for-byte K4's, so T1 changes one variable only:
-// whether the MEC fetches and runs a VRAM IB reached through INDIRECT_BUFFER.
-uint32_t Navi48Bringup::n33CpIb(uint64_t *out, uint32_t outCount) {
+// The shared first half of T1 (cp ib) and W1 (cp submit): after the caller's may_ib / may_submit gate, bring up GART
+// host page B, build the K4 store_magic dispatch stream into the kind-17 IB page and kick the ring with one
+// INDIRECT_BUFFER. The byte stream in the IB is byte-for-byte K4's, so it changes one variable only: whether the MEC
+// fetches and runs a VRAM IB reached through INDIRECT_BUFFER. Fills seq, the post-kick wptr, the pre-kick rptr and the
+// host page B pointer, and writes out[12]/out[13] (IB MC, ibOk|body<<1|ibDw<<8). Returns a why code on a pre-kick
+// refusal (fault, blob, doorbell, GART, IB-page overlap), 0 once the ring has been kicked.
+uint32_t Navi48Bringup::n33CpIbBuildKick(uint32_t &seq, uint64_t &wp, uint32_t &rptr0, volatile uint32_t *&hb,
+                                         uint64_t *out, uint32_t outCount) {
 	using namespace n33cp;
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
 	auto w32 = [&](uint64_t off, uint32_t v) { *reinterpret_cast<volatile uint32_t *>(n33Bar0 + off) = v; };
 	auto r32 = [&](uint64_t off) { return *reinterpret_cast<volatile uint32_t *>(n33Bar0 + off); };
-	uint32_t w = may_ib(n33Cp);
-	if (w) return w;
 	if (!n33GmcGcUp()) return kWhyGcDown;
 	if (rmmio[kGcFaultStatus]) { N48LOG("n33 cp: refused ib: GC fault status %#x", rmmio[kGcFaultStatus]); return kWhyFault; }
 	if (n33P2.failed) return n33psp2::kWhyFailed;
 	const bool db = n33Cp.mode == kModeDb;
 	if (db && (!dev.bar2 || dev.bar2Size < kBar2Need)) return kWhyDoorbell;
 	if (!n33CpBlobOk()) { N48LOG("n33 cp: refused ib: the embedded gfx11 shader is not the pinned blob"); return kWhyBlob; }
-	w = n33CpIbPageClear();
+	uint32_t w = n33CpIbPageClear();
 	if (w) return w;
 	const Geo g = geo(n33FbBase);
 	// GART host page B at slot 1, both hubs flushed, the PTE read back: the same binding K3/K4 proved (D2, D10).
@@ -10748,10 +10759,11 @@ uint32_t Navi48Bringup::n33CpIb(uint64_t *out, uint32_t outCount) {
 	}
 	const uint64_t pte = *reinterpret_cast<volatile uint64_t *>(n33Bar0 + n33gmc::slot_off(kSlotB));
 	if (!n33GmcHost[kHostB] || pte != n33gmc::pte_sys(n33GmcHostPa[kHostB])) { N48LOG("n33 cp: refused ib: slot 1 PTE %#llx", pte); return kWhyGart; }
-	volatile uint32_t *hb = static_cast<volatile uint32_t *>(n33GmcHost[kHostB]->getBytesNoCopy());
+	hb = static_cast<volatile uint32_t *>(n33GmcHost[kHostB]->getBytesNoCopy());
 	n33Gmc.engineHolds = true;   // D10: gmc restore refused and the host pages leaked from now on
 
-	const uint32_t seq = n33Cp.seq + 1, fenceDw = kHostFence4 / 4;
+	seq = n33Cp.seq + 1;
+	const uint32_t fenceDw = kHostFence4 / 4;
 	// Build the K4 dispatch stream into the IB page: zero the page, NOP-fill it (R3: a stray fetch past the IB runs
 	// NOPs, not a type-0 header), write the 41-dword stream at offset 0, HDP flush, read it back through BAR0.
 	uint32_t ib[kSubmitDw];
@@ -10773,8 +10785,8 @@ uint32_t Navi48Bringup::n33CpIb(uint64_t *out, uint32_t outCount) {
 	len = pad(pk, len);
 	const uint64_t at = ring_off(n33Cp.wptrDw);
 	for (uint32_t i = 0; i < len; i++) w32(kRingOff + at + 4ull * i, pk[i]);
-	const uint64_t wp = n33Cp.wptrDw + len;
-	const uint32_t rptr0 = n33CpHqdRd(kPqRptr);
+	wp = n33Cp.wptrDw + len;
+	rptr0 = n33CpHqdRd(kPqRptr);
 	*reinterpret_cast<volatile uint64_t *>(n33Bar0 + kWptrSlot) = wp;
 	n33GmcHdpFlush();
 	if (db) {
@@ -10786,6 +10798,22 @@ uint32_t Navi48Bringup::n33CpIb(uint64_t *out, uint32_t outCount) {
 		rmmio[kGrbmGfxCntl] = 0;
 	}
 	n33Cp.seq = seq;
+	N48LOG("n33 cp: IB kick (%s, %u-dword IB at %#llx, INDIRECT_BUFFER control %#x), seq %u, PQ_RPTR %#x, wptr %llu, "
+	       "IB read-back %s", db ? "db" : "mmio", ibDw, g.ib, pk[3], seq, rptr0, wp, ibOk ? "ok" : "MISMATCH");
+	put(12, g.ib); put(13, (uint64_t)ibOk | (uint64_t)body << 1 | (uint64_t)ibDw << 8);
+	return kWhyOk;
+}
+
+// The shared second half of T1 (cp ib) and W1 (cp waitseq): poll the RELEASE_MEM fence and the 32 result dwords in host
+// page B up to the 2 s dispatch timeout, then the quiescence, rptr, ACTIVE, HQD_ERROR and GC-fault checks, and write the
+// full out[] report. Returns the latch (none / timeout-only / hard, D8).
+uint32_t Navi48Bringup::n33CpIbWait(uint32_t seq, uint64_t wp, uint32_t rptr0, volatile uint32_t *hb,
+                                    uint64_t *out, uint32_t outCount) {
+	using namespace n33cp;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	auto r32 = [&](uint64_t off) { return *reinterpret_cast<volatile uint32_t *>(n33Bar0 + off); };
+	const uint32_t fenceDw = kHostFence4 / 4;
+	const bool db = n33Cp.mode == kModeDb;
 	auto landed = [&]() { uint32_t k = 0; for (uint32_t i = 0; i < kResultDw; i++) k += hb[i] == kMagic + i; return k; };
 	const uint32_t limit = timeout_us(3);   // the 2 s dispatch timeout
 	bool seen = false, fence = false;
@@ -10811,20 +10839,70 @@ uint32_t Navi48Bringup::n33CpIb(uint64_t *out, uint32_t outCount) {
 	const uint32_t fault = rmmio[kGcFaultStatus], cpc = rmmio[kCpcStatus], slot = r32(kRptrSlot), ip = rmmio[kMecInstrPntr];
 	const TestRead r = { seen, rptr_at(rptr, wp), (active & kActive) != 0, fault, err, rptr != rptr0 };
 	const uint32_t latch = outcome(r);
-	record_ib(n33Cp, latch);
-	N48LOG("n33 cp: T1 ib (%s, %u-dword IB at %#llx, INDIRECT_BUFFER control %#x) -> page B: %s after %u us, data %u/32 "
-	       "(first %d us), fence %s (first %d us, seq %u), IB read-back %s, PQ_RPTR %#x -> %#x, wptr %llu, rptr slot %#x, "
-	       "ACTIVE %#x, HQD_ERROR %#x, INSTR_PNTR %#x, GRBM_STATUS %#x (K1 %#x), CPC_STATUS %#x, GC fault %#x (addr %#x:%#x)%s",
-	       db ? "db" : "mmio", ibDw, g.ib, pk[3], seen ? "seen" : "NOT SEEN", us, data, (int)dataUs, fence ? "landed" : "no",
-	       (int)fenceUs, seq, ibOk ? "ok" : "MISMATCH", rptr0, rptr, wp, slot, active, err, ip, grbm, n33Cp.k1Grbm, cpc, fault,
+	N48LOG("n33 cp: IB wait (%s, seq %u) -> page B: %s after %u us, data %u/32 (first %d us), fence %s (first %d us), "
+	       "PQ_RPTR %#x (want %#x), wptr %llu, rptr slot %#x, ACTIVE %#x, HQD_ERROR %#x, INSTR_PNTR %#x, "
+	       "GRBM_STATUS %#x (K1 %#x), CPC_STATUS %#x, GC fault %#x (addr %#x:%#x)%s",
+	       db ? "db" : "mmio", seq, seen ? "seen" : "NOT SEEN", us, data, (int)dataUs, fence ? "landed" : "no",
+	       (int)fenceUs, rptr, rptr0, wp, slot, active, err, ip, grbm, n33Cp.k1Grbm, cpc, fault,
 	       rmmio[kGcFaultAddrHi], rmmio[kGcFaultAddrLo],
-	       latch == kLatchNone ? " (T1: the MEC ran a VRAM IB through INDIRECT_BUFFER)"
-	       : latch == kLatchTimeout ? " (timeout only: cp stop, then start in the other mode, re-run to K3, cp ib)"
+	       latch == kLatchNone ? " (the MEC ran a VRAM IB through INDIRECT_BUFFER)"
+	       : latch == kLatchTimeout ? " (timeout only: cp stop, then start in the other mode, re-run to K3, then submit again)"
 	       : " (LATCHED: cp stop, then reload)");
 	put(0, 0); put(1, latch == kLatchNone ? 1 : 0); put(2, data); put(3, value); put(4, rptr); put(5, wp); put(6, slot);
 	put(7, fault); put(8, err); put(9, active); put(10, grbm); put(11, (uint64_t)dataUs << 32 | fenceUs);
-	put(12, g.ib); put(13, (uint64_t)ibOk | (uint64_t)body << 1 | (uint64_t)ibDw << 8); put(14, latch); put(15, us);
-	return 0;
+	put(14, latch); put(15, us);
+	return latch;
+}
+
+// T1 (step 7): the K4 store_magic dispatch, moved into a VRAM indirect buffer and reached by an INDIRECT_BUFFER packet
+// from the step-6 compute queue, instead of inline in the ring. Design: stage3-step7-command-design.md "The first
+// sub-step T1". Needs the queue running and a plain ring packet (K2/K3) already landed since the start (code 62). The IB
+// page is kind 17 once this runs. One call builds, kicks and waits; W1's cp submit / cp waitseq split the same work.
+uint32_t Navi48Bringup::n33CpIb(uint64_t *out, uint32_t outCount) {
+	using namespace n33cp;
+	uint32_t w = may_ib(n33Cp);
+	if (w) return w;
+	uint32_t seq = 0, rptr0 = 0;
+	uint64_t wp = 0;
+	volatile uint32_t *hb = nullptr;
+	w = n33CpIbBuildKick(seq, wp, rptr0, hb, out, outCount);
+	if (w) return w;
+	record_ib(n33Cp, n33CpIbWait(seq, wp, rptr0, hb, out, outCount));
+	return kWhyOk;
+}
+
+// W1 (step 7): cp submit, the first half of the RADV Darwin winsys submit->wait contract. It submits T1's K4 IB onto the
+// step-6 MEC compute HQD through the same INDIRECT_BUFFER path and returns a seqno, without waiting; cp waitseq then
+// polls that seqno's fence. Design: stage3-step7-command-design.md "Route B" W1. out[1] is the seqno, out[12]/out[13] the
+// IB MC and read-back as in cp ib. For W1 the IB is still the kext-built K4 stream (no Mesa); a caller BO IB is W2/W3.
+uint32_t Navi48Bringup::n33CpSubmit(uint64_t *out, uint32_t outCount) {
+	using namespace n33cp;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	uint32_t w = may_submit(n33Cp);
+	if (w) return w;
+	uint32_t seq = 0, rptr0 = 0;
+	uint64_t wp = 0;
+	volatile uint32_t *hb = nullptr;
+	w = n33CpIbBuildKick(seq, wp, rptr0, hb, out, outCount);
+	if (w) return w;
+	record_submit(n33Cp, seq, wp, rptr0);
+	N48LOG("n33 cp: W1 submit seqno %u (wptr %llu); run cp waitseq %u", seq, wp, seq);
+	put(0, 0); put(1, seq); put(4, rptr0); put(5, wp);
+	return kWhyOk;
+}
+
+// W1 (step 7): cp waitseq <seq>, the second half of the submit->wait contract. It polls the outstanding submit's
+// RELEASE_MEM fence and reports retired, exactly the read-back T1's single call does. The seqno must be the outstanding
+// submit's (code 64). On a timeout or a hard failure the submit is consumed and the mode / queue is latched (D8).
+uint32_t Navi48Bringup::n33CpWait(uint32_t seq, uint64_t *out, uint32_t outCount) {
+	using namespace n33cp;
+	uint32_t w = may_waitseq(n33Cp, seq);
+	if (w) return w;
+	if (!n33GmcHost[kHostB]) return kWhyGart;
+	volatile uint32_t *hb = static_cast<volatile uint32_t *>(n33GmcHost[kHostB]->getBytesNoCopy());
+	const uint32_t latch = n33CpIbWait(n33Cp.submitSeq, n33Cp.submitWp, n33Cp.submitRptr0, hb, out, outCount);
+	record_waitseq(n33Cp, latch);
+	return kWhyOk;
 }
 
 // Stage 2 step 3: run the layout gate, judge the live GOP state, and publish the framebuffer nub.
