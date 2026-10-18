@@ -9017,6 +9017,10 @@ bool Navi48Bringup::startN33Observe() {
 	n33Observing = true;
 	N48LOG("n33: observe-only start (stage 1)");
 	setProperty("N33,Mode", "observe-only (stage 1)");
+	// Step 7 W2: latch every BAR's full base and size on the N33 path too, so BO host-import's
+	// device-page refusal has a BAR list (n1c_pci_bars). The main start() path latches here; the
+	// observe path returned before reaching it, so n1c_pci_bars read 0 and every import failed closed (71).
+	latchPciBars(pciDevice);
 	if (!mapRegisters()) { N48LOG("n33: BAR5 unavailable"); return false; }
 	if (!probeMemSize()) { unmapRegisters(); return false; }
 	if (loadOnDieDiscovery()) surveyIPs();
