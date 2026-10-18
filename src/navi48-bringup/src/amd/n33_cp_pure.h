@@ -414,6 +414,7 @@ inline uint32_t may_ib(const State &s) {
 	if (!s.running) return kWhyIbOrder;
 	if (s.latch != kLatchNone) return kWhyLatched;
 	if (!(s.testsOk & ((1u << 1) | (1u << 2)))) return kWhyIbOrder;   // neither K2 nor K3 succeeded since the start
+	if (s.submitPending) return kWhyIbOrder;   // a W1 submit is still outstanding: no second kick before its waitseq
 	return kWhyOk;
 }
 // Bookkeeping for one T1 kick: like record_test but no test bit is set (T1 is not a numbered ring test). The ring grew

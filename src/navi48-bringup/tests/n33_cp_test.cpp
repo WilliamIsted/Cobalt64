@@ -436,6 +436,7 @@ static void w1_cases() {
 	CHECK(s.submitPending && s.submitSeq == 7 && s.submitWp == wp0 + kSubmitDw && s.submitRptr0 == 0x40);
 	CHECK(s.seq == 7 && s.wptrDw == wp0 + kSubmitDw);
 	CHECK(may_submit(s) == kWhyIbOrder);                   // a second submit before waitseq is out of order
+	CHECK(may_ib(s) == kWhyIbOrder);                       // and so is a T1 cp ib
 	CHECK(may_waitseq(s, 6) == kWhyNoSubmit && may_waitseq(s, 8) == kWhyNoSubmit);   // a wrong seqno is refused
 	CHECK(may_waitseq(s, 7) == kWhyOk);                    // the outstanding one
 	// waitseq retires: the submit is consumed, the wptr is not advanced again, another submit is allowed.
