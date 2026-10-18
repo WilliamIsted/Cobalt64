@@ -1,0 +1,79 @@
+From c89c60e09a188957fd1a35f7ca4cb980d2c0c930 Mon Sep 17 00:00:00 2001
+From: Navi48-MacOS contributors <noreply@example.invalid>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 11/13] radv/darwin: mock answers BoImportHost (selector 21)
+ with the caller's pages
+
+---
+ src/amd/common/darwin/ac_darwin_mock.c | 34 +++++++++++++++++++++++++-
+ 1 file changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/src/amd/common/darwin/ac_darwin_mock.c b/src/amd/common/darwin/ac_darwin_mock.c
+index 31076fd8cac..6c76e48e7a9 100644
+--- a/src/amd/common/darwin/ac_darwin_mock.c
++++ b/src/amd/common/darwin/ac_darwin_mock.c
+@@ -178,6 +178,28 @@ do_bo_create(struct mock *m, const struct n48n_gem_create_in *in, uint64_t *sout
+    return ACD_KR_SUCCESS;
+ }
+ 
++/* ABI 1.9 BoImportHost: the BO aliases the caller's pages (never freed by the mock, never CPU-mapped through it).
++ * shortcut: map-at-import ([3] != 0) is refused; RADV maps later with GemVa, as the kext comment says. */
++static int
++do_bo_import_host(struct mock *m, const uint64_t *sin, uint64_t *sout)
++{
++   const uint64_t host = sin[0], size = sin[1];
++   if (!host || (host & 4095) || !size || (size & 4095) || size > N48N_IMPORT_MAX_BO || sin[2] || sin[3])
++      REFUSE(ACD_KR_BAD_ARGUMENT, "BoImportHost alignment, size or flags");
++   uint32_t h = 1;
++   while (h < N48N_MAX_BOS && m->bo[h].used)
++      h++;
++   if (h >= N48N_MAX_BOS)
++      return ACD_KR_NO_RESOURCES;
++   m->bo[h] = (struct mock_bo){.used = true, .mem = (uint8_t *)(uintptr_t)host, .size = size, .domain = 1,
++                               .bits = N48N_PLACED_HOST_IMPORT};
++   sout[0] = h;
++   sout[1] = size;
++   sout[2] = 0;
++   sout[3] = N48N_PLACED_HOST_IMPORT;
++   return ACD_KR_SUCCESS;
++}
++
+ static void
+ unmap_all_of(struct mock *m, uint32_t h)
+ {
+@@ -193,6 +215,10 @@ do_bo_free(struct mock *m, uint32_t h)
+    if (!b)
+       return ACD_KR_NOT_FOUND;
+    unmap_all_of(m, h);
++   if (b->bits & N48N_PLACED_HOST_IMPORT) {
++      memset(b, 0, sizeof(*b)); /* the caller's memory */
++      return ACD_KR_SUCCESS;
++   }
+    if (b->domain == 2)
+       m->gtt_used -= b->size;
+    else if (b->bits & N48N_PLACED_HI_POOL)
+@@ -697,6 +723,12 @@ mock_call(void *ctx, uint32_t sel, const uint64_t *sin, uint32_t nsin, const voi
+       if (!kr)
+          *nsout = 1;
+       break;
++   case ACD_SEL_BO_IMPORT_HOST:
++      NEED(shape(4, 4, 0, 0));
++      kr = do_bo_import_host(m, sin, sout);
++      if (!kr)
++         *nsout = 4;
++      break;
+    case ACD_SEL_SCAN_QUERY:
+       NEED(shape(0, 0, 0, sizeof(struct n48n_scan_query)));
+       kr = do_scan(m, sel, sin, stin, sout, stout);
+@@ -750,7 +782,7 @@ mock_map(void *ctx, uint32_t handle, void **addr, size_t *size)
+       kr = ACD_KR_NOT_READY;
+    else if (!b)
+       kr = ACD_KR_NOT_FOUND;
+-   else if (b->bits & N48N_PLACED_HI_POOL)
++   else if (b->bits & (N48N_PLACED_HI_POOL | N48N_PLACED_HOST_IMPORT))
+       kr = ACD_KR_NOT_PERMITTED;
+    else {
+       *addr = b->mem;
+-- 
+2.39.5 (Apple Git-154)
+

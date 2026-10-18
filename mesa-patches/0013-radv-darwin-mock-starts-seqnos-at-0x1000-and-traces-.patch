@@ -1,0 +1,168 @@
+From 5c6d276891117cf4f5f335bbdb30cd4143fadc15 Mon Sep 17 00:00:00 2001
+From: Navi48-MacOS contributors <noreply@example.invalid>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 13/13] radv/darwin: mock starts seqnos at 0x1000 and traces
+ Ctx, GemVA, Submit, WaitSeq and CPU maps
+
+- WaitSeq out[1] read as a 0/1 flag no longer passes on the mock (first seqno was 1)
+- Submit trace lists the header, each IB and its PM4 opcodes
+---
+ src/amd/common/darwin/ac_darwin_mock.c | 59 +++++++++++++++++++++++++-
+ 1 file changed, 58 insertions(+), 1 deletion(-)
+
+diff --git a/src/amd/common/darwin/ac_darwin_mock.c b/src/amd/common/darwin/ac_darwin_mock.c
+index b442a54c738..1aac908fc2c 100644
+--- a/src/amd/common/darwin/ac_darwin_mock.c
++++ b/src/amd/common/darwin/ac_darwin_mock.c
+@@ -30,6 +30,9 @@
+ #define MOCK_GTT_MAX_BO (64ull << 20)
+ #define MOCK_PT_CAP (32ull << 20)
+ #define MOCK_VA_MASK ((1ull << 48) - 1)
++/* Seqnos start above 1, as on the kext (its ring has run other work first), so a WaitSeq out[1] read as a
++ * 0/1 flag instead of the retired seqno shows up on the mock (the 0.0.675 kext bug did that). */
++#define MOCK_SEQ_BASE 0x1000ull
+ 
+ struct mock_bo {
+    bool used;
+@@ -255,6 +258,10 @@ do_gem_va(struct mock *m, const struct n48n_gem_va *v)
+    if (!acd_canon_bits_ok(v->va_address))
+       REFUSE(ACD_KR_BAD_ARGUMENT, "if (!acd_canon_bits_ok(v->va_address))");
+    const uint64_t va = v->va_address & MOCK_VA_MASK;
++   if (mock_trace())
++      fprintf(stderr, "radv-darwin: mock GemVA op %u h %u va 0x%llx off 0x%llx size 0x%llx flags 0x%x\n", v->operation,
++              v->handle, (unsigned long long)v->va_address, (unsigned long long)v->offset_in_bo,
++              (unsigned long long)v->map_size, v->flags);
+    if ((v->va_address | v->offset_in_bo | v->map_size) & 4095 || v->map_size == 0)
+       REFUSE(ACD_KR_BAD_ARGUMENT, "if ((v->va_address | v->offset_in_bo | v->map_size) & 4095 || v->map_s");
+    if (va < 0x10000 || va + v->map_size > (1ull << 48))
+@@ -314,6 +321,35 @@ ib_covered(struct mock *m, uint64_t va_canon, uint64_t bytes)
+    return true;
+ }
+ 
++/* trace only: list the PM4 type-3 opcodes of an IB (nothing executes them; this shows what the kext's MEC will see) */
++static void
++trace_ib_opcodes(struct mock *m, uint64_t va_canon, uint32_t bytes)
++{
++   const uint64_t va = va_canon & MOCK_VA_MASK;
++   for (int i = 0; i < MOCK_MAX_MAPS; i++) {
++      const struct mock_map *mp = &m->maps[i];
++      if (!mp->used || va < mp->va || va + bytes > mp->va + mp->size)
++         continue;
++      const struct mock_bo *b = &m->bo[mp->handle];
++      const uint32_t *dw = (const uint32_t *)(b->mem + mp->off + (va - mp->va));
++      fprintf(stderr, "radv-darwin: mock     pm4:");
++      for (uint32_t k = 0; k < bytes / 4;) {
++         const uint32_t h = dw[k], type = h >> 30;
++         if (type == 3) {
++            fprintf(stderr, " %02x", (h >> 8) & 0xff);
++            k += ((h >> 16) & 0x3fff) + 2;
++         } else if (type == 2) {
++            k++; /* filler */
++         } else {
++            fprintf(stderr, " type%u@%u", type, k);
++            break;
++         }
++      }
++      fprintf(stderr, "\n");
++      return;
++   }
++}
++
+ static int
+ do_submit(struct mock *m, const uint8_t *in, size_t insz, uint64_t *seq_out)
+ {
+@@ -327,12 +363,18 @@ do_submit(struct mock *m, const uint8_t *in, size_t insz, uint64_t *seq_out)
+        insz != sizeof(h) + (size_t)h.num_ibs * sizeof(struct n48n_cs_ib) || h.reserved != 0 ||
+        (h.flags & ~N48N_CS_HAS_FENCE))
+       REFUSE(ACD_KR_BAD_ARGUMENT, "if (h.abi != N48N_ABI_VERSION || h.num_ibs < 1 || h.num_ibs > N48N_MAX");
++   if (mock_trace())
++      fprintf(stderr, "radv-darwin: mock Submit ctx %u num_ibs %u flags 0x%x%s fence h %u off 0x%x\n", h.ctx_id,
++              h.num_ibs, h.flags, (h.flags & N48N_CS_HAS_FENCE) ? " (HAS_FENCE)" : "", h.fence_handle, h.fence_offset);
+    if (h.ctx_id == 0 || h.ctx_id > N48N_MAX_CTX || !m->ctx[h.ctx_id])
+       REFUSE(ACD_KR_NOT_FOUND, "if (h.ctx_id == 0 || h.ctx_id > N48N_MAX_CTX || !m->ctx[h.ctx_id])");
+ 
+    for (uint32_t i = 0; i < h.num_ibs; i++) {
+       struct n48n_cs_ib ib;
+       memcpy(&ib, in + sizeof(h) + i * sizeof(ib), sizeof(ib));
++      if (mock_trace())
++         fprintf(stderr, "radv-darwin: mock   ib %u va 0x%llx bytes %u flags 0x%x ip %u inst %u ring %u\n", i,
++                 (unsigned long long)ib.va_start, ib.ib_bytes, ib.flags, ib.ip_type, ib.ip_instance, ib.ring);
+       /* N33 build: only the MEC compute queue runs IBs; the kext refuses gfx (gfx ring and MES are a later step). */
+       if (ib._pad || ib.ip_type != AMDGPU_HW_IP_COMPUTE || ib.ip_instance != 0 || ib.ring != 0)
+          REFUSE(ACD_KR_BAD_ARGUMENT, "if (ib._pad || ib.ip_type != AMDGPU_HW_IP_COMPUTE || ib.ip_instance != 0 |");
+@@ -348,6 +390,8 @@ do_submit(struct mock *m, const uint8_t *in, size_t insz, uint64_t *seq_out)
+          REFUSE(ACD_KR_BAD_ARGUMENT, "if (ib.flags & ~(uint32_t)(AMDGPU_IB_FLAG_PREAMBLE | AMDGPU_IB_FLAG_PR");
+       if (!ib_covered(m, ib.va_start, ib.ib_bytes))
+          REFUSE(ACD_KR_BAD_ARGUMENT, "if (!ib_covered(m, ib.va_start, ib.ib_bytes))"); /* an unmapped IB would fault; nothing reaches the ring */
++      if (mock_trace())
++         trace_ib_opcodes(m, ib.va_start, ib.ib_bytes);
+    }
+ 
+    struct mock_bo *fb = NULL;
+@@ -369,6 +413,8 @@ do_submit(struct mock *m, const uint8_t *in, size_t insz, uint64_t *seq_out)
+    m->last_submit_ns = mnow();
+    m->submits++;
+    *seq_out = seq;
++   if (mock_trace())
++      fprintf(stderr, "radv-darwin: mock Submit -> seqno %llu\n", (unsigned long long)seq);
+    return ACD_KR_SUCCESS;
+ }
+ 
+@@ -377,6 +423,7 @@ do_wait_seq(struct mock *m, uint64_t target, uint64_t timeout_ns, uint64_t *sout
+ {
+    pthread_mutex_lock(&m->lock);
+    const uint64_t emitted = m->emitted;
++   const bool asked_last = target == N48N_SEQ_LAST;
+    if (target == N48N_SEQ_LAST)
+       target = emitted;
+    if (target > emitted) {
+@@ -408,6 +455,10 @@ do_wait_seq(struct mock *m, uint64_t target, uint64_t timeout_ns, uint64_t *sout
+    sout[1] = ret;
+    sout[2] = m->emitted;
+    pthread_mutex_unlock(&m->lock);
++   if (mock_trace())
++      fprintf(stderr, "radv-darwin: mock WaitSeq seq %s%llu timeout %llu ns -> busy %llu retired %llu emitted %llu\n",
++              asked_last ? "SEQ_LAST=" : "", (unsigned long long)target, (unsigned long long)timeout_ns,
++              (unsigned long long)sout[0], (unsigned long long)sout[1], (unsigned long long)sout[2]);
+    return ACD_KR_SUCCESS;
+ }
+ 
+@@ -722,6 +773,9 @@ mock_call(void *ctx, uint32_t sel, const uint64_t *sin, uint32_t nsin, const voi
+       }
+       memcpy(stout, &out, sizeof(out));
+       *stoutsz = sizeof(out);
++      if (mock_trace())
++         fprintf(stderr, "radv-darwin: mock Ctx op %u flags 0x%x ctx_id %u prio %d -> dword0 %u dword1 %u\n", in.op,
++                 in.flags, in.ctx_id, in.priority, out.op, out.flags);
+       break;
+    }
+    case ACD_SEL_SUBMIT:
+@@ -797,6 +851,8 @@ mock_map(void *ctx, uint32_t handle, void **addr, size_t *size)
+       kr = ACD_KR_SUCCESS;
+    }
+    pthread_mutex_unlock(&m->lock);
++   if (mock_trace())
++      fprintf(stderr, "radv-darwin: mock CpuMap h %u -> 0x%08x\n", handle, (unsigned)kr);
+    return kr;
+ }
+ 
+@@ -814,7 +870,7 @@ mock_close(void *ctx)
+       if (m->bo[h].used)
+          free(m->bo[h].mem);
+    fprintf(stderr, "radv-darwin: mock client closed: %llu submits, %llu seqs\n",
+-           (unsigned long long)m->submits, (unsigned long long)m->emitted);
++           (unsigned long long)m->submits, (unsigned long long)(m->emitted - MOCK_SEQ_BASE));
+    pthread_mutex_destroy(&m->lock);
+    free(m);
+    pthread_mutex_lock(&g_open_lock);
+@@ -844,6 +900,7 @@ acd_mock_open(struct acd_kext **out)
+    pthread_mutex_init(&m->lock, NULL);
+    m->t0_ns = mnow();
+    m->front = m->pending = -1;
++   m->emitted = m->retired_at_submit = MOCK_SEQ_BASE;
+    const char *hang = getenv("RADV_DARWIN_MOCK_HANG");
+    m->hang_mode = hang && hang[0] == '1';
+    const char *lag = getenv("RADV_DARWIN_MOCK_LAG_MS");
+-- 
+2.39.5 (Apple Git-154)
+

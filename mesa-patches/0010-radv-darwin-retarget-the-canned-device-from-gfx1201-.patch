@@ -1,0 +1,163 @@
+From 8af6149186ed154d7d4784d48844afdd8a9433da Mon Sep 17 00:00:00 2001
+From: Navi48-MacOS contributors <noreply@example.invalid>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 10/13] radv/darwin: retarget the canned device from gfx1201 to
+ navi33 (gfx1102)
+
+- find_canned("navi33") and GB_ADDR_CONFIG check 0x343 (live value, same as the navi33 row)
+- mock: GB_ADDR_CONFIG 0x343, gc_version 11.0.2, submits accept compute IBs only (N33 kext rule)
+- PCI identity 0x7480 rev 0xC0 and marketing name RX 7600 XT
+---
+ src/amd/common/darwin/ac_darwin_drm.c  | 14 +++++++-------
+ src/amd/common/darwin/ac_darwin_drm.h  |  2 +-
+ src/amd/common/darwin/ac_darwin_kext.h |  3 ++-
+ src/amd/common/darwin/ac_darwin_mock.c | 11 ++++++-----
+ src/amd/common/meson.build             |  2 +-
+ src/amd/vulkan/radv_physical_device.c  |  4 ++--
+ 6 files changed, 19 insertions(+), 17 deletions(-)
+
+diff --git a/src/amd/common/darwin/ac_darwin_drm.c b/src/amd/common/darwin/ac_darwin_drm.c
+index 9e35f8434dc..af341491892 100644
+--- a/src/amd/common/darwin/ac_darwin_drm.c
++++ b/src/amd/common/darwin/ac_darwin_drm.c
+@@ -26,8 +26,8 @@
+ #define ACD_DRM_MAJOR AC_AMDGPU_DRM_MAJOR
+ #define ACD_DRM_MINOR AC_AMDGPU_DRM_MINOR
+ 
+-/* amdgpu.ids: 7550,C0 */
+-#define ACD_MARKETING_NAME "AMD Radeon RX 9070 XT"
++/* amdgpu.ids: 7480,C0 (the card's live PCI revision) */
++#define ACD_MARKETING_NAME "AMD Radeon RX 7600 XT"
+ 
+ #define ACD_METADATA_MAX 256
+ /* How long a submit blocks on a dependency that was never submitted (WAIT_FOR_SUBMIT). */
+@@ -153,10 +153,10 @@ acd_native_handshake(struct acd_kext *kext, const struct amdgpu_device *canned,
+          return r;
+       }
+    }
+-   if (gb != ACD_GB_ADDR_CONFIG_GFX1201 && !env_is_1("RADV_DARWIN_ALLOW_ADDRCFG")) {
+-      fprintf(stderr, "radv-darwin: live GB_ADDR_CONFIG 0x%08x != canned gfx1201 0x%08x (set "
++   if (gb != ACD_GB_ADDR_CONFIG_GFX1102 && !env_is_1("RADV_DARWIN_ALLOW_ADDRCFG")) {
++      fprintf(stderr, "radv-darwin: live GB_ADDR_CONFIG 0x%08x != canned gfx1102 0x%08x (set "
+                       "RADV_DARWIN_ALLOW_ADDRCFG=1 to override)\n",
+-              gb, ACD_GB_ADDR_CONFIG_GFX1201);
++              gb, ACD_GB_ADDR_CONFIG_GFX1102);
+       return -ENODEV;
+    }
+ 
+@@ -229,7 +229,7 @@ acd_core_create(const struct amdgpu_device *canned, bool host_bo, struct acd_cor
+    }
+ 
+    const struct drm_amdgpu_info_device *di = &canned->dev;
+-   /* gfx12: RADV needs half of the VA range reserved for PRT, as on Linux. */
++   /* RADV needs half of the VA range reserved for PRT, as on Linux (gfx6 to 12 except 9). */
+    amdgpu_va_manager_init2(c->va_mgr, di->virtual_address_offset, di->virtual_address_max, di->high_va_offset,
+                            di->high_va_max, di->virtual_address_alignment, AMDGPU_VA_MGR_RESERVE_HALF_VA_FOR_PRT);
+    *out = c;
+@@ -257,7 +257,7 @@ acd_device_initialize(uint32_t *drm_major, uint32_t *drm_minor, acd_device_handl
+    if (!dev)
+       return -ENOMEM;
+ 
+-   dev->canned = find_canned("gfx1201");
++   dev->canned = find_canned("navi33");
+    if (!dev->canned) {
+       free(dev);
+       return -ENODEV;
+diff --git a/src/amd/common/darwin/ac_darwin_drm.h b/src/amd/common/darwin/ac_darwin_drm.h
+index 0d926845e2c..ab8f8c16205 100644
+--- a/src/amd/common/darwin/ac_darwin_drm.h
++++ b/src/amd/common/darwin/ac_darwin_drm.h
+@@ -4,7 +4,7 @@
+  * Darwin backend of the ac_drm_* layer (ac_linux_drm.c), for RADV on macOS.
+  *
+  * There is no DRM node and no libdrm on macOS.  Device-info queries are answered
+- * from the canned gfx1201 table (amd/common/amdgpu_devices.c, the table the Linux
++ * from the canned navi33 (gfx1102) table (amd/common/amdgpu_devices.c, the table the Linux
+  * drm-shim serves) except memory sizes; the VA manager and syncobjs live in
+  * userspace; BOs, VA mappings, contexts, submits and waits are marshalled to the
+  * kext's native client (ac_darwin_kext.c, contract NATIVE-S1C-ABI.md).
+diff --git a/src/amd/common/darwin/ac_darwin_kext.h b/src/amd/common/darwin/ac_darwin_kext.h
+index 115188e82f3..12b5a68d6ae 100644
+--- a/src/amd/common/darwin/ac_darwin_kext.h
++++ b/src/amd/common/darwin/ac_darwin_kext.h
+@@ -72,7 +72,8 @@ enum acd_sel {
+ #define ACD_KR_BUSY             0xe00002d5u /* second ScanoutAcquire */
+ 
+ #define ACD_TIMEOUT_INFINITE    0xffffffffffffffffull /* == AMDGPU_TIMEOUT_INFINITE */
+-#define ACD_GB_ADDR_CONFIG_GFX1201 0x08200545u
++/* gfx1102 (Navi 33): read live on the RX 7600 XT, and the canned navi33 row's mmr_regs value (amdgpu_devices.c) */
++#define ACD_GB_ADDR_CONFIG_GFX1102 0x00000343u
+ #define ACD_GB_ADDR_CONFIG_REG     0x263eu
+ 
+ struct acd_kext_ops {
+diff --git a/src/amd/common/darwin/ac_darwin_mock.c b/src/amd/common/darwin/ac_darwin_mock.c
+index b7588d5efba..31076fd8cac 100644
+--- a/src/amd/common/darwin/ac_darwin_mock.c
++++ b/src/amd/common/darwin/ac_darwin_mock.c
+@@ -300,8 +300,9 @@ do_submit(struct mock *m, const uint8_t *in, size_t insz, uint64_t *seq_out)
+    for (uint32_t i = 0; i < h.num_ibs; i++) {
+       struct n48n_cs_ib ib;
+       memcpy(&ib, in + sizeof(h) + i * sizeof(ib), sizeof(ib));
+-      if (ib._pad || ib.ip_type != AMDGPU_HW_IP_GFX || ib.ip_instance != 0 || ib.ring != 0)
+-         REFUSE(ACD_KR_BAD_ARGUMENT, "if (ib._pad || ib.ip_type != AMDGPU_HW_IP_GFX || ib.ip_instance != 0 |");
++      /* N33 build: only the MEC compute queue runs IBs; the kext refuses gfx (gfx ring and MES are a later step). */
++      if (ib._pad || ib.ip_type != AMDGPU_HW_IP_COMPUTE || ib.ip_instance != 0 || ib.ring != 0)
++         REFUSE(ACD_KR_BAD_ARGUMENT, "if (ib._pad || ib.ip_type != AMDGPU_HW_IP_COMPUTE || ib.ip_instance != 0 |");
+       if (ib.ib_bytes == 0 || (ib.ib_bytes & 3) || ib.ib_bytes > 0xFFFFFu * 4)
+          REFUSE(ACD_KR_BAD_ARGUMENT, "if (ib.ib_bytes == 0 || (ib.ib_bytes & 3) || ib.ib_bytes > 0xFFFFFu * ");
+       if (!acd_canon_bits_ok(ib.va_start) || (ib.va_start & 3))
+@@ -611,8 +612,8 @@ mock_call(void *ctx, uint32_t sel, const uint64_t *sin, uint32_t nsin, const voi
+       inf.reserved[2] = N48N_ABI_MINOR;
+       inf.flags = N48N_INFO_S1B_POSITIVE | N48N_INFO_NATIVE_BOOT;
+       inf.vmid = 8;
+-      inf.gb_addr_config = ACD_GB_ADDR_CONFIG_GFX1201;
+-      inf.gc_version = (12u << 16) | (0u << 8) | 1u;
++      inf.gb_addr_config = ACD_GB_ADDR_CONFIG_GFX1102;
++      inf.gc_version = (11u << 16) | (0u << 8) | 2u;
+       inf.ring_size_dw = 4096;
+       inf.max_ibs = N48N_MAX_IBS;
+       inf.vram_vis_total = MOCK_VIS_TOTAL;
+@@ -640,7 +641,7 @@ mock_call(void *ctx, uint32_t sel, const uint64_t *sin, uint32_t nsin, const voi
+       NEED(sin[1] >= 1 && sin[1] <= 16 && sin[2] == 0xFFFFFFFFull && shape(3, 0, 0, sin[1] * 4));
+       uint32_t v[16] = {0};
+       for (uint64_t i = 0; i < sin[1]; i++)
+-         v[i] = (sin[0] + i == ACD_GB_ADDR_CONFIG_REG) ? ACD_GB_ADDR_CONFIG_GFX1201 : 0;
++         v[i] = (sin[0] + i == ACD_GB_ADDR_CONFIG_REG) ? ACD_GB_ADDR_CONFIG_GFX1102 : 0;
+       memcpy(stout, v, sin[1] * 4);
+       *stoutsz = sin[1] * 4;
+       break;
+diff --git a/src/amd/common/meson.build b/src/amd/common/meson.build
+index 5c64649f17c..026dcb2c8dd 100644
+--- a/src/amd/common/meson.build
++++ b/src/amd/common/meson.build
+@@ -224,7 +224,7 @@ endif
+ 
+ if with_amdgpu_darwin
+   # macOS: no libdrm_amdgpu and no DRM node.  ac_linux_drm.c dispatches to
+-  # the Darwin backend (canned gfx1201 info, userspace VA manager and
++  # the Darwin backend (canned navi33 info, userspace VA manager and
+   # syncobjs, kernel stubs).
+   c_args += ['-DHAVE_AMDGPU_DARWIN']
+   amd_common_files += files(
+diff --git a/src/amd/vulkan/radv_physical_device.c b/src/amd/vulkan/radv_physical_device.c
+index 1730aab48d0..030bace5df4 100644
+--- a/src/amd/vulkan/radv_physical_device.c
++++ b/src/amd/vulkan/radv_physical_device.c
+@@ -2999,12 +2999,12 @@ radv_darwin_enumerate_physical_devices(struct vk_instance *vk_instance)
+    struct radv_instance *instance = (struct radv_instance *)vk_instance;
+    struct radv_physical_device *pdev = NULL;
+ 
+-   /* Fake PCI identity of the RX 9070 XT (vendor 0x1002, device 0x7550). */
++   /* PCI identity of the RX 7600 XT (vendor 0x1002, device 0x7480, revision 0xC0 as read on the card). */
+    static char *nodes[DRM_NODE_MAX];
+    static drmPciBusInfo bus_info;
+    static drmPciDeviceInfo device_info = {
+       .vendor_id = 0x1002,
+-      .device_id = 0x7550,
++      .device_id = 0x7480,
+       .subvendor_id = 0x1002,
+       .subdevice_id = 0x0000,
+       .revision_id = 0xC0,
+-- 
+2.39.5 (Apple Git-154)
+

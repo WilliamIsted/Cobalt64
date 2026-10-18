@@ -1,0 +1,65 @@
+From 561fef3735c3481f2b61e64dd08f038761097727 Mon Sep 17 00:00:00 2001
+From: Navi48-MacOS contributors <noreply@example.invalid>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 12/13] radv/darwin: report one compute ring; mock traces BO
+ create, import and free
+
+- acd_info: HW_IP_INFO compute available_rings 0x1 (the N33 kext runs ring 0 only)
+- mock: RADV_DARWIN_TRACE=1 logs BoCreate size/domains/flags, BoImportHost and BoFree
+---
+ src/amd/common/darwin/ac_darwin_drm.c  | 5 ++++-
+ src/amd/common/darwin/ac_darwin_mock.c | 7 +++++++
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/amd/common/darwin/ac_darwin_drm.c b/src/amd/common/darwin/ac_darwin_drm.c
+index af341491892..44896e67de8 100644
+--- a/src/amd/common/darwin/ac_darwin_drm.c
++++ b/src/amd/common/darwin/ac_darwin_drm.c
+@@ -449,8 +449,11 @@ acd_info(struct acd_device *dev, const struct drm_amdgpu_info *info)
+    case AMDGPU_INFO_HW_IP_INFO:
+       if (info->query_hw_ip.type == AMDGPU_HW_IP_GFX)
+          *(struct drm_amdgpu_info_hw_ip *)out = d->hw_ip_gfx;
+-      else if (info->query_hw_ip.type == AMDGPU_HW_IP_COMPUTE)
++      else if (info->query_hw_ip.type == AMDGPU_HW_IP_COMPUTE) {
+          *(struct drm_amdgpu_info_hw_ip *)out = d->hw_ip_compute;
++         /* the N33 kext runs one MEC queue (ring 0); the navi33 row's 0xf would give RADV four compute queues */
++         ((struct drm_amdgpu_info_hw_ip *)out)->available_rings = 0x1;
++      }
+       return 0;
+    case AMDGPU_INFO_HW_IP_COUNT:
+       *(uint32_t *)out = 1;
+diff --git a/src/amd/common/darwin/ac_darwin_mock.c b/src/amd/common/darwin/ac_darwin_mock.c
+index 6c76e48e7a9..b442a54c738 100644
+--- a/src/amd/common/darwin/ac_darwin_mock.c
++++ b/src/amd/common/darwin/ac_darwin_mock.c
+@@ -171,6 +171,9 @@ do_bo_create(struct mock *m, const struct n48n_gem_create_in *in, uint64_t *sout
+    }
+    memset(mem, 0, size);
+    m->bo[h] = (struct mock_bo){.used = true, .mem = mem, .size = size, .domain = domain, .bits = bits};
++   if (mock_trace())
++      fprintf(stderr, "radv-darwin: mock BoCreate h %u size 0x%llx domains 0x%llx flags 0x%llx -> domain %u bits 0x%x\n", h,
++              (unsigned long long)size, (unsigned long long)d, (unsigned long long)f, domain, bits);
+    sout[0] = h;
+    sout[1] = size;
+    sout[2] = domain;
+@@ -193,6 +196,8 @@ do_bo_import_host(struct mock *m, const uint64_t *sin, uint64_t *sout)
+       return ACD_KR_NO_RESOURCES;
+    m->bo[h] = (struct mock_bo){.used = true, .mem = (uint8_t *)(uintptr_t)host, .size = size, .domain = 1,
+                                .bits = N48N_PLACED_HOST_IMPORT};
++   if (mock_trace())
++      fprintf(stderr, "radv-darwin: mock BoImportHost h %u size 0x%llx\n", h, (unsigned long long)size);
+    sout[0] = h;
+    sout[1] = size;
+    sout[2] = 0;
+@@ -214,6 +219,8 @@ do_bo_free(struct mock *m, uint32_t h)
+    struct mock_bo *b = find_bo(m, h);
+    if (!b)
+       return ACD_KR_NOT_FOUND;
++   if (mock_trace())
++      fprintf(stderr, "radv-darwin: mock BoFree h %u\n", h);
+    unmap_all_of(m, h);
+    if (b->bits & N48N_PLACED_HOST_IMPORT) {
+       memset(b, 0, sizeof(*b)); /* the caller's memory */
+-- 
+2.39.5 (Apple Git-154)
+
