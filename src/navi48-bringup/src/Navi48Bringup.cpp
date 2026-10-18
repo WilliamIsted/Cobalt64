@@ -11194,10 +11194,12 @@ uint32_t Navi48Bringup::n33CpIbBuildKick(uint32_t stream, uint32_t &seq, uint64_
 		for (uint32_t i = 0; i < ibDw; i++) if (r32(kIbOff + 4ull * i) != ib[i]) ibOk = false;
 	}
 
-	// The ring carries INDIRECT_BUFFER then NOP pad to 256 dwords. For W2/T1 the fence is in the IB; for W2V the IB
+	// The ring carries ACQUIRE_MEM, INDIRECT_BUFFER, then NOP pad to 256 dwords. For W2/T1 the fence is in the IB; for W2V the IB
 	// runs in VMID 8 (where host page B is unmapped), so the ring carries the RELEASE_MEM fence in VMID 0 (D2).
 	uint32_t pk[kSubmitDw];
-	uint32_t len = pkt_indirect_buffer(pk, ibVa, ibDw, ibVmid);
+	uint32_t len = pkt_acquire_mem(pk);
+	const uint32_t ibAt = len;
+	len += pkt_indirect_buffer(pk + len, ibVa, ibDw, ibVmid);
 	if (vm) len += pkt_release_mem(pk + len, g.hostB + kHostFence4, seq, true);
 	const uint32_t body = len;
 	len = pad(pk, len);
@@ -11217,7 +11219,7 @@ uint32_t Navi48Bringup::n33CpIbBuildKick(uint32_t stream, uint32_t &seq, uint64_
 	}
 	n33Cp.seq = seq;
 	N48LOG("n33 cp: IB kick (%s, stream %u, %u-dword IB at %#llx, INDIRECT_BUFFER control %#x), seq %u, PQ_RPTR %#x, "
-	       "wptr %llu, IB read-back %s", db ? "db" : "mmio", stream, ibDw, ibVa, pk[3], seq, rptr0, wp, ibOk ? "ok" : "MISMATCH");
+	       "wptr %llu, IB read-back %s", db ? "db" : "mmio", stream, ibDw, ibVa, pk[ibAt + 3], seq, rptr0, wp, ibOk ? "ok" : "MISMATCH");
 	put(12, ibVa); put(13, (uint64_t)ibOk | (uint64_t)body << 1 | (uint64_t)ibDw << 8);
 	return kWhyOk;
 }

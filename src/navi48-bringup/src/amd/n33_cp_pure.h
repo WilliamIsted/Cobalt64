@@ -138,7 +138,7 @@ inline bool blob_ok(uint64_t size, const uint8_t digest[32]) {
 // ---- Packets (PM4 type 3, nvd.h; no SHADER_TYPE bit on a MEC queue) ---------------------------------------------
 constexpr uint32_t pkt3(uint32_t op, uint32_t n) { return (3u << 30) | ((n & 0x3FFFu) << 16) | ((op & 0xFFu) << 8); }
 constexpr uint32_t kOpNop = 0x10, kOpDispatchDirect = 0x15, kOpWriteData = 0x37, kOpEventWrite = 0x46,
-                   kOpReleaseMem = 0x49, kOpIndirectBuffer = 0x3F, kOpSetShReg = 0x76, kOpSetUconfigReg = 0x79;
+                   kOpReleaseMem = 0x49, kOpIndirectBuffer = 0x3F, kOpAcquireMem = 0x58, kOpSetShReg = 0x76, kOpSetUconfigReg = 0x79;
 constexpr uint32_t kNop = pkt3(kOpNop, 0x3FFF);          // one-dword NOP 0xFFFF1000 (gfx_v11_0.c:7130), also the ring fill
 constexpr uint32_t kShRegStart = 0x2C00, kUconfigStart = 0xC000;
 constexpr uint32_t kWriteDataCtl = (5u << 8) | (1u << 20);   // DST_SEL 5 (memory), WR_CONFIRM, ENGINE_SEL 0
@@ -281,6 +281,15 @@ inline uint32_t pad(uint32_t *p, uint32_t n) {
 constexpr uint32_t kIbValid = 1u << 23;
 inline uint32_t ib_control(uint32_t sizeDw, uint32_t vmid) { return kIbValid | (sizeDw & 0xFFFFFu) | ((vmid & 0xFu) << 24); }
 // PACKET3(INDIRECT_BUFFER, 2): header 0xC0023F00, ib_lo (dword-aligned), ib_hi, control. 4 dwords.
+// ACQUIRE_MEM before each IB, as gfx_v11_0_emit_mem_sync (gfx_v11_0.c:6848): write back and invalidate GL2, GLM, and
+// invalidate GL1, GLV, GLK, GLI over the whole range. Without it the CP re-ran a stale VRAM IB from GL2 after the CPU
+// rewrote it through the BAR (W2V V3b, 2026-10-18). 8 dwords.
+constexpr uint32_t kGcrSync = (1u << 14) | (1u << 15) | (1u << 5) | (1u << 4) | (1u << 9) | (1u << 8) | (1u << 7) | (1u << 0);
+static_assert(kGcrSync == 0xC3B1u, "GL2_INV GL2_WB GLM_INV GLM_WB GL1_INV GLV_INV GLK_INV GLI_INV (nvd.h:458-488)");
+inline uint32_t pkt_acquire_mem(uint32_t *p) {
+	p[0] = pkt3(kOpAcquireMem, 6); p[1] = 0; p[2] = 0xFFFFFFFFu; p[3] = 0xFFFFFFu; p[4] = 0; p[5] = 0; p[6] = 0xA; p[7] = kGcrSync;
+	return 8;
+}
 inline uint32_t pkt_indirect_buffer(uint32_t *p, uint64_t ibMc, uint32_t sizeDw, uint32_t vmid) {
 	p[0] = pkt3(kOpIndirectBuffer, 2); p[1] = lo32(ibMc) & ~3u; p[2] = hi32(ibMc); p[3] = ib_control(sizeDw, vmid);
 	return 4;

@@ -395,9 +395,11 @@ inline uint32_t dispatch_stream(uint32_t *p, uint64_t codeVa, uint64_t dstVa) {
 // Stream 7, vm fault: WRITE_DATA of the marker to va, without the fence. 5 dwords.
 inline uint32_t fault_stream(uint32_t *p, uint64_t va) { return n33cp::pkt_write_data(p, va, n33bo::kFaultMarker); }
 
-// The ring content for a VMID-8 submit (D2): INDIRECT_BUFFER(ib va, VMID 8) then the RELEASE_MEM fence in VMID 0.
+// The ring content for a VMID-8 submit (D2): ACQUIRE_MEM, INDIRECT_BUFFER(ib va, VMID 8), then the RELEASE_MEM fence
+// in VMID 0.
 inline uint32_t ring_stream(uint32_t *p, uint64_t ibVa, uint32_t ibDw, uint64_t fenceMc, uint32_t seq) {
-	uint32_t n = n33cp::pkt_indirect_buffer(p, ibVa, ibDw, kVmid);
+	uint32_t n = n33cp::pkt_acquire_mem(p);
+	n += n33cp::pkt_indirect_buffer(p + n, ibVa, ibDw, kVmid);
 	return n + n33cp::pkt_release_mem(p + n, fenceMc, seq, true);   // GL2_WB writes back NC lines before the fence
 }
 

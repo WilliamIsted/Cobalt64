@@ -677,7 +677,7 @@ static int header_check(const char *root) {
 		{ "PACKET3_NOP", kOpNop }, { "PACKET3_DISPATCH_DIRECT", kOpDispatchDirect }, { "PACKET3_WRITE_DATA", kOpWriteData },
 		{ "PACKET3_EVENT_WRITE", kOpEventWrite }, { "PACKET3_RELEASE_MEM", kOpReleaseMem }, { "PACKET3_SET_SH_REG", kOpSetShReg },
 		{ "PACKET3_SET_UCONFIG_REG", kOpSetUconfigReg }, { "PACKET3_SET_SH_REG_START", kShRegStart },
-		{ "PACKET3_SET_UCONFIG_REG_START", kUconfigStart }, { "PACKET3_INDIRECT_BUFFER", kOpIndirectBuffer },
+		{ "PACKET3_SET_UCONFIG_REG_START", kUconfigStart }, { "PACKET3_INDIRECT_BUFFER", kOpIndirectBuffer }, { "PACKET3_ACQUIRE_MEM", kOpAcquireMem },
 	};
 	const ValRow ev[] = { { "CS_PARTIAL_FLUSH", kCsPartialFlush & 0xFF }, { "CACHE_FLUSH_AND_INV_TS_EVENT", kRelMemBase & 0xFF } };
 	int bad = 0;

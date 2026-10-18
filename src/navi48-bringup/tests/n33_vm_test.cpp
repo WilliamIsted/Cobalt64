@@ -138,13 +138,14 @@ static void stream_cases() {
 	CHECK(p[2] == (uint32_t)(code >> 8) && p[3] == (uint32_t)(code >> 40));
 	// stream 7: WRITE_DATA, no fence (5 dwords)
 	CHECK(fault_stream(p, 0xFFFFA00000000000ull) == 5 && p[4] == n33bo::kFaultMarker);
-	// the ring content: INDIRECT_BUFFER(ib, VMID 8) then RELEASE_MEM
+	// the ring content: ACQUIRE_MEM, INDIRECT_BUFFER(ib, VMID 8), then RELEASE_MEM
 	const uint64_t ib = 0xFFFF800000100000ull, fence = n33gmc::slot_mc(n33cp::kSlotB) + n33cp::kHostFence4;
 	const uint32_t nr = ring_stream(p, ib, 96, fence, 3);
-	CHECK(nr == 12 && p[0] == 0xC0023F00u);
-	CHECK(p[1] == (uint32_t)(ib & ~3ull) && p[2] == (uint32_t)(ib >> 32));
-	CHECK(p[3] == (n33cp::kIbValid | 96u | (kVmid << 24)));            // VMID 8 in the control word
-	CHECK(p[4] == n33cp::pkt3(n33cp::kOpReleaseMem, 6));
+	CHECK(nr == 20 && p[0] == n33cp::pkt3(n33cp::kOpAcquireMem, 6) && p[7] == 0xC3B1u);
+	CHECK(p[8] == 0xC0023F00u);
+	CHECK(p[9] == (uint32_t)(ib & ~3ull) && p[10] == (uint32_t)(ib >> 32));
+	CHECK(p[11] == (n33cp::kIbValid | 96u | (kVmid << 24)));           // VMID 8 in the control word
+	CHECK(p[12] == n33cp::pkt3(n33cp::kOpReleaseMem, 6));
 }
 
 static void refusal_cases() {
