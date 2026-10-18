@@ -9251,12 +9251,31 @@ uint32_t Navi48Bringup::n33DmubSnap(uint64_t *out, uint32_t outCount) {
 	return n33dmub::kWhyOk;
 }
 
-// Action 62: the PSP type-51 DMUB load (Linux's order: after RLC autoload). n33ctl has placed the signed blob in
-// fw_buf; this submits one LOAD_IP_FW. off/size name it inside fw_buf (the psp2 guard checks the range and type 51).
+// Action 62: the PSP type-51 DMUB load (Linux's order: after RLC autoload). n33ctl has staged the whole sha256-pinned
+// file in fw_buf at off (size bytes), placed so its inst-const region starts on a page. This reads the header back,
+// and submits one LOAD_IP_FW of inst_const_bytes from ucode_array_offset_bytes only (amdgpu_ucode.c:1008-1011); the
+// whole file, header included, was refused with PSP status 0xffff0008 on 2026-10-18. The psp2 guard checks the
+// image's range, page alignment and type 51.
 uint32_t Navi48Bringup::n33DmubLoad(uint64_t off, uint64_t size, uint64_t *out, uint32_t outCount) {
 	const uint32_t w = n33dmub::may_load(n33Dmub, n33P2.autoload, false);
 	if (w) return w;
-	const uint32_t pw = n33PspSubmit(n33psp2::kIpFw, n33psp2::kFwDmub, off, size, out, outCount, true);
+	if (off < n33psp2::kFwBuf || size < n33dmub::kDmcubHdrBytes || size > n33psp2::kFwBufSize ||
+	    off - n33psp2::kFwBuf > n33psp2::kFwBufSize - size) {
+		N48LOG("n33 dmub: staged file %#llx +%#llx is not inside fw_buf", off, size);
+		return n33dmub::kWhyFwHeader;
+	}
+	uint8_t hdr[n33dmub::kDmcubHdrBytes];
+	for (uint32_t i = 0; i < sizeof hdr; i += 4) {
+		const uint32_t v = n33PspR(off + i);
+		hdr[i] = (uint8_t)v; hdr[i+1] = (uint8_t)(v >> 8); hdr[i+2] = (uint8_t)(v >> 16); hdr[i+3] = (uint8_t)(v >> 24);
+	}
+	n33dmub::FwSlice sl{};
+	if (!n33dmub::fw_slice(hdr, sizeof hdr, (uint32_t)size, &sl) || !n33dmub::fw_slice_pinned(sl, (uint32_t)size)) {
+		N48LOG("n33 dmub: staged firmware header refused (file %#llx bytes; slice %#x +%#x)", size, sl.off, sl.size);
+		return n33dmub::kWhyFwHeader;
+	}
+	N48LOG("n33 dmub: inst_const image %#x bytes at file offset %#x (VRAM %#llx)", sl.size, sl.off, off + sl.off);
+	const uint32_t pw = n33PspSubmit(n33psp2::kIpFw, n33psp2::kFwDmub, off + sl.off, sl.size, out, outCount, true);
 	const bool ok = pw == n33psp2::kWhyOk && !n33P2.failed;
 	n33dmub::record_load(n33Dmub, ok);
 	if (!ok) { N48LOG("n33 dmub: PSP type-51 load refused (psp why %u)", pw); return n33dmub::kWhyPspType51; }

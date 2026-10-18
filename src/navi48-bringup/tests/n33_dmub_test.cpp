@@ -181,6 +181,36 @@ static void firmware_file(const char *path) {
 	CHECK(m.traceSize == kMetaTraceSize);
 	CHECK(m.dalFw == 1);
 	CHECK(m.sharedSize == kMetaSharedSize);
+	// The PSP type-51 slice: inst_const from ucode_array_offset, nothing else (amdgpu_ucode.c:1008-1011).
+	FwSlice sl{};
+	CHECK(fw_slice(b.data(), kDmcubHdrBytes, (uint32_t)b.size(), &sl));
+	CHECK(sl.off == 0x100 && sl.size == 0x38ba0);
+	CHECK(fw_slice_pinned(sl, (uint32_t)b.size()));
+	CHECK(b[4] == 0x28);                                   // header_size_bytes as measured
+	// Malformed headers, each a copy of the real one with one field broken.
+	auto bad = [&](uint32_t o, uint32_t v, uint32_t fileSize) {
+		std::vector<uint8_t> h(b.begin(), b.begin() + kDmcubHdrBytes);
+		memcpy(&h[o], &v, 4);
+		FwSlice t{};
+		return !fw_slice(h.data(), kDmcubHdrBytes, fileSize, &t);
+	};
+	const uint32_t n = (uint32_t)b.size();
+	CHECK(bad(0, n - 4, n));                               // size_bytes not the file size
+	CHECK(bad(0, n, n + 4));                               // file larger than the header says
+	CHECK(bad(8, 0x00000002, n));                          // header_version_major 2
+	CHECK(bad(4, 0x10, n));                                // header_size below the v1_0 struct
+	CHECK(bad(4, n + 1, n));                               // header_size past the file
+	CHECK(bad(0x18, 0x10, n));                             // ucode_array_offset inside the header
+	CHECK(bad(0x18, n, n));                                // ucode_array_offset at the end
+	CHECK(bad(0x20, 0, n));                                // inst_const 0
+	CHECK(bad(0x20, 0x1ff, n));                            // inst_const smaller than PSP header + footer
+	CHECK(bad(0x20, n - 0x100 + 4, n));                    // inst_const past the end
+	CHECK(bad(0x20, 0xFFFFFF00u, n));                      // offset + inst_const overflows 32 bits
+	CHECK(bad(0x24, 8, n));                                // bss past the end (inst_const fills the file)
+	{ FwSlice t{}; CHECK(!fw_slice(b.data(), kDmcubHdrBytes - 1, n, &t)); CHECK(!fw_slice(nullptr, kDmcubHdrBytes, n, &t)); }
+	CHECK(!fw_slice_pinned(FwSlice{0x100, 0x38ba0}, n + 0x1000));
+	CHECK(!fw_slice_pinned(FwSlice{0x200, 0x38ba0}, n));
+	CHECK(!fw_slice_pinned(FwSlice{0x100, 0x38aa0}, n));
 	// The region math on the real meta fits the slab.
 	RegionInfo r = region_info(0x10000, m.fwRegionSize, m.traceSize);
 	CHECK(placement_ok(r));

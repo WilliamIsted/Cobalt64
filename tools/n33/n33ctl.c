@@ -129,6 +129,7 @@ static const char *whyName(uint64_t why) {
 	case 209: return "dmub: a DMUB window overlaps a live protected range";
 	case 210: return "dmub: VBIOS image missing or wrong size";
 	case 211: return "dmub: the PSP refused the type-51 DMUB load at this point";
+	case 212: return "dmub: the staged firmware header is malformed, out of bounds, or not the pinned layout";
 	case 220: return "ih: out of order (state regs or start before G6, start twice, recv before start or with its queue not ready, "
 	                 "sdma source while the compute queue runs, a follow-up without its first variant's no-IV, a variant repeated "
 	                 "after no IV, arm twice, stop with no ring, journal full)";
@@ -1535,9 +1536,15 @@ static int doDmub(int argc, char **argv) {
 		char hex[65];
 		sha256hex(buf, n, hex);
 		if (strcmp(hex, kDmubSha256)) { fprintf(stderr, "refusing %s: sha256 %s (want %s)\n", argv[3], hex, kDmubSha256); return 1; }
-		printf("dmub load: %s staged (%zu bytes, sha256 ok) at fw_buf %#llx\n", argv[3], n, kP2FwBuf);
-		if (p2stage(kP2FwBuf, buf, (uint32_t)n, "dmub firmware")) return 1;
-		uint64_t a[2] = { kP2FwBuf, n };
+		// The PSP gets only the inst-const region at ucode_array_offset_bytes (amdgpu_ucode.c:1008-1011), on a page as
+		// Linux places it; stage the whole file so that region starts at fw_buf + 0x1000. The kext reparses the header.
+		const uint32_t arr = n33_rd32(buf, 24);
+		if (arr == 0 || arr > 0x1000) { fprintf(stderr, "refusing: ucode_array_offset_bytes %#x\n", arr); return 1; }
+		const uint64_t at = kP2FwBuf + 0x1000 - arr;
+		printf("dmub load: %s staged (%zu bytes, sha256 ok) at VRAM %#llx; inst_const %#x bytes at %#llx\n",
+		       argv[3], n, at, n33_rd32(buf, 32), at + arr);
+		if (p2stage(at, buf, (uint32_t)n, "dmub firmware")) return 1;
+		uint64_t a[2] = { at, n };
 		if (call(aDmubLoad, a, 2, o, 7)) { printf("dmub load: REFUSED (why %llu: %s)\n", o[0], whyName(o[0])); return 1; }
 		printf("dmub load: PSP type-51 accepted  index %llu  %s  status %#llx\n", o[5], o[1] ? "fenced" : "TIMEOUT", o[2]);
 		return 0;

@@ -103,6 +103,30 @@ inline bool find_meta(const uint8_t *b, uint32_t size, const FwHeader &h, FwMeta
 	return false;
 }
 
+// The PSP type-51 image is the inst-const region only: inst_const_bytes from ucode_array_offset_bytes, the header and
+// any bss left out (amdgpu_ucode.c:1008-1011). Linux copies it to a page-aligned mc_addr in adev->firmware.fw_buf
+// (amdgpu_ucode.c:1119, :1214) and sends fw_size = ucode_size unpadded (amdgpu_psp.c:3379-3384). The PSP header and
+// footer stay inside the image; the PSP strips them and programs CW0 itself, so the driver neither copies inst_const
+// nor calls backdoor_load (amdgpu_dm_dmub.c:204-211, :241-242; dmub_srv.c:857).
+// Common header (amdgpu_ucode.h): size_bytes @0, header_size_bytes @4, header_version_major @8 (u16).
+constexpr uint32_t kDmcubHdrBytes = 0x28;          // sizeof(struct dmcub_firmware_header_v1_0)
+struct FwSlice { uint32_t off, size; };
+// hdr: at least kDmcubHdrBytes of the file's start; fileSize: the whole file. False on any field out of bounds.
+inline bool fw_slice(const uint8_t *hdr, uint32_t avail, uint32_t fileSize, FwSlice *s) {
+	if (!hdr || !s || avail < kDmcubHdrBytes || fileSize < kDmcubHdrBytes) return false;
+	auto rd = [&](uint32_t o) -> uint32_t { return (uint32_t)hdr[o] | ((uint32_t)hdr[o+1] << 8) | ((uint32_t)hdr[o+2] << 16) | ((uint32_t)hdr[o+3] << 24); };
+	const uint32_t hdrSize = rd(4), major = rd(8) & 0xFFFFu, off = rd(0x18), inst = rd(0x20), bss = rd(0x24);
+	if (rd(0) != fileSize || major != 1 || hdrSize < kDmcubHdrBytes || hdrSize > fileSize) return false;
+	if (off < hdrSize || inst < kPspHeader + kPspFooter) return false;   // Linux subtracts both from inst_const_bytes
+	if ((uint64_t)off + inst + bss > fileSize) return false;
+	s->off = off; s->size = inst;
+	return true;
+}
+// The kext loads only this file's layout: the region math uses its measured meta (kMetaFwRegionSize, kMetaTraceSize).
+inline bool fw_slice_pinned(const FwSlice &s, uint32_t fileSize) {
+	return fileSize == kFwFileSize && s.off == kUcodeArrayOffset && s.size == kInstConstBytes;
+}
+
 // ---- DMUB window layout (dmub_srv_calc_region_info, dmub_srv.c:659-736; sizes dmub_srv.c:57-75) --------------------
 // William chose VRAM for every window (one FB block), above the 16 MiB floor, in a new owned range. So we lay all the
 // windows out contiguously exactly as dmub_srv_calc_regions_for_memory_type does for one memory type: each base aligned
@@ -225,6 +249,7 @@ enum Why : uint32_t {
 	kWhyWindowOverlap = 209,// a DMUB window overlaps a live protected range
 	kWhyVbios = 210,        // VBIOS image missing or wrong size
 	kWhyPspType51 = 211,    // the PSP refused the type-51 DMUB load at this point
+	kWhyFwHeader = 212,     // the staged firmware's header is malformed, out of bounds, or not the pinned layout
 };
 
 // ---- Gate state. The kext owns one of these per load; it reads the hardware and fills the bool arguments. -----------
