@@ -57,6 +57,8 @@ IOReturn n1c_bo_free(const N1cRef &ref, uint64_t handle);
 IOReturn n1c_bo_import_host(const N1cRef &ref, task_t task, uint64_t hostVa, uint64_t size, uint64_t flags, uint64_t gpuVa, uint64_t out[4]);
 // 0.0.612 (review item A): latch this GPU's PCI BARs (n entries, base + FULL size each, 0 <= n <= 7) once at start; the first call wins, later calls are ignored. With nothing latched every host import is refused.
 void n1c_latch_pci_bars(const uint64_t *base, const uint64_t *size, uint32_t n);
+// Step 7 W2: read back up to `cap` latched BARs (base + full size each) for the BO host-import device-page refusal; returns the count, 0 if none latched.
+uint32_t n1c_pci_bars(uint64_t *base, uint64_t *size, uint32_t cap);
 // 0.0.663 (ReBAR item 5): IOPCIFamily and config space disagree on BAR0 (address, or a BAR0 IOPCIFamily dropped, or the ReBAR size): true makes n1c_open refuse (NotReady). First call wins, like the BAR latch.
 void n1c_latch_bar0_conflict(bool conflict);
 IOReturn n1c_gem_va(const N1cRef &ref, const n48n_gem_va *in);

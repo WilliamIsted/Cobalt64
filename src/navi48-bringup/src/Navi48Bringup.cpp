@@ -8980,7 +8980,7 @@ void Navi48Bringup::stop(IOService *provider) {
 		n33IhStop(true, nullptr, 0);     // step 4 I5: MSI disarmed and the IH ring off before the queues and the GART go
 		n33CpStop(true, nullptr, 0);     // step 6 D9: the compute queue drained and the MEC halted first
 		n33SdmaStop(true, nullptr, 0);   // step 5 D9: SDMA0 queue 0 off and halted before the GART goes
-		n33GmcStop();              // GMC D6: PTEs to the dummy page and flush; the hubs keep their state
+		n33BoStop(n33GmcStop());   // GMC D6: PTEs to the dummy page and flush; then free the W2 BOs' memory iff the flushes acknowledged
 		n33RestoreScanout();       // HUBP0 back on the GOP surface before BAR0 and the registers go away
 		if (n33Bar0Map) { n33Bar0Map->release(); n33Bar0Map = nullptr; n33Bar0 = nullptr; }
 		if (bar2Map) { bar2Map->release(); bar2Map = nullptr; dev.bar2 = nullptr; dev.bar2Size = 0; }   // step 5 db mode
@@ -9068,11 +9068,13 @@ enum : uint32_t { kN33Status = 0, kN33RegWrite = 1, kN33Bar0Read = 2, kN33Bar0Wr
                   kN33SdmaRecord = 28,
                   kN33CpState = 29, kN33CpHqd = 30, kN33CpStart = 31, kN33CpTest = 32, kN33CpStop = 33, kN33CpRecord = 34,
                   kN33CpIb = 35, kN33CpSubmit = 36, kN33CpWait = 37, kN33CpXib = 38,
+                  kN33BoCreate = 39, kN33BoImport = 40, kN33BoMap = 41, kN33BoUnmap = 42, kN33BoFree = 43,
+                  kN33BoInfo = 44, kN33BoRead = 45, kN33BoCopy = 46, kN33BoFault = 47,
                   kN33DmubSnap = 60, kN33DmubReset = 61, kN33DmubLoad = 62, kN33DmubInit = 63,
                   kN33DmubCmd = 64, kN33DmubCheck = 65,
                   kN33IhState = 70, kN33IhStart = 71, kN33IhRecv = 72, kN33IhArm = 73, kN33IhStop = 74, kN33IhJournal = 75 };
-struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch, 15 step-5 SDMA pages, 16 step-6 compute pages, 17 step-7 T1 IB page, 18 our DMUB windows (stage 3 DMCUB proof), 19 the IH ring (step 4)
-constexpr unsigned kN33Ranges = 21;   // at most 20 live at once: GOP, 8 CW, 3 REGION, kinds 12 to 19
+struct N33Range { uint64_t off, len; uint32_t kind; };   // kind: 0 GOP scanout, 1-8 DMCUB CW0-7, 9-11 REGION4-6, 12 PSP ring pages, 13 SMU driver table, 14 GART table and mem_scratch, 15 step-5 SDMA pages, 16 step-6 compute pages, 17 step-7 T1 IB page, 18 our DMUB windows (stage 3 DMCUB proof), 19 the IH ring (step 4), 20 the W2 VRAM BO slab (step 7)
+constexpr unsigned kN33Ranges = 22;   // at most 21 live at once: GOP, 8 CW, 3 REGION, kinds 12 to 20
 }
 extern "C" {
 extern const uint8_t fw_shader_store_magic_gfx11[];   // src/fw/fw_shader_store_magic_gfx11.c (C linkage), step 6 D6
@@ -9164,7 +9166,7 @@ bool Navi48Bringup::n33MapBar0() {
 // enabled DMCUB window, read live so a window DMCUB moves is still covered.
 static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbBase, uint64_t gopOff, uint64_t gopLen,
                               N33Range *out, unsigned max, bool pspPages, bool smuPage, bool gmcPages, bool sdmaPages,
-                              bool cpPages, bool cpIbPage, bool dmubWindows = false, bool ihRing = false) {
+                              bool cpPages, bool cpIbPage, bool dmubWindows = false, bool ihRing = false, bool boSlab = false) {
 	unsigned n = 0;
 	auto add = [&](uint64_t gpu, uint64_t len, uint32_t kind) {
 		if (n >= max || gpu < fbBase || len == 0) return;   // below the FB base: not VRAM
@@ -9194,6 +9196,7 @@ static unsigned n33_protected(const volatile uint32_t *r, uint64_t fbBase, uint6
 	if (cpIbPage && n < max) out[n++] = { n33cp::kIbOff, n33cp::kIbLen, 17 };              // step 7 T1 D4: the MEC fetches the IB page
 	if (dmubWindows && n < max) out[n++] = { n33dmub::kDmubOff, n33dmub::kDmubMax, 18 };   // stage 3 DMCUB proof: our owned DMUB window slab
 	if (ihRing && n < max) out[n++] = { n33ih::kRingOff, n33ih::kRingBytes, n33ih::kKind };   // step 4: the IH writes its ring
+	if (boSlab && n < max) out[n++] = { n33bo::kSlabOff, n33bo::kSlabLen, n33bo::kKind };     // step 7 W2: VRAM BOs the GPU maps
 	return n;
 }
 
@@ -9202,7 +9205,7 @@ bool Navi48Bringup::n33WriteAllowed(uint64_t off, uint64_t len, uint64_t *why) c
 	if (!n33Bar0 || len == 0 || (off & 3) || (len & 3) || len > kN33MaxXfer) { *why = 1; return false; }
 	if (off < kN33WriteFloor || off > n33Bar0Size || len > n33Bar0Size - off) { *why = 2; return false; }
 	N33Range rs[kN33Ranges];
-	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned);
+	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned);
 	for (unsigned i = 0; i < n; i++)
 		if (off < rs[i].off + rs[i].len && rs[i].off < off + len) { *why = 100 + rs[i].kind; return false; }   // off + len <= n33Bar0Size here
 	return true;
@@ -9433,15 +9436,15 @@ uint32_t Navi48Bringup::n33DmubCheck(uint64_t *out, uint32_t outCount) {
 	return n33dmub::kWhyOk;
 }
 
-IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount) {
+IOReturn Navi48Bringup::n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount, task_t caller) {
 	if (!gN33PspLock) return kIOReturnNotReady;
 	IOLockLock(gN33PspLock);
-	const IOReturn r = n33CallLocked(action, in, inCount, out, outCount);
+	const IOReturn r = n33CallLocked(action, in, inCount, out, outCount, caller);
 	IOLockUnlock(gN33PspLock);
 	return r;
 }
 
-IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount) {
+IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount, task_t caller) {
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
 	if (!rmmio) return kIOReturnNotReady;   // stopping (BAR0 actions check n33Bar0 themselves)
 	auto need = [&](uint32_t k) { return inCount >= k; };
@@ -9452,7 +9455,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		put(0, n33Bar0Size); put(1, n33FbBase); put(2, n33FbOffset); put(3, n33GopOff); put(4, n33GopLen);
 		put(5, ((uint64_t)rmmio[kN33Hubp0AddrHigh] << 32) | rmmio[kN33Hubp0Addr]);
 		put(6, rmmio[kN33Hubp0Pitch]); put(7, rmmio[kN33Hubp0FlipCtl]);
-		put(8, n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned));
+		put(8, n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned));
 		put(9, n33SurfCfg); put(10, n33Bar0Phys);
 		return kIOReturnSuccess;
 	}
@@ -9461,7 +9464,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	case kN33Protected: {
 		if (!need(1)) return kIOReturnBadArgument;
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned);
+		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned);
 		if (in[0] >= n) return kIOReturnNotFound;
 		put(0, rs[in[0]].off); put(1, rs[in[0]].len); put(2, rs[in[0]].kind);
 		return kIOReturnSuccess;
@@ -9645,6 +9648,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 		if (!need(4)) return kIOReturnBadArgument;
 		const uint32_t slot = in[0] > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)in[0];
 		const uint32_t count = in[1] > 0xFFFFu ? 0xFFFFu : (uint32_t)in[1];
+		if (n33bo::window_hits(slot, count)) { put(0, n33bo::kWhyWindow); return kIOReturnNotPermitted; }   // W2 owns those PTEs
 		const uint32_t w = n33GmcMap(slot, count, in[2] > 0xFFu ? 0xFFu : (uint32_t)in[2], in[3], out, outCount);
 		if (w) { put(0, w); return kIOReturnNotPermitted; }
 		return kIOReturnSuccess;
@@ -9652,6 +9656,7 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	case kN33GartUnmap: {         // in: slot, count
 		if (!need(2)) return kIOReturnBadArgument;
 		const uint32_t slot = in[0] > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)in[0];
+		if (n33bo::window_hits(slot, in[1] > 0xFFFFu ? 0xFFFFu : (uint32_t)in[1])) { put(0, n33bo::kWhyWindow); return kIOReturnNotPermitted; }
 		const uint32_t w = n33GmcUnmap(slot, in[1] > 0xFFFFu ? 0xFFFFu : (uint32_t)in[1], out, outCount);
 		if (w) { put(0, w); return kIOReturnNotPermitted; }
 		return kIOReturnSuccess;
@@ -9827,6 +9832,29 @@ IOReturn Navi48Bringup::n33CallLocked(uint32_t action, const uint64_t *in, uint3
 	case kN33CpWait: {            // W1 (step 7): in: seqno. Poll the outstanding submit's fence. out: see n33CpWait
 		if (!need(1)) return kIOReturnBadArgument;
 		const uint32_t w = n33CpWait(in[0] > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)in[0], out, outCount);
+		if (w) { put(0, w); return kIOReturnNotPermitted; }
+		return kIOReturnSuccess;
+	}
+	// ---- Step 7 W2: buffer objects (n33bo::, design stage3-step7-w2-design.md). Handles 1 to 8. ----
+	case kN33BoCreate: case kN33BoImport: case kN33BoMap: case kN33BoUnmap: case kN33BoFree: case kN33BoInfo:
+	case kN33BoRead: case kN33BoCopy: case kN33BoFault: {
+		auto u32 = [&](uint32_t i) { return inCount > i ? (in[i] > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)in[i]) : 0u; };
+		auto u64 = [&](uint32_t i) { return inCount > i ? in[i] : 0ull; };
+		uint32_t w = 0;
+		switch (action) {
+		case kN33BoCreate: w = n33BoCreate(u32(0), u64(1), out, outCount); break;        // in: kind (0 VRAM, 1 GTT), bytes
+		case kN33BoImport: w = n33BoImport(caller, u64(0), u64(1), out, outCount); break; // in: caller address, bytes
+		case kN33BoMap:    w = n33BoMapVa(u32(0), u64(1), inCount > 2 ? u32(2) : n33bo::kVmDefault, out, outCount); break;   // in: h, va, [flags]
+		case kN33BoUnmap:  w = n33BoUnmap(u32(0), out, outCount); break;
+		case kN33BoFree:   w = n33BoFree(u32(0)); if (!w) put(0, 0); break;
+		case kN33BoInfo:   w = n33BoInfo(u32(0), out, outCount); break;
+		case kN33BoRead:                                                                  // in: h, dword index. out: 0, value
+			w = n33bo::may_read(n33Bo, u32(0), u64(1));
+			if (!w) { put(0, 0); put(1, *n33BoWord(u32(0), u64(1) * 4)); }
+			break;
+		case kN33BoCopy:   w = n33BoSubmit(n33cp::kXibBoCopy, u32(0), u32(1), 0, out, outCount); break;   // in: src h, dst h
+		case kN33BoFault:  w = n33BoSubmit(n33cp::kXibBoFault, 0, 0, u64(0), out, outCount); break;       // in: va
+		}
 		if (w) { put(0, w); return kIOReturnNotPermitted; }
 		return kIOReturnSuccess;
 	}
@@ -10015,7 +10043,7 @@ uint32_t Navi48Bringup::n33PspSubmit(uint32_t cmd, uint32_t fwType, uint64_t off
 		if (mc + sz > fbEnd) { N48LOG("n33 psp2: refused SETUP_TMR: MC %#llx +%#llx ends past FB_LOCATION_TOP (%#llx)", mc, sz, fbEnd); return kWhyTmrSize; }
 		pa = kTmrOff + ((uint64_t)(rmmio[n33psp::kMmhubFbOffset] & 0x00FFFFFFu) << 24);   // amdgpu_gmc_vram_pa
 		N33Range rs[kN33Ranges];
-		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned);
+		const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, true, n33Smu.pageOwned, n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned);
 		for (unsigned i = 0; i < n; i++)
 			if (n33psp::overlaps(kTmrOff, sz, rs[i].off, rs[i].len)) {
 				N48LOG("n33 psp2: refused SETUP_TMR: VRAM %#llx +%#llx overlaps protected kind %u at %#llx", kTmrOff, sz, rs[i].kind, rs[i].off);
@@ -10402,9 +10430,9 @@ uint32_t Navi48Bringup::n33GmcRestore(uint64_t *out, uint32_t outCount) {
 // dummy page with flags 0, HDP flush, flush each hub that was given the table. The dummy page is leaked on
 // purpose (PROTECTION_FAULT_DEFAULT_ADDR and the unbound PTEs still name it); the host pages are freed only
 // when nothing can still translate to them.
-void Navi48Bringup::n33GmcStop() {
+bool Navi48Bringup::n33GmcStop() {
 	using namespace n33gmc;
-	if (!rmmio) return;
+	if (!rmmio) return false;
 	const Unload u = unload_plan(n33Gmc);
 	bool flushesOk = true;
 	if (u.unmapAll && n33Bar0) {
@@ -10426,6 +10454,7 @@ void Navi48Bringup::n33GmcStop() {
 		N48LOG("n33 gmc: stop: dummy page %#llx leaked on purpose (D6)", n33GmcDummyPa);
 		n33GmcDummy = nullptr;   // ponytail: never released; one page per kext load that ran G2
 	}
+	return freeHost;   // W2: the BOs' host memory may be freed on the same verdict (flushes acknowledged)
 }
 
 // ---- N33 stage 3 step 5: CP RS64 start (C1) and SDMA0 queue 0 (E1 to E4, E6) ---------------------------------
@@ -10491,7 +10520,7 @@ uint32_t Navi48Bringup::n33SdmaPagesClear() const {
 	if (!n33Bar0 || kOwnedOff < kN33WriteFloor || kOwnedOff + kOwnedLen > n33Bar0Size) return kWhyOverlap;
 	N33Range rs[kN33Ranges];
 	const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
-	                                 n33Gmc.tableOwned, false, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned);
+	                                 n33Gmc.tableOwned, false, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned, n33Bo.slabOwned);
 	for (unsigned i = 0; i < n; i++)
 		if (kOwnedOff < rs[i].off + rs[i].len && rs[i].off < kOwnedOff + kOwnedLen) {
 			N48LOG("n33 sdma: step-5 pages VRAM %#llx +%#llx overlap protected kind %u at %#llx", kOwnedOff, kOwnedLen, rs[i].kind, rs[i].off);
@@ -11117,6 +11146,7 @@ uint32_t Navi48Bringup::n33CpIbBuildKick(uint32_t stream, uint32_t &seq, uint64_
 	for (uint32_t i = 0; i < kResultDw; i++) hb[i] = kBefore;
 	hb[fenceDw] = kBefore;
 	if (stream == kXibWd) hb[kHostXibWd / 4] = kBefore;
+	if (stream == kXibBoCopy) n33BoPrefill(seq);   // W2: the source pattern and the destination's before-value
 	n33GmcHdpFlush();
 	bool ibOk = true;
 	for (uint32_t i = 0; i < ibDw; i++) if (r32(kIbOff + 4ull * i) != ib[i]) ibOk = false;
@@ -11161,6 +11191,8 @@ uint32_t Navi48Bringup::n33CpIbWait(uint32_t stream, uint32_t seq, uint64_t wp, 
 	const uint32_t want = xib_want(stream);
 	auto landed = [&]() {
 		if (stream == kXibWd) return (uint32_t)(hb[kHostXibWd / 4] == xib_wd_value(seq));
+		if (stream == kXibBoCopy) return n33BoLanded(seq);   // W2: destination samples, read through its CPU map
+		if (stream == kXibBoFault) return 0u;                // W2: stores nothing anyone reads
 		uint32_t k = 0; for (uint32_t i = 0; i < kResultDw; i++) k += hb[i] == kMagic + i; return k;
 	};
 	const uint32_t limit = timeout_us(3);   // the 2 s dispatch timeout
@@ -11185,7 +11217,8 @@ uint32_t Navi48Bringup::n33CpIbWait(uint32_t stream, uint32_t seq, uint64_t wp, 
 	const uint32_t active = rmmio[kHqdActive], err = rmmio[kHqdError];
 	rmmio[kGrbmGfxCntl] = 0;
 	const uint32_t fault = rmmio[kGcFaultStatus], cpc = rmmio[kCpcStatus], slot = r32(kRptrSlot), ip = rmmio[kMecInstrPntr];
-	const TestRead r = { seen, rptr_at(rptr, wp), (active & kActive) != 0, fault, err, rptr != rptr0 };
+	// W2's fault stream expects a GC fault: the queue's health is judged without it, and n33CpWait judges the fault.
+	const TestRead r = { seen, rptr_at(rptr, wp), (active & kActive) != 0, stream == kXibBoFault ? 0u : fault, err, rptr != rptr0 };
 	const uint32_t latch = outcome(r);
 	N48LOG("n33 cp: IB wait (%s, stream %u, seq %u) -> page B: %s after %u us, data %u/%u (first %d us), fence %s (first %d us), "
 	       "PQ_RPTR %#x (want %#x), wptr %llu, rptr slot %#x, ACTIVE %#x, HQD_ERROR %#x, INSTR_PNTR %#x, "
@@ -11209,6 +11242,13 @@ uint32_t Navi48Bringup::n33CpIbWait(uint32_t stream, uint32_t seq, uint64_t wp, 
 uint32_t Navi48Bringup::n33CpStreamBuild(uint32_t stream, const n33cp::Geo &g, uint32_t seq, uint32_t *ib, uint32_t &ibDw) {
 	using namespace n33cp;
 	if (stream == kXibK4) { ibDw = xib_native(stream, ib, g, seq); return kWhyOk; }
+	if (stream == kXibBoCopy) {   // W2: COPY_DATA src -> dst at the BOs' VAs (n33BoSubmit checked both mapped)
+		const n33bo::Bo &s = n33Bo.bo[n33Bo.copySrc - 1], &d = n33Bo.bo[n33Bo.copyDst - 1];
+		const uint64_t minBytes = n33bo::bytes(s) < n33bo::bytes(d) ? n33bo::bytes(s) : n33bo::bytes(d);
+		ibDw = n33bo::copy_stream(ib, s.va, d.va, minBytes, g.hostB + kHostFence4, seq);
+		return kWhyOk;
+	}
+	if (stream == kXibBoFault) { ibDw = n33bo::fault_stream(ib, n33Bo.faultVa, g.hostB + kHostFence4, seq); return kWhyOk; }
 	uint32_t in[kXibCap], nat[kXibCap], len = 0, eop = 0;
 	const uint32_t n = xib_g103(stream, in, g, seq), nn = xib_native(stream, nat, g, seq);
 	xlat12_ctx ctx;
@@ -11252,10 +11292,11 @@ uint32_t Navi48Bringup::n33CpIb(uint64_t *out, uint32_t outCount) {
 // X4b (step 7): cp xib <stream> is this same submit with stream 1 (wd) or 2 (dispatch): the IB holds the fixed gfx10.3
 // stream as xlat12 translated it, checked against the native builder (65); seqno, one-outstanding rule and cp waitseq
 // are W1's. Design: stage3-step7-command-design.md "X4 plan".
-uint32_t Navi48Bringup::n33CpSubmit(uint32_t stream, uint64_t *out, uint32_t outCount) {
+uint32_t Navi48Bringup::n33CpSubmit(uint32_t stream, uint64_t *out, uint32_t outCount, bool internal) {
 	using namespace n33cp;
 	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
-	uint32_t w = stream == kXibK4 ? may_submit(n33Cp) : may_xib(n33Cp, stream);
+	// internal: W2's bo copy / bo fault (streams 3, 4), gated by n33BoSubmit; cp xib itself takes only 1 and 2.
+	uint32_t w = stream == kXibK4 || internal ? may_submit(n33Cp) : may_xib(n33Cp, stream);
 	if (w) return w;
 	uint32_t seq = 0, rptr0 = 0;
 	uint64_t wp = 0;
@@ -11282,7 +11323,253 @@ uint32_t Navi48Bringup::n33CpWait(uint32_t seq, uint64_t *out, uint32_t outCount
 	const uint32_t latch = n33CpIbWait(stream, n33Cp.submitSeq, n33Cp.submitWp, n33Cp.submitRptr0, hb, out, outCount);
 	record_waitseq(n33Cp, latch);
 	if (outCount > 13) { out[12] = stream; out[13] = xib_want(stream); }   // which stores out[2] counts (X4b)
+	if (stream == kXibBoFault) {
+		// W2: the fault the write to the unmapped VA must have latched, then Linux's clear (gmc_v11_0.c:133-134: one RMW
+		// setting CLEAR_PROTECTION_FAULT_STATUS_ADDR). out[1] retired and matched, out[2] status, out[6] status after the
+		// clear, out[13] the logical page address (HI32 << 32 | LO32).
+		const uint32_t st = rmmio[kGcFaultStatus], lo = rmmio[kGcFaultAddrLo], hi = rmmio[kGcFaultAddrHi];
+		const bool match = n33bo::fault_match(st, lo, hi, n33Bo.faultVa);
+		rmmio[n33bo::kFaultCntl] = rmmio[n33bo::kFaultCntl] | n33bo::kFaultClear;
+		const uint32_t after = rmmio[kGcFaultStatus];
+		N48LOG("n33 bo: fault at VA %#llx: status %#x (RW %u, VMID %u, CID %#x), page %#x:%#x, %s; after the clear status %#x",
+		       n33Bo.faultVa, st, (st & n33bo::kStatusRw) ? 1 : 0, (st & n33bo::kStatusVmidMask) >> n33bo::kStatusVmidShift,
+		       (st & n33bo::kStatusCidMask) >> n33bo::kStatusCidShift, hi, lo, match ? "as expected" : "NOT the expected fault", after);
+		if (outCount > 13) { out[1] = latch == kLatchNone && match; out[2] = st; out[6] = after; out[13] = (uint64_t)hi << 32 | lo; }
+		n33Bo.faultVa = 0;
+	}
+	if (stream == kXibBoCopy) n33Bo.copySrc = n33Bo.copyDst = 0;
 	return kWhyOk;
+}
+
+// ---- N33 stage 3 step 7 W2: buffer objects in VMID 0's GART (n33bo::, design stage3-step7-w2-design.md) ------------
+// VRAM BOs live in the slab (kind 20), reached by the CPU through the BAR0 window; GTT/import BOs are host pages. Each
+// is bound at a caller-chosen VA in the reserved GART window with a gfx11 PTE, both hubs flushed. Called under
+// gN33PspLock, after G6 and with the GMC not stopped (n33BoGmcReady). The GPU reaches a BO only through its VA.
+
+// Table owned, G6 done (both hubs live) and the GMC not stopped: the only state in which a BO PTE may be written.
+bool Navi48Bringup::n33BoGmcReady() const { return (n33Gmc.done >> 6 & 1u) && !n33Gmc.stopped; }
+
+// The physical address that goes into page `page`'s PTE: VRAM is the slab offset plus vram_base_offset (as gart map
+// kind vram); host is the wired page's bus address (DisableIoMapper, so physical == bus).
+uint64_t Navi48Bringup::n33BoPagePa(uint32_t h, uint32_t page) {
+	const n33bo::Bo &b = n33Bo.bo[h - 1];
+	if (b.kind == n33bo::kVram) {
+		const uint64_t vbo = (uint64_t)(n33GmcIn.fbOffset & 0x00FFFFFFu) << 24;
+		return n33bo::kSlabOff + b.vramOff + (uint64_t)page * n33gmc::kPage + vbo;
+	}
+	if (!n33BoMd[h - 1]) return 0;
+	IOByteCount seg = 0;
+	return (uint64_t)n33BoMd[h - 1]->getPhysicalSegment((IOByteCount)page * n33gmc::kPage, &seg, kIOMemoryMapperNone);
+}
+
+// A dword of a BO through its kernel CPU map (VRAM: the BAR0 window; host: getBytesNoCopy / the import's kernel map).
+volatile uint32_t *Navi48Bringup::n33BoWord(uint32_t h, uint64_t byteOff) {
+	return reinterpret_cast<volatile uint32_t *>(reinterpret_cast<volatile uint8_t *>(n33BoCpu[h - 1]) + byteOff);
+}
+
+// HDP then both VMID 0 hub flushes, as a map or unmap needs (amdgpu_gart.c:492-506). A flush that did not acknowledge
+// stops the GMC, exactly as n33GmcStep does. true: both acknowledged.
+uint32_t Navi48Bringup::n33BoFlushBoth() {
+	using namespace n33gmc;
+	n33GmcHdpFlush();
+	const bool mm = flush_ok(false, n33GmcFlush(false));
+	const bool gc = n33GmcGcUp() && flush_ok(true, n33GmcFlush(true));
+	if (!mm || !gc) { n33Gmc.stopped = true; N48LOG("n33 bo: hub flush not acknowledged (mm %u gc %u): GMC stopped", mm, gc); return n33bo::kWhyFlush; }
+	return n33bo::kWhyOk;
+}
+
+// Free a BO's backing (GTT/import descriptor and import map); VRAM holds slab space only, kept until unload.
+void Navi48Bringup::n33BoRelease(uint32_t h) {
+	if (n33BoMap[h - 1]) { n33BoMap[h - 1]->release(); n33BoMap[h - 1] = nullptr; }
+	if (n33BoMd[h - 1]) { n33BoMd[h - 1]->complete(); n33BoMd[h - 1]->release(); n33BoMd[h - 1] = nullptr; }
+	n33BoCpu[h - 1] = nullptr;
+}
+
+uint32_t Navi48Bringup::n33BoCreate(uint32_t kind, uint64_t size, uint64_t *out, uint32_t outCount) {
+	using namespace n33gmc;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	uint32_t w = n33bo::may_create(n33Bo, kind, size, n33BoGmcReady());
+	if (w) return w;
+	const uint32_t pages = (uint32_t)(size / kPage);
+	if (kind == n33bo::kVram) {
+		if (!n33Bar0 || n33bo::kSlabOff + n33bo::kSlabLen > n33Bar0Size) return n33bo::kWhyAlloc;   // the slab must be inside the mapped BAR0
+		uint64_t off = 0;
+		if (!n33bo::vram_place(n33Bo, pages, &off)) return n33bo::kWhyFull;
+		if (!n33Bo.slabOwned) {                                  // the first VRAM BO takes the slab: it must be clear of every live protected range
+			N33Range rs[kN33Ranges];
+			const unsigned n = n33_protected(rmmio, n33FbBase, n33GopOff, n33GopLen, rs, kN33Ranges, n33PspPagesOwned(), n33Smu.pageOwned,
+			                                 n33Gmc.tableOwned, n33Sdma.pagesOwned, n33Cp.pagesOwned, n33Cp.ibOwned, n33Dmub.inited, n33Ih.ringOwned);
+			for (unsigned i = 0; i < n; i++)
+				if (n33bo::kSlabOff < rs[i].off + rs[i].len && rs[i].off < n33bo::kSlabOff + n33bo::kSlabLen) {
+					N48LOG("n33 bo: refused create: slab VRAM %#llx +%#llx overlaps protected kind %u at %#llx", n33bo::kSlabOff, n33bo::kSlabLen, rs[i].kind, rs[i].off);
+					return n33bo::kWhySlab;
+				}
+		}
+		const uint32_t h = n33bo::record_create(n33Bo, kind, pages, off);   // sets slabOwned; kind 20 is live from here
+		volatile uint32_t *cpu = reinterpret_cast<volatile uint32_t *>(n33Bar0 + n33bo::kSlabOff + off);
+		for (uint64_t i = 0; i < (uint64_t)pages * kPage / 4; i++) cpu[i] = 0;   // zero through the BAR0 window
+		n33BoCpu[h - 1] = cpu; n33BoMd[h - 1] = nullptr; n33BoMap[h - 1] = nullptr;
+		N48LOG("n33 bo: create VRAM h%u: %u pages at slab offset %#llx (VRAM %#llx)", h, pages, off, n33bo::kSlabOff + off);
+		put(0, 0); put(1, h); put(2, pages); put(3, n33bo::kSlabOff + off);
+		return 0;
+	}
+	// GTT: kext-owned host pages, 44-bit mask, no IOMMU mapping, zeroed, wired until free.
+	IOBufferMemoryDescriptor *md = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+		kernel_task, kIODirectionInOut | kIOMemoryMapperNone, size, kDmaPhysMask);
+	if (!md) return n33bo::kWhyAlloc;
+	if (md->prepare() != kIOReturnSuccess) { md->release(); return n33bo::kWhyAlloc; }
+	for (uint64_t o = 0; o < size; o += kPage) {
+		IOByteCount seg = 0;
+		const addr64_t pa = md->getPhysicalSegment((IOByteCount)o, &seg, kIOMemoryMapperNone);
+		if (!host_pa_ok(pa) || seg < kPage) { md->complete(); md->release(); N48LOG("n33 bo: refused create GTT: page at %#llx not below 44 bits", (uint64_t)pa); return n33bo::kWhyAlloc; }
+	}
+	void *cpu = md->getBytesNoCopy();
+	if (!cpu) { md->complete(); md->release(); return n33bo::kWhyAlloc; }
+	for (uint64_t i = 0; i < size / 4; i++) reinterpret_cast<volatile uint32_t *>(cpu)[i] = 0;
+	const uint32_t h = n33bo::record_create(n33Bo, kind, pages, 0);
+	n33BoMd[h - 1] = md; n33BoCpu[h - 1] = reinterpret_cast<volatile uint32_t *>(cpu); n33BoMap[h - 1] = nullptr;
+	IOByteCount seg = 0;
+	const uint64_t pa0 = (uint64_t)md->getPhysicalSegment(0, &seg, kIOMemoryMapperNone);
+	N48LOG("n33 bo: create GTT h%u: %u pages, first page %#llx", h, pages, pa0);
+	put(0, 0); put(1, h); put(2, pages); put(3, pa0);
+	return 0;
+}
+
+uint32_t Navi48Bringup::n33BoImport(task_t task, uint64_t uaddr, uint64_t size, uint64_t *out, uint32_t outCount) {
+	using namespace n33gmc;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	uint32_t w = n33bo::may_import(n33Bo, uaddr, size, n33BoGmcReady());
+	if (w) return w;
+	if (!task) return n33bo::kWhyArg;
+	IOMemoryDescriptor *md = IOMemoryDescriptor::withAddressRange(uaddr, size, kIODirectionInOut, task);
+	if (!md) return n33bo::kWhyAlloc;
+	if (md->prepare() != kIOReturnSuccess) { md->release(); return n33bo::kWhyAlloc; }
+	// Every page below 44 bits, aligned, and outside this GPU's PCI BARs (a caller could wire a mapped BAR; fails closed with no BAR list).
+	uint64_t barBase[7], barSize[7];
+	const uint32_t nbars = amdgpu::n1c_pci_bars(barBase, barSize, 7);
+	n33bo::Bar bars[7];
+	for (uint32_t i = 0; i < nbars; i++) { bars[i].base = barBase[i]; bars[i].size = barSize[i]; }
+	for (uint64_t o = 0; o < size; o += kPage) {
+		IOByteCount seg = 0;
+		const addr64_t pa = md->getPhysicalSegment((IOByteCount)o, &seg, kIOMemoryMapperNone);
+		if (!host_pa_ok(pa) || seg < kPage) { md->complete(); md->release(); return n33bo::kWhyAlloc; }
+		if (n33bo::page_in_bars(pa, bars, nbars)) { md->complete(); md->release(); N48LOG("n33 bo: refused import: page %#llx is device memory (or no BAR list)", (uint64_t)pa); return n33bo::kWhyDevice; }
+	}
+	IOMemoryMap *map = md->map();
+	if (!map) { md->complete(); md->release(); return n33bo::kWhyAlloc; }
+	const uint32_t h = n33bo::record_create(n33Bo, n33bo::kImport, (uint32_t)(size / kPage), 0);
+	n33BoMd[h - 1] = md; n33BoMap[h - 1] = map; n33BoCpu[h - 1] = reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress());
+	IOByteCount seg = 0;
+	const uint64_t pa0 = (uint64_t)md->getPhysicalSegment(0, &seg, kIOMemoryMapperNone);
+	N48LOG("n33 bo: import h%u: %llu pages of task range %#llx, first page %#llx", h, size / kPage, uaddr, pa0);
+	put(0, 0); put(1, h); put(2, (uint64_t)(size / kPage)); put(3, pa0);
+	return 0;
+}
+
+uint32_t Navi48Bringup::n33BoMapVa(uint32_t h, uint64_t va, uint32_t vmFlags, uint64_t *out, uint32_t outCount) {
+	using namespace n33gmc;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	uint32_t w = n33bo::may_map(n33Bo, h, va, vmFlags, n33BoGmcReady(), n33Cp.submitPending);
+	if (w) return w;
+	const n33bo::Bo &b = n33Bo.bo[h - 1];
+	const uint32_t slot0 = n33bo::slot_of(va);
+	const bool system = b.kind != n33bo::kVram;
+	uint64_t pte0 = 0;
+	for (uint32_t p = 0; p < b.pages; p++) {
+		const uint64_t pte = n33bo::pte(n33BoPagePa(h, p), system, vmFlags);
+		n33GmcPte(slot0 + p, pte);
+		if (!p) pte0 = pte;
+	}
+	w = n33BoFlushBoth();
+	if (w) return w;
+	const uint64_t pteBack = *reinterpret_cast<volatile uint64_t *>(n33Bar0 + slot_off(slot0));
+	n33bo::record_map(n33Bo, h, va, vmFlags);
+	N48LOG("n33 bo: map h%u at VA %#llx (slot %#x, %u pages, flags %#x): first PTE %#llx (read back %#llx)", h, va, slot0, b.pages, vmFlags, pte0, pteBack);
+	put(0, 0); put(1, va); put(2, pteBack); put(3, b.pages);
+	return 0;
+}
+
+uint32_t Navi48Bringup::n33BoUnmap(uint32_t h, uint64_t *out, uint32_t outCount) {
+	using namespace n33gmc;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	uint32_t w = n33bo::may_unmap(n33Bo, h, n33BoGmcReady(), n33Cp.submitPending);
+	if (w) return w;
+	const n33bo::Bo &b = n33Bo.bo[h - 1];
+	const uint32_t slot0 = n33bo::slot_of(b.va);
+	const uint64_t pte = pte_unbound(n33GmcDummyPa);
+	for (uint32_t p = 0; p < b.pages; p++) n33GmcPte(slot0 + p, pte);
+	w = n33BoFlushBoth();
+	if (w) return w;
+	N48LOG("n33 bo: unmap h%u (slot %#x, %u pages) -> dummy page %#llx", h, slot0, b.pages, pte);
+	n33bo::record_unmap(n33Bo, h);
+	put(0, 0); put(1, b.pages);
+	return 0;
+}
+
+uint32_t Navi48Bringup::n33BoFree(uint32_t h) {
+	uint32_t w = n33bo::may_free(n33Bo, h, n33Cp.submitPending);
+	if (w) return w;
+	const uint32_t kind = n33Bo.bo[h - 1].kind, pages = n33Bo.bo[h - 1].pages;
+	n33BoRelease(h);
+	n33bo::record_free(n33Bo, h);
+	N48LOG("n33 bo: free h%u (kind %u, %u pages)", h, kind, pages);
+	return 0;
+}
+
+uint32_t Navi48Bringup::n33BoInfo(uint32_t h, uint64_t *out, uint32_t outCount) {
+	using namespace n33gmc;
+	auto put = [&](uint32_t i, uint64_t v) { if (i < outCount) out[i] = v; };
+	if (!n33bo::handle_ok(n33Bo, h)) return n33bo::kWhyArg;
+	const n33bo::Bo &b = n33Bo.bo[h - 1];
+	const uint64_t pteLive = (b.mapped && n33Bar0) ? *reinterpret_cast<volatile uint64_t *>(n33Bar0 + slot_off(n33bo::slot_of(b.va))) : 0;
+	put(0, 0); put(1, b.kind); put(2, b.pages); put(3, b.va); put(4, b.kind == n33bo::kVram ? b.vramOff : n33BoPagePa(h, 0));
+	put(5, b.vmFlags); put(6, b.mapped ? 1 : 0); put(7, pteLive);
+	return 0;
+}
+
+// bo copy (stream 3) / bo fault (stream 4): a W1 submit. The stream state is set for the build and wait, then the
+// submit is kicked; the caller retires it with cp waitseq, which checks the copy samples or the fault status.
+uint32_t Navi48Bringup::n33BoSubmit(uint32_t stream, uint32_t a, uint32_t b, uint64_t va, uint64_t *out, uint32_t outCount) {
+	const bool ready = n33BoGmcReady();
+	uint32_t w = stream == n33cp::kXibBoCopy ? n33bo::may_copy(n33Bo, a, b, ready) : n33bo::may_fault(n33Bo, va, ready);
+	if (w) return w;
+	if (stream == n33cp::kXibBoCopy) { n33Bo.copySrc = a; n33Bo.copyDst = b; } else n33Bo.faultVa = va;
+	w = n33CpSubmit(stream, out, outCount, true);   // W1's gates (62 queue/outstanding, 56/50/57/61) apply here
+	if (w) { n33Bo.copySrc = n33Bo.copyDst = 0; n33Bo.faultVa = 0; }
+	return w;
+}
+
+// Before a bo copy kick: the source pattern and the destination's before-value at each of the 16 sample offsets,
+// through the CPU maps (the IB path HDP-flushes right after this).
+void Navi48Bringup::n33BoPrefill(uint32_t seq) {
+	const n33bo::Bo &s = n33Bo.bo[n33Bo.copySrc - 1], &d = n33Bo.bo[n33Bo.copyDst - 1];
+	const uint64_t minBytes = n33bo::bytes(s) < n33bo::bytes(d) ? n33bo::bytes(s) : n33bo::bytes(d);
+	for (uint32_t k = 0; k < n33bo::kCopyN; k++) {
+		const uint64_t off = n33bo::copy_off(k, minBytes);
+		*n33BoWord(n33Bo.copySrc, off) = n33bo::pattern(seq, k);
+		*n33BoWord(n33Bo.copyDst, off) = n33bo::kCopyBefore;
+	}
+}
+
+// After a bo copy: how many of the 16 destination samples carry the pattern, read through the destination's CPU map.
+uint32_t Navi48Bringup::n33BoLanded(uint32_t seq) {
+	const n33bo::Bo &s = n33Bo.bo[n33Bo.copySrc - 1], &d = n33Bo.bo[n33Bo.copyDst - 1];
+	const uint64_t minBytes = n33bo::bytes(s) < n33bo::bytes(d) ? n33bo::bytes(s) : n33bo::bytes(d);
+	uint32_t k = 0;
+	for (uint32_t i = 0; i < n33bo::kCopyN; i++)
+		if (*n33BoWord(n33Bo.copyDst, n33bo::copy_off(i, minBytes)) == n33bo::pattern(seq, i)) k++;
+	return k;
+}
+
+// At unload, after n33GmcStop (every PTE back to the dummy page and the hubs flushed): free each live BO's backing.
+// freeMem is false when a flush did not acknowledge: the GPU may still translate to the pages, so they are leaked.
+void Navi48Bringup::n33BoStop(bool freeMem) {
+	for (uint32_t i = 0; i < n33bo::kBoMax; i++) {
+		if (!n33Bo.bo[i].live) continue;
+		if (n33Bo.bo[i].kind == n33bo::kVram) continue;   // slab space, nothing allocated to free
+		if (freeMem) n33BoRelease(i + 1);
+		else { N48LOG("n33 bo: stop: host BO h%u leaked: a hub may still translate to it", i + 1); n33BoMd[i] = nullptr; n33BoMap[i] = nullptr; n33BoCpu[i] = nullptr; }
+	}
 }
 
 // Stage 2 step 3: run the layout gate, judge the live GOP state, and publish the framebuffer nub.

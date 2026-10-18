@@ -232,14 +232,17 @@ inline uint32_t pkt_wd_g103(uint32_t *p, uint64_t mc, uint32_t v, uint64_t fence
 // Stream 0 is T1/W1's native K4 (no translation). Streams 1 and 2 are built here as gfx10.3, translated by
 // xlat12_ib_translate_level(11, ...) into the IB, and compared dword for dword with the native builder (refusal 65).
 // No PM4 comes from userspace: it names a stream number only. Addresses are T1/W1's: code page, host page B, fence.
-enum Xib : uint32_t { kXibK4 = 0, kXibWd = 1, kXibDispatch = 2 };
+enum Xib : uint32_t { kXibK4 = 0, kXibWd = 1, kXibDispatch = 2,
+                      kXibBoCopy = 3, kXibBoFault = 4 };   // 3, 4: W2's bo copy / bo fault (n33_bo_pure.h), not cp xib's
 constexpr uint32_t kXibCap = 64;              // X4a: the worst translated length of these streams is 53 dwords
 constexpr uint32_t kHostXibWd = kHostK3;      // wd's target in host page B (K3's word, pre-filled before each submit)
 constexpr uint32_t kXibSame = 0xFFFFFFFFu;    // xib_first_diff: no difference
 inline bool valid_xib(uint32_t s) { return s == kXibWd || s == kXibDispatch; }
 inline uint32_t xib_wd_value(uint32_t seq) { return kMagic + seq; }
 // Dwords the stream stores in host page B: wd writes one, the dispatches (K4 and xib 2) write 32.
-inline uint32_t xib_want(uint32_t stream) { return stream == kXibWd ? 1 : kResultDw; }
+constexpr uint32_t xib_want(uint32_t stream) {
+	return stream == kXibWd ? 1 : stream == kXibBoCopy ? 16 : stream == kXibBoFault ? 0 : kResultDw;   // W2: n33bo::kCopyN samples; the fault stores nothing
+}
 // The gfx10.3 input of stream 1 or 2 (0 dwords for any other stream).
 inline uint32_t xib_g103(uint32_t s, uint32_t *p, const Geo &g, uint32_t seq) {
 	if (s == kXibWd) return pkt_wd_g103(p, g.hostB + kHostXibWd, xib_wd_value(seq), g.hostB + kHostFence4, seq, true);

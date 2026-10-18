@@ -42,6 +42,7 @@ static const char *kindName(uint64_t k) {
 	if (k == 17) return "step-7 T1 IB page";
 	if (k == 18) return "DMCUB proof DMUB windows";
 	if (k == 19) return "step-4 IH ring";
+	if (k == 20) return "step-7 W2 VRAM BO slab";
 	return "?";
 }
 
@@ -117,6 +118,15 @@ static const char *whyName(uint64_t why) {
 	case 63:  return "step 7 T1: the IB page overlaps a live DMCUB window or another protected range";
 	case 64:  return "step 7 W1: cp waitseq with no outstanding cp submit in this load, or a seqno that is not the outstanding one";
 	case 65:  return "step 7 X4b: cp xib's xlat12-translated stream differs from the native builder, or xlat12 refused it (kext log: first diff)";
+	case 66:  return "step 7 W2: bad argument (kind, size 0/unaligned/over 1 MiB, handle, VM flags, VA alignment, dword index, or copy src==dst / dst not writable)";
+	case 67:  return "step 7 W2: out of order (G6 not done or GMC stopped; map a mapped BO, unmap/copy an unmapped one, free a mapped one; or a map/unmap/free while a submit is outstanding)";
+	case 68:  return "step 7 W2: full (no free handle, no room in the VRAM slab, or host total over 4 MiB)";
+	case 69:  return "step 7 W2: host allocation, wiring or kernel mapping failed, or a page at or above 44 bits";
+	case 70:  return "step 7 W2: VA outside the BO window, overlapping another mapped BO, or (fault) a VA some BO maps";
+	case 71:  return "step 7 W2: import page is device memory (inside a PCI BAR of this GPU), or no BAR list latched";
+	case 72:  return "step 7 W2: a hub flush did not acknowledge after a map or unmap (the GMC is stopped)";
+	case 73:  return "step 7 W2: gart map / gart unmap into the reserved BO VA window (slots 0x1000..0x1FFF)";
+	case 74:  return "step 7 W2: the VRAM BO slab overlaps a live protected range when first taken";
 	case 200: return "dmub: a DMCUB write before dmub snapshot armed the gate";
 	case 201: return "dmub: HUBP0 is not on the GOP scanout surface";
 	case 202: return "dmub: the N33 framebuffer nub is published";
@@ -216,6 +226,8 @@ static void usage(void) {
 	    "                               2 polled with ENABLE_INTR 1; recv 0 cp EOP, 1 cp + TIME_STAMP_INT_ENABLE, 2 sdma trap\n"
 	    "                               after cp stop, 3 sdma + TRAP_ENABLE; arm = MSI, boot-arg n33-ih-msi=1 only)\n"
 	    "                               ih flags | journal <i> | iv <i> | journal-kind <k>: flags reads no register; journal-kind is raw, for ih-negative.sh\n"
+	    "  bo create vram|gtt <bytes> | import <bytes> | map <h> <va> [flags] | unmap <h> | free <h>   step 7 W2: buffer objects in VMID 0\n"
+	    "  bo info <h> | read <h> <dword> | copy <src> <dst> | fault <va> | import-test <vram h> <va>   (copy/fault return a seqno; retire with cp waitseq)\n"
 	    "  fbsum [bytes]                sha256 of the GOP scanout in VRAM (read-only; default length from status)\n"
 	    "  log                          print the kext's own log (holds every refusal line, unlike the unified log)\n"
 	    "  why <code>                   explain a refusal code from n33ctl log (no kext needed)\n"
@@ -1463,6 +1475,11 @@ static int cpWait(uint64_t seq) {
 	if (o[12] == 1)   // X4b wd: one dword, 0xca11ed47 + seqno at host page B + 0x100
 		printf("  stream wd: host page B: %llu of %llu dword 0xca11ed47 + seqno at +0x100; fence reads %#llx; first data / fence at %lld / %lld us\n",
 		       o[2], o[13], o[3], (long long)(int32_t)(o[11] >> 32), (long long)(int32_t)(o[11] & 0xFFFFFFFFull));
+	else if (o[12] == 3)   // W2 bo copy: out[2] is the count of destination samples that carry the pattern (of out[13] = 16)
+		printf("  stream bo copy: %llu of %llu destination samples carry the pattern; fence reads %#llx\n", o[2], o[13], o[3]);
+	else if (o[12] == 4)   // W2 bo fault: the deliberate fault's status, before and after the clear, and the latched page
+		printf("  stream bo fault: %s; GCVM_L2_PROTECTION_FAULT_STATUS %#llx, logical page %#llx, after the clear %#llx\n",
+		       o[1] ? "fence landed and the expected fault latched" : "NOT the expected fault/fence", o[2], o[13], o[6]);
 	else
 		printf("  stream %s: host page B: %llu of %llu dwords 0xca11ed47 + i; fence reads %#llx; first data / fence at %lld / %lld us\n",
 		       o[12] == 2 ? "dispatch" : "K4", o[2], o[13], o[3], (long long)(int32_t)(o[11] >> 32),
@@ -1687,6 +1704,120 @@ static int doIh(int argc, char **argv) {
 	return 2;
 }
 
+// ---- step 7 W2: buffer objects (n33bo::, design stage3-step7-w2-design.md). Handles 1..8. ----
+enum { aBoCreate = 39, aBoImport = 40, aBoMap = 41, aBoUnmap = 42, aBoFree = 43, aBoInfo = 44, aBoRead = 45, aBoCopy = 46, aBoFault = 47 };
+enum { kBoVmR = 1u << 1, kBoVmW = 1u << 2, kBoVmX = 1u << 3, kBoVmRWX = kBoVmR | kBoVmW | kBoVmX };   // uapi AMDGPU_VM_PAGE_*
+enum { kBoCopyN = 16 };
+static uint64_t boCopyOff(uint32_t k, uint64_t minBytes) { return ((uint64_t)k * (minBytes / kBoCopyN)) & ~3ull; }
+
+static int boCreate(uint64_t kind, uint64_t bytes) {
+	uint64_t a[2] = { kind, bytes }, o[4] = {0};
+	if (call(aBoCreate, a, 2, o, 4)) { printf("bo create %s %llu: REFUSED by the kext\n", kind ? "gtt" : "vram", bytes); return 1; }
+	printf("bo create %s: handle %llu, %llu pages, %s %#llx\n", kind ? "gtt" : "vram", o[1], o[2], kind ? "first page" : "VRAM", o[3]);
+	return 0;
+}
+static int boInfo(uint64_t h) {
+	uint64_t a = h, o[8] = {0};
+	if (call(aBoInfo, &a, 1, o, 8)) { printf("bo info %llu: REFUSED by the kext\n", h); return 1; }
+	static const char *kn[] = { "VRAM", "GTT", "host-import" };
+	printf("bo %llu: %s, %llu pages, VA %#llx, %s %#llx, flags %#llx, %s, live PTE %#llx\n", h, o[1] < 3 ? kn[o[1]] : "?", o[2], o[3],
+	       o[1] == 0 ? "slab offset" : "first page", o[4], o[5], o[6] ? "mapped" : "unmapped", o[7]);
+	return 0;
+}
+static int doBo(int argc, char **argv) {
+	const char *sub = argv[2];
+	uint64_t o[4] = {0};
+	if (!strcmp(sub, "create") && argc == 5) {
+		if (!strcmp(argv[3], "vram")) return boCreate(0, num(argv[4]));
+		if (!strcmp(argv[3], "gtt")) return boCreate(1, num(argv[4]));
+		uint64_t a[2] = { num(argv[3]), num(argv[4]) };   // raw kind, for bo-negative.sh
+		if (call(aBoCreate, a, 2, o, 4)) { printf("bo create REFUSED\n"); return 1; }
+		printf("bo create: handle %llu, %llu pages, %#llx\n", o[1], o[2], o[3]); return 0;
+	}
+	if (!strcmp(sub, "import") && argc == 4) {   // allocate the caller's own page-aligned range and import it (negative tests; a leaked buffer)
+		const uint64_t bytes = num(argv[3]);
+		void *p = NULL;
+		if (bytes && posix_memalign(&p, 4096, bytes)) { fprintf(stderr, "bo import: posix_memalign %llu failed\n", bytes); return 1; }
+		if (p) memset(p, 0, bytes);
+		uint64_t a[2] = { (uint64_t)(uintptr_t)p, bytes };
+		if (call(aBoImport, a, 2, o, 4)) { printf("bo import %llu: REFUSED by the kext\n", bytes); return 1; }
+		printf("bo import: handle %llu, %llu pages, first page %#llx (caller range %#llx)\n", o[1], o[2], o[3], a[0]);
+		return 0;
+	}
+	if (!strcmp(sub, "map") && (argc == 5 || argc == 6)) {
+		uint64_t a[3] = { num(argv[3]), num(argv[4]), argc == 6 ? num(argv[5]) : kBoVmRWX };
+		if (call(aBoMap, a, argc == 6 ? 3 : 2, o, 4)) { printf("bo map %llu: REFUSED by the kext\n", a[0]); return 1; }
+		printf("bo map h%llu at VA %#llx: %llu pages, first PTE %#llx\n", a[0], o[1], o[3], o[2]);
+		return 0;
+	}
+	if (!strcmp(sub, "unmap") && argc == 4) {
+		uint64_t a = num(argv[3]);
+		if (call(aBoUnmap, &a, 1, o, 4)) { printf("bo unmap %llu: REFUSED by the kext\n", a); return 1; }
+		printf("bo unmap h%llu: %llu pages -> dummy page\n", a, o[1]); return 0;
+	}
+	if (!strcmp(sub, "free") && argc == 4) {
+		uint64_t a = num(argv[3]);
+		if (call(aBoFree, &a, 1, o, 4)) { printf("bo free %llu: REFUSED by the kext\n", a); return 1; }
+		printf("bo free h%llu: ok\n", a); return 0;
+	}
+	if (!strcmp(sub, "info") && argc == 4) return boInfo(num(argv[3]));
+	if (!strcmp(sub, "read") && argc == 5) {
+		uint64_t a[2] = { num(argv[3]), num(argv[4]) };
+		if (call(aBoRead, a, 2, o, 2)) { printf("bo read %llu[%llu]: REFUSED by the kext\n", a[0], a[1]); return 1; }
+		printf("bo %llu dword %llu = %#010llx\n", a[0], a[1], o[1]); return 0;
+	}
+	if (!strcmp(sub, "copy") && argc == 5) {
+		uint64_t a[2] = { num(argv[3]), num(argv[4]) };
+		if (call(aBoCopy, a, 2, o, 2)) { printf("bo copy %llu -> %llu: REFUSED by the kext\n", a[0], a[1]); return 1; }
+		printf("bo copy h%llu -> h%llu: seqno %llu kicked; next go: n33ctl cp waitseq %llu\n", a[0], a[1], o[1], o[1]);
+		return 0;
+	}
+	if (!strcmp(sub, "fault") && argc == 4) {
+		uint64_t a = num(argv[3]);
+		if (call(aBoFault, &a, 1, o, 2)) { printf("bo fault %#llx: REFUSED by the kext\n", a); return 1; }
+		printf("bo fault %#llx: seqno %llu kicked; next go: n33ctl cp waitseq %llu\n", a, o[1], o[1]);
+		return 0;
+	}
+	// import-test <vram h> <va>: the whole host-import proof in one process, so the caller's pages stay alive.
+	if (!strcmp(sub, "import-test") && argc == 5) {
+		const uint64_t vramH = num(argv[3]), va = num(argv[4]), bytes = 64u << 10;
+		uint64_t vi[8] = {0}, a = vramH;
+		if (call(aBoInfo, &a, 1, vi, 8)) { printf("import-test: bo info %llu REFUSED (create and map a VRAM BO first)\n", vramH); return 1; }
+		if (vi[1] != 0 || !vi[6]) { printf("import-test: handle %llu is not a mapped VRAM BO\n", vramH); return 1; }
+		void *p = NULL;
+		if (posix_memalign(&p, 4096, bytes)) { fprintf(stderr, "import-test: posix_memalign failed\n"); return 1; }
+		memset(p, 0, bytes);
+		uint64_t im[4] = {0}, ia[2] = { (uint64_t)(uintptr_t)p, bytes };
+		if (call(aBoImport, ia, 2, im, 4)) { printf("import-test: bo import REFUSED\n"); free(p); return 1; }
+		const uint64_t importH = im[1];
+		uint64_t ma[3] = { importH, va, kBoVmRWX }, mo[4] = {0};
+		if (call(aBoMap, ma, 3, mo, 4)) { printf("import-test: bo map h%llu at %#llx REFUSED\n", importH, va); free(p); return 1; }
+		uint64_t ca[2] = { vramH, importH }, co[2] = {0};
+		if (call(aBoCopy, ca, 2, co, 2)) { printf("import-test: bo copy h%llu -> h%llu REFUSED\n", vramH, importH); free(p); return 1; }
+		printf("import-test: bo copy seqno %llu; retiring with cp waitseq\n", co[1]);
+		if (cpWait(co[1])) { printf("import-test: cp waitseq did not retire the copy\n"); free(p); return 1; }
+		// The caller's own pages (p) are the import BO's pages. After the copy they hold the pattern; so does the VRAM
+		// source read through bo read. Compare the two at each of the 16 sample offsets.
+		const uint64_t minBytes = bytes;   // both BOs are 64 KiB
+		int ok = 1;
+		for (uint32_t k = 0; k < kBoCopyN; k++) {
+			const uint64_t off = boCopyOff(k, minBytes);
+			uint64_t ra[2] = { vramH, off / 4 }, ro[2] = {0};
+			if (call(aBoRead, ra, 2, ro, 2)) { ok = 0; break; }
+			const uint32_t mine = *(volatile uint32_t *)((uint8_t *)p + off);
+			if (mine != (uint32_t)ro[1]) { printf("import-test: sample %u at +%#llx: my page %#010x != VRAM %#010llx\n", k, off, mine, ro[1]); ok = 0; }
+		}
+		uint64_t ua = importH, uo[4] = {0};
+		call(aBoUnmap, &ua, 1, uo, 4);
+		call(aBoFree, &ua, 1, uo, 4);
+		free(p);
+		printf("import-test: %s (the caller's own mapping sees the GPU's writes)\n", ok ? "PASS" : "FAIL");
+		return ok ? 0 : 1;
+	}
+	usage();
+	return 2;
+}
+
 // fbsum: SHA-256 of the GOP scanout in VRAM, read through action 2 (one BAR0 dword per call, read-only).
 // The region is the kext's GOP range from status: HUBP0 address at kext start, pitch px * 4 * height, page rounded.
 // Run before and after card work and compare: a change means something wrote the scanout.
@@ -1790,6 +1921,8 @@ int main(int argc, char **argv) {
 		rc = doDmub(argc, argv);
 	} else if (!strcmp(cmd, "ih") && argc >= 3) {
 		rc = doIh(argc, argv);
+	} else if (!strcmp(cmd, "bo") && argc >= 3) {
+		rc = doBo(argc, argv);
 	} else if (!strcmp(cmd, "fbsum") && argc <= 3) {
 		rc = fbSum(argc == 3 ? num(argv[2]) : 0);
 	} else if (!strcmp(cmd, "log") && argc == 2) {

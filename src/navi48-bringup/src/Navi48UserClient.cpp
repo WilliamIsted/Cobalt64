@@ -631,7 +631,7 @@ IOReturn Navi48UserClient::externalMethod(uint32_t selector,
 			if (args->scalarInputCount < 1) return kIOReturnBadArgument;
 			{
 				const IOReturn r = owner->n33Call((uint32_t)args->scalarInput[0], args->scalarInput + 1, args->scalarInputCount - 1,
-				                                  args->scalarOutput, args->scalarOutputCount);
+				                                  args->scalarOutput, args->scalarOutputCount, task);
 				// IOKit copies no scalar output back on an error return, so the reason reaches the user only here.
 				if (r == kIOReturnNotPermitted && args->scalarOutputCount > 0)
 					N48LOG("n33: refused action %llu (why %llu)", args->scalarInput[0], args->scalarOutput[0]);

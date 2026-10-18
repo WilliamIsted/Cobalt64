@@ -1297,6 +1297,15 @@ void n1c_latch_pci_bars(const uint64_t *base, const uint64_t *size, uint32_t n) 
     N1C_LOG("pci bars latched: %u BAR range(s) will never be imported as host pages", n);
 }
 
+// Step 7 W2: the latched BARs, read back for the BO host-import device-page refusal (n33_bo_pure.h page_in_bars).
+// Returns the count written (0 if nothing was latched: the caller then fails the import closed).
+uint32_t n1c_pci_bars(uint64_t *base, uint64_t *size, uint32_t cap) {
+    if (base == nullptr || size == nullptr || __atomic_load_n(&gBarsState, __ATOMIC_ACQUIRE) != 1u) return 0;
+    const uint32_t n = gNBars < cap ? gNBars : cap;
+    for (uint32_t i = 0; i < n; i++) { base[i] = gBars[i].base; size[i] = gBars[i].size; }
+    return n;
+}
+
 void n1c_latch_bar0_conflict(bool conflict) {
     if (OSCompareAndSwap(0, conflict ? 2u : 1u, &gBar0Conflict)) N1C_LOG("BAR0 latch: IOPCIFamily and config space %s on BAR0", conflict ? "DISAGREE (native client opens are refused)" : "agree");
 }

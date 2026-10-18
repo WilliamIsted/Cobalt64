@@ -39,6 +39,7 @@
 #include "amd/n33_cp_pure.h"        // N33 step 6, one MEC compute queue: n33cp::State (pure, no kernel types)
 #include "amd/n33_dmub_pure.h"      // N33 stage 3 DMCUB proof: n33dmub::State, RegionInfo (pure, no kernel types)
 #include "amd/n33_ih_pure.h"        // N33 step 4, IH 6.0.2 ring 0: n33ih::State (pure, no kernel types)
+#include "amd/n33_bo_pure.h"        // N33 step 7 W2, buffer objects in VMID 0: n33bo::State (pure, no kernel types)
 #include "amd/n48log.h"
 #include "amd/rebar_pure.h"   // 0.0.663: Resizable BAR planning (pure)
 #include "amd/amdgpu_init.h"
@@ -66,7 +67,8 @@ public:
 	// N33 stage 2a: guarded runtime access for the display flip experiments (n33ctl).
 	bool n33IsObserving() const { return n33Observing; }
 	uint32_t n33ScanoutTo(bool ours);   // the self-flip; called only by n33_fb_scanout, under its lock
-	IOReturn n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount);
+	IOReturn n33Call(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount,
+	                 task_t caller = TASK_NULL);   // caller: the user client's task, for W2's bo import only
 #endif
 	// Navi48Ttl answers Apple's queryHwBlockRegisterBase straight out of this.
 	const IpDiscovery      &ipDisc() const { return ipDiscovery; }
@@ -147,7 +149,7 @@ private:
 	void n33FbAttach();
 	void n33FbDetach();
 	// N33 stage 3 step 1, milestone 2: the PSP KM ring (n33psp2::, Navi48Bringup.cpp).
-	IOReturn n33CallLocked(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount);
+	IOReturn n33CallLocked(uint32_t action, const uint64_t *in, uint32_t inCount, uint64_t *out, uint32_t outCount, task_t caller);
 	n33psp2::State n33P2 {};
 	bool     n33PspPagesOwned() const { return n33P2.ring || n33P2.fence || n33P2.failed; }   // sticky once a ring was sent
 	void     n33PspW(uint64_t off, uint32_t v);
@@ -183,7 +185,7 @@ private:
 	uint32_t n33GmcMap(uint32_t slot, uint32_t count, uint32_t kind, uint64_t arg, uint64_t *out, uint32_t outCount);
 	uint32_t n33GmcUnmap(uint32_t slot, uint32_t count, uint64_t *out, uint32_t outCount);
 	uint32_t n33GmcRestore(uint64_t *out, uint32_t outCount);
-	void     n33GmcStop();
+	bool     n33GmcStop();   // true: host memory may be freed (flushes acknowledged, no engine held a GART address)
 	// N33 stage 3 step 5: CP RS64 start (C1) and SDMA0 queue 0, mmio or doorbell kick (n33sdma::, Navi48Bringup.cpp).
 	n33sdma::State n33Sdma {};
 	n33sdma::Rec   n33SdmaJournal[n33sdma::kJournalMax] {};
@@ -214,7 +216,7 @@ private:
 	uint32_t n33CpIbBuildKick(uint32_t stream, uint32_t &seq, uint64_t &wp, uint32_t &rptr0, volatile uint32_t *&hb, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpIbWait(uint32_t stream, uint32_t seq, uint64_t wp, uint32_t rptr0, volatile uint32_t *hb, uint64_t *out, uint32_t outCount);
 	uint32_t n33CpIb(uint64_t *out, uint32_t outCount);
-	uint32_t n33CpSubmit(uint32_t stream, uint64_t *out, uint32_t outCount);   // W1 (step 7) cp submit (stream 0), X4b cp xib (1, 2)
+	uint32_t n33CpSubmit(uint32_t stream, uint64_t *out, uint32_t outCount, bool internal = false);   // W1 cp submit (0), X4b cp xib (1, 2), W2 (3, 4: internal)
 	uint32_t n33CpWait(uint32_t seq, uint64_t *out, uint32_t outCount);   // W1 (step 7): the winsys waitseq half
 	// N33 stage 3 DMCUB bring-up proof (n33dmub::, Navi48Bringup.cpp): snapshot, PSP type-51 load, reset, init,
 	// QUERY_FEATURE_CAPS, and the hold/revert check. No writes until snapshot arms the gate.
@@ -251,6 +253,26 @@ private:
 	uint32_t n33IhArm(uint64_t *out, uint32_t outCount);                    // action 73 (I3)
 	uint32_t n33IhStop(bool unload, uint64_t *out, uint32_t outCount);      // action 74 (I5)
 	void     n33IhDisarm();
+	// N33 stage 3 step 7 W2: buffer objects mapped at caller VAs in VMID 0's GART, actions 39 to 47 (n33bo::).
+	n33bo::State        n33Bo {};
+	IOMemoryDescriptor *n33BoMd[n33bo::kBoMax] {};    // GTT: an IOBufferMemoryDescriptor; import: the wired caller range
+	IOMemoryMap        *n33BoMap[n33bo::kBoMax] {};   // import: its kernel mapping
+	volatile uint32_t  *n33BoCpu[n33bo::kBoMax] {};   // host BOs' kernel CPU map (VRAM BOs: BAR0)
+	bool     n33BoGmcReady() const;
+	uint64_t n33BoPagePa(uint32_t h, uint32_t page);
+	volatile uint32_t *n33BoWord(uint32_t h, uint64_t byteOff);
+	uint32_t n33BoFlushBoth();
+	void     n33BoRelease(uint32_t h);
+	uint32_t n33BoCreate(uint32_t kind, uint64_t size, uint64_t *out, uint32_t outCount);              // action 39
+	uint32_t n33BoImport(task_t task, uint64_t uaddr, uint64_t size, uint64_t *out, uint32_t outCount);  // action 40
+	uint32_t n33BoMapVa(uint32_t h, uint64_t va, uint32_t vmFlags, uint64_t *out, uint32_t outCount);   // action 41
+	uint32_t n33BoUnmap(uint32_t h, uint64_t *out, uint32_t outCount);                                  // action 42
+	uint32_t n33BoFree(uint32_t h);                                                                      // action 43
+	uint32_t n33BoInfo(uint32_t h, uint64_t *out, uint32_t outCount);                                   // action 44
+	uint32_t n33BoSubmit(uint32_t stream, uint32_t a, uint32_t b, uint64_t va, uint64_t *out, uint32_t outCount);   // 46, 47
+	void     n33BoPrefill(uint32_t seq);
+	uint32_t n33BoLanded(uint32_t seq);
+	void     n33BoStop(bool freeMem);
 #endif
 	// --- stages ---
 	bool probeMemSize();
