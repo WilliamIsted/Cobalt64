@@ -183,6 +183,50 @@ inline uint32_t pkt_dispatch(uint32_t *p, uint64_t codeMc, uint64_t resultMc, ui
 	n += pkt_release_mem(p + n, fenceMc, seq, gl2wb);
 	return n;
 }
+
+// ---- X4a (step 7): the same streams as gfx10.3 PM4, for xlat12_*translate_level(11, ...) -------------------------
+// Every packet but two register values is the same on gfx10.3: the COMPUTE_* addresses (gc_10_3_0_offset.h and
+// gc_11_0_0_offset.h, X1's table), SET_SH_REG, DISPATCH_DIRECT and its initiator bits, EVENT_WRITE CS_PARTIAL_FLUSH 7,
+// WRITE_DATA (nvd.h, used unchanged by gfx_v10_0.c:4098 and gfx_v11_0.c:654) and RELEASE_MEM dword 1 (gfx_v10_0.c:8721
+// and gfx_v11_0.c:6078 emit the same bits from the shared nvd.h; Mesa pkt3.json RELEASE_MEM_OP and _gfx11 agree on
+// bits 12 to 23, gfx11 adds GLK_WB at 24, unused here).
+// COMPUTE_PGM_RSRC3 and COMPUTE_TMPRING_SIZE are FIELD_REPACK (xlat12_repack_gfx11.h). The gfx10.3 value is the
+// native value in gfx10.3 fields (Mesa gfx103.json:11786, :11831 against gfx11.json:10703, :10758):
+//   RSRC3: SHARED_VGPR_CNT [3:0] is shared; gfx11's INST_PREF_SIZE [9:4], TRAP_ON_START, TRAP_ON_END, IMAGE_OP [31]
+//          have no gfx10.3 source, so a native value using them cannot be expressed (refused at compile time).
+//   TMPRING_SIZE: WAVES [11:0] shared; WAVESIZE is [24:12] on gfx10.3, [26:12] on gfx11, so bits 25 and 26 cannot be.
+constexpr uint32_t kRsrc3G103 = kRsrc3 & 0xFu;
+constexpr uint32_t kTmpringNative = 0, kTmpringG103 = kTmpringNative & 0x1FFFFFFu;
+static_assert(kRsrc3G103 == kRsrc3, "kRsrc3 uses a gfx11-only COMPUTE_PGM_RSRC3 field: X4's oracle must allow it");
+static_assert(kTmpringG103 == kTmpringNative, "TMPRING_SIZE.WAVESIZE wider than gfx10.3's 13 bits");
+// K4 as gfx10.3 PM4. Kept apart from pkt_dispatch so the hardware-proven builder stays the oracle. 41 dwords.
+inline uint32_t pkt_dispatch_g103(uint32_t *p, uint64_t codeMc, uint64_t resultMc, uint64_t fenceMc, uint32_t seq,
+                                  bool gl2wb) {
+	uint32_t n = 0;
+	const uint32_t pgm[2] = { lo32(codeMc >> 8), lo32(codeMc >> 40) }, rsrc[2] = { kRsrc1, kRsrc2 }, zero = 0;
+	const uint32_t r3 = kRsrc3G103, tmp = kTmpringG103;
+	const uint32_t thr[3] = { kResultDw, 1, 1 }, ud[2] = { lo32(resultMc), hi32(resultMc) };
+	n += set_sh(p + n, kComputePgmLo, pgm, 2);
+	n += set_sh(p + n, kComputeRsrc1, rsrc, 2);
+	n += set_sh(p + n, kComputeResLimits, &zero, 1);
+	n += set_sh(p + n, kComputeTmpring, &tmp, 1);
+	n += set_sh(p + n, kComputeRsrc3, &r3, 1);
+	n += set_sh(p + n, kComputeNumX, thr, 3);
+	n += set_sh(p + n, kComputeUserData0, ud, 2);
+	p[n++] = pkt3(kOpDispatchDirect, 3); p[n++] = 1; p[n++] = 1; p[n++] = 1; p[n++] = kInitiator;
+	p[n++] = pkt3(kOpEventWrite, 0); p[n++] = kCsPartialFlush;
+	n += pkt_release_mem(p + n, fenceMc, seq, gl2wb);
+	return n;
+}
+// The shader-free stream: WRITE_DATA of v to mc, then the fence. 13 dwords. Native gfx11 form.
+inline uint32_t pkt_wd(uint32_t *p, uint64_t mc, uint32_t v, uint64_t fenceMc, uint32_t seq, bool gl2wb) {
+	uint32_t n = pkt_write_data(p, mc, v);
+	return n + pkt_release_mem(p + n, fenceMc, seq, gl2wb);
+}
+// Its gfx10.3 form: both packets encode the same on gfx10.3 (above), so the same dwords.
+inline uint32_t pkt_wd_g103(uint32_t *p, uint64_t mc, uint32_t v, uint64_t fenceMc, uint32_t seq, bool gl2wb) {
+	return pkt_wd(p, mc, v, fenceMc, seq, gl2wb);
+}
 // Pad with one-dword NOPs to the next 256-dword boundary, as amdgpu_ring_commit. Returns the padded length.
 inline uint32_t pad(uint32_t *p, uint32_t n) {
 	while (n % kSubmitDw) p[n++] = kNop;

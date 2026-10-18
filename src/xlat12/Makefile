@@ -29,7 +29,7 @@ TEST_IB_FIXTURES := tests/fixture_r30_blit_ib.h tests/fixture_r44_drawinj.h test
 # stage-3 step 7 X1: the generated gfx10.3 -> gfx11 table and its headers.
 GFX11_HDRS := xlat12.h xlat12_tables_gfx11.h xlat12_repack_gfx11.h xlat12_provenance_gfx11.h xlat12_gfx11.h
 
-all: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11 $(BUILD)/test_xlat12_gfx11 $(BUILD)/test_xlat12_ib_gfx11
+all: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11 $(BUILD)/test_xlat12_gfx11 $(BUILD)/test_xlat12_ib_gfx11 $(BUILD)/test_n33_xib
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -70,6 +70,14 @@ $(BUILD)/test_xlat12_gfx11: tests/test_xlat12_gfx11.c tests/golden_vectors_gfx11
 $(BUILD)/test_xlat12_ib_gfx11: tests/test_xlat12_ib_gfx11.c tests/golden_ib_gfx11.h xlat12_ib.c xlat12_ib.h $(LIBSRC) $(HDRS) | $(BUILD)
 	$(CC) $(CSTD) -O1 -g $(WARN) $(SAN) -I. tests/test_xlat12_ib_gfx11.c xlat12_ib.c $(LIBSRC) -o $@
 
+# stage-3 step 7 X4a: the gfx10.3 K4 dispatch and WRITE_DATA streams of the bring-up kext's n33_cp_pure.h, translated
+# at level 11 by the core and the IB layer, against the native (hardware-proven) builders. C++, so the library is
+# compiled as C++ too, as kextcheck does.
+N33_CP_HDRS := ../navi48-bringup/src/amd/n33_cp_pure.h ../navi48-bringup/src/amd/n33_sdma_pure.h \
+               ../navi48-bringup/src/amd/n33_gmc_pure.h ../navi48-bringup/shaders/store_magic_gfx11.kd.h
+$(BUILD)/test_n33_xib: tests/test_n33_xib.cpp $(N33_CP_HDRS) xlat12_ib.c xlat12_ib.h $(LIBSRC) $(HDRS) | $(BUILD)
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Werror -Wshadow $(SAN) -I. tests/test_n33_xib.cpp -x c++ xlat12_ib.c $(LIBSRC) -o $@
+
 $(BUILD)/test_tables_gfx11: tests/test_tables_gfx11.c $(GFX11_HDRS) | $(BUILD)
 	$(CC) $(CSTD) -O1 -g $(WARN) $(SAN) -DXLAT12_GFX11 -I. tests/test_tables_gfx11.c -o $@
 
@@ -87,7 +95,7 @@ $(BUILD)/scissorcap: tests/scissorcap.c xlat12_ib.c xlat12_ib.h $(LIBSRC) $(HDRS
 
 scissorcap: $(BUILD)/scissorcap
 
-test: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11 $(BUILD)/test_xlat12_gfx11 $(BUILD)/test_xlat12_ib_gfx11
+test: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)/test_headless $(BUILD)/test_xlat12_b7b $(BUILD)/test_tables_gfx11 $(BUILD)/test_xlat12_gfx11 $(BUILD)/test_xlat12_ib_gfx11 $(BUILD)/test_n33_xib
 	$(BUILD)/test_xlat12
 	$(BUILD)/fuzz_xlat12 200000
 	$(BUILD)/fuzz_xlat12 200000 11
@@ -98,6 +106,7 @@ test: $(BUILD)/test_xlat12 $(BUILD)/fuzz_xlat12 $(BUILD)/test_xlat12_ib $(BUILD)
 	$(BUILD)/test_tables_gfx11
 	$(BUILD)/test_xlat12_gfx11
 	$(BUILD)/test_xlat12_ib_gfx11
+	$(BUILD)/test_n33_xib
 	python3 tests/test_xlat12_tables_gfx11.py
 	python3 tests/test_xlat12_ib_gfx11.py
 	@# an internal design note item 2: tools/gfx-readset.py's generator + xlat12_readset.h regeneration and proof tests.
